@@ -1,17 +1,17 @@
-# QuickLook 3 (Python QuickLook v2)
+# QuickLook 3
 
-QuickLook 3 is a modern, high-performance Python/Qt-based application designed to replace the legacy IDL `ql2` GUI for viewing and analyzing FITS data—specifically engineered for the OSIRIS instrument at the Keck Observatory.
+QuickLook 3 is a modern, high-performance Python/Qt-based application designed to replace the legacy IDL `qlook2` GUI for viewing and analyzing FITS data originally built for the OSIRIS instrument at the Keck Observatory.
 
-It provides a rich graphical interface to interactively visualize both 2D images and 3D data cubes with real-time astronomical coordinate mapping, scaling, and advanced data extraction tools.
+It provides a comprehensive graphical interface to interactively visualize both 2D images and 3D data cubes.
 
 ## Features
 
-- **High-Performance Rendering**: Built on PySide6 and pyqtgraph for buttery smooth visualization of large FITS data cubes.
+- **High-Performance Rendering**: Built on PySide6 and pyqtgraph for efficient, hardware-accelerated visualization of large FITS data cubes.
 - **3D Cube Visualization**: View volumetric FITS cubes with an interactive slider. Extract depth spectra from specific spatial pixels.
 - **Z-Axis Collapsing**: Collapse 3D ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
 - **Astronomical Coordinates**: Seamless `astropy.wcs` integration ensures precise pixel-to-world (RA/Dec) coordinate translations at your mouse pointer. 
-- **Array Transformations**: Instantly rotate and flip the data array for visual alignment while preserving perfect spatial coordinate integrity.
+- **Array Transformations**: Rotate and flip the data array for visual alignment while preserving spatial coordinate integrity.
 - **Analysis Tools**: Features built-in region cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, and 2D Peak Fitting.
 - **Live File Polling**: Monitor a directory for incoming OSIRIS data files and automatically load them in real-time.
 - **Header Editor**: View and modify FITS header cards directly in the UI.
@@ -53,7 +53,7 @@ You can launch QuickLook 3 directly from the terminal.
 ```bash
 uv run python main.py
 ```
-You can also pass a FITS file path as an argument to instantly open it upon launch:
+You can also pass a FITS file path as an argument to open it directly upon launch:
 ```bash
 uv run python main.py /path/to/your/file.fits
 ```
@@ -73,5 +73,9 @@ uv run python main.py /path/to/your/file.fits
 Found under the **Plot** menu bar:
 * **Horizontal/Vertical/Any Cut**: Draw lines or drag crosshairs across the image to generate 1D profile cuts. The cut tools support variable thickness for boxcar averaging.
 * **Depth**: Click anywhere on a 3D dataset to plot the 1D spectrum along the Z-axis.
-* **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to instantly calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise. 
+* **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise. 
 * **Surface Plot**: Pop out a 3D OpenGL topographical surface render of the image data.
+* **Catalog Plot**: Load standard CSV, TXT catalog files and overlay sources onto the FITS image. Features intelligent coordinate parsing (Display Pixels, FITS Pixels, or WCS RA/Dec), real-time search filtering, extensive marker styling, and context menus for coordinate extraction and centering.
+
+## Author
+Tuan Do (UCLA)
