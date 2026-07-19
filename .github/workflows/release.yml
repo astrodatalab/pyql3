@@ -1,0 +1,90 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers workflow automatically when you push a tag like "v3.0.0"
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: QuickLook3-${{ github.ref_name }}-Linux
+            archive_ext: tar.gz
+          - os: windows-latest
+            artifact_name: QuickLook3-${{ github.ref_name }}-Windows
+            archive_ext: zip
+          - os: macos-latest
+            artifact_name: QuickLook3-${{ github.ref_name }}-macOS-AppleSilicon
+            archive_ext: dmg
+          - os: macos-13
+            artifact_name: QuickLook3-${{ github.ref_name }}-macOS-Intel
+            archive_ext: dmg
+            
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          uv add --dev pyinstaller pillow
+
+      - name: Build with PyInstaller
+        run: uv run pyinstaller --name "QuickLook3" --windowed --icon "pyql3/icon.png" --collect-all photutils --noconfirm main.py
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          tar -czvf ../${{ matrix.artifact_name }}.${{ matrix.archive_ext }} QuickLook3
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: |
+          cd dist
+          Compress-Archive -Path QuickLook3 -DestinationPath ..\${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          hdiutil create -volname "QuickLook3" -srcfolder QuickLook3.app -ov -format UDZO ../${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
