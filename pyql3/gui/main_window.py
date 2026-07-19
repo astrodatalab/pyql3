@@ -11,11 +11,12 @@ from pyql3.services.poller import DirectoryPoller
 from pyql3.gui.dialogs.polling import PollingDialog
 from pyql3.services.config import ConfigManager
 from PySide6.QtCore import QTimer
+import pyql3
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OSIRIS QuickLook v3 (Python)")
+        self.setWindowTitle("QuickLook 3")
         
         # Set application icon
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
@@ -158,15 +159,29 @@ class MainWindow(QMainWindow):
         gauss_action = analysis_menu.addAction("Gaussian Fit")
         gauss_action.triggered.connect(self.open_gaussian_fit)
         
-        # Tools Menu
-        tools_menu = menubar.addMenu("Tools")
-        
         # Strehl Ratio Tool
         action_strehl = QAction("Strehl Ratio", self)
         action_strehl.triggered.connect(self.open_strehl_tool)
-        tools_menu.addAction(action_strehl)
+        analysis_menu.addAction(action_strehl)
         
         # Removed Math Menu as Arithmetic was moved to File Menu
+        
+        # Help Menu
+        help_menu = menubar.addMenu("Help")
+        about_action = help_menu.addAction("About QuickLook 3")
+        about_action.triggered.connect(self.show_about)
+
+    def show_about(self):
+        QMessageBox.about(
+            self,
+            "About QuickLook 3",
+            f"<h3>QuickLook 3</h3>"
+            f"<p>Version: {pyql3.__version__}</p>"
+            f"<p>A modern Python/Qt-based application for viewing integral field spectroscopy data.</p>"
+            f"<p>Developed by Tuan Do (UCLA).<br>"
+            f"Based on QuickLook 2 (ql2) for IDL.</p>"
+            f"<p><a href='https://github.com/astrodatalab/pyql3'>https://github.com/astrodatalab/pyql3</a></p>"
+        )
 
     def open_file(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open FITS File", "", "FITS Files (*.fits *.fit *.fits.gz);;All Files (*)")
@@ -180,7 +195,7 @@ class MainWindow(QMainWindow):
             if data is not None:
                 header = self.fits_reader.get_header()
                 self.image_viewer.set_data(data, header=header)
-                self.setWindowTitle(f"OSIRIS QuickLook v3 (Python) - {filepath}")
+                self.setWindowTitle(f"QuickLook 3 - {filepath}")
                 
                 # Update extension combobox
                 extensions = self.fits_reader.get_image_extensions()
@@ -225,7 +240,7 @@ class MainWindow(QMainWindow):
         try:
             self.fits_reader.load_from_memory(data, header)
             self.image_viewer.set_data(data, header=header)
-            self.setWindowTitle(f"OSIRIS QuickLook v3 (Python) - {title}")
+            self.setWindowTitle(f"QuickLook 3 - {title}")
             
             # Update extension combobox
             extensions = self.fits_reader.get_image_extensions()

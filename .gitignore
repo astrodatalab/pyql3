@@ -168,3 +168,6 @@ cython_debug/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# setuptools_scm
+pyql3/_version.py

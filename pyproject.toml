@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools_scm[toml]>=8.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "pyql3"
-version = "3.0.0"
-description = "Add your description here"
+dynamic = ["version"]
+description = "QuickLook 3 is a modern, high-performance Python/Qt-based application designed for viewing integral field spectroscopy data."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,6 +26,8 @@ dependencies = [
 dev = [
     "pillow>=12.3.0",
     "pyinstaller>=6.21.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.24.0",
 ]
 
 [tool.uv]
@@ -29,3 +35,9 @@ required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "sys_platform == 'darwin' and platform_machine == 'arm64'"
 ]
+
+[tool.setuptools_scm]
+write_to = "pyql3/_version.py"
+
+[tool.setuptools]
+packages = ["pyql3"]
