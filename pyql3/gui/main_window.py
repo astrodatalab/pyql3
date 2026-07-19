@@ -146,6 +146,9 @@ class MainWindow(QMainWindow):
         cont_action = plot_menu.addAction("Contour")
         cont_action.triggered.connect(self.open_contour_plot)
         
+        plot_cat_action = plot_menu.addAction("Plot Catalog")
+        plot_cat_action.triggered.connect(self.open_plot_catalog)
+        
         # Analysis Menu
         analysis_menu = menubar.addMenu("Analysis")
         stats_action = analysis_menu.addAction("Statistics")
@@ -276,7 +279,7 @@ class MainWindow(QMainWindow):
                 self.image_viewer.refresh_display()
                 
             # Update all open tools so they dynamically adjust their labels and values
-            for attr in ['_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog', '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog']:
+            for attr in ['_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog', '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog', '_plot_catalog_dialog']:
                 if hasattr(self, attr):
                     dialog = getattr(self, attr)
                     if dialog and dialog.isVisible():
@@ -324,6 +327,13 @@ class MainWindow(QMainWindow):
         from pyql3.gui.tools.advanced_plots import ContourDialog
         self._cont_dialog = ContourDialog(self, self.image_viewer)
         self._cont_dialog.show()
+        
+    def open_plot_catalog(self):
+        from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
+        if not hasattr(self, '_plot_catalog_dialog') or not self._plot_catalog_dialog.isVisible():
+            self._plot_catalog_dialog = PlotCatalogDialog(self, self.image_viewer)
+        self._plot_catalog_dialog.show()
+        self._plot_catalog_dialog.raise_()
         
     def open_rotate(self):
         from pyql3.gui.tools.rotate import RotateDialog
