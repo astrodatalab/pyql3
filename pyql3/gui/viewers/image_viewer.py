@@ -105,18 +105,69 @@ class ImageViewer(QWidget):
         
         # Connect mouse movement and zoom scale
         self.proxy = pg.SignalProxy(self.imv.scene.sigMouseMoved, rateLimit=60, slot=self.mouse_moved)
-        self.imv.getView().sigRangeChanged.connect(self.update_zoom_scale)
+        self.imv.timeLine.sigPositionChanged.connect(self.update_slice_info)
 
-    def update_zoom_scale(self, view_box=None, view_range=None):
-        view_box = self.imv.getView()
-        screen_rect = view_box.boundingRect()
-        view_rect = view_box.viewRect()
-        
-        if view_rect.width() != 0 and view_rect.height() != 0:
-            xscale = screen_rect.width() / view_rect.width()
-            yscale = screen_rect.height() / view_rect.height()
-            self.lbl_xscale.setText(f"XScale: {xscale:.3g}")
-            self.lbl_yscale.setText(f"YScale: {yscale:.3g}")
+    def get_wavelength_for_slice(self, z):
+        if getattr(self, 'wcs', None) is None or getattr(self, 'wcs_z_idx', None) is None:
+            return None
+        coords = [0] * self.wcs.naxis
+        coords[self.wcs_z_idx] = z
+        try:
+            world = self.wcs.wcs_pix2world([coords], 0)[0]
+            wave = world[self.wcs_z_idx]
+            unit = self.wcs.wcs.cunit[self.wcs_z_idx]
+            if str(unit).strip().lower() == 'm':
+                wave *= 1e6
+            return wave
+        except Exception:
+            return None
+
+    def update_slice_info(self, *args, **kwargs):
+        if getattr(self, 'transposed_data', None) is None:
+            if hasattr(self, 'lbl_slice_info'):
+                self.lbl_slice_info.setText("Slice: N/A")
+            return
+            
+        if hasattr(self, 'radio_range') and self.radio_range.isChecked():
+            try:
+                zmin = max(0, int(self.txt_zmin.text()))
+                zmax = min(self.transposed_data.shape[0]-1, int(self.txt_zmax.text()))
+                text = f"Collapsed: {zmin}-{zmax}"
+                
+                wave_min = self.get_wavelength_for_slice(zmin)
+                wave_max = self.get_wavelength_for_slice(zmax)
+                if wave_min is not None and wave_max is not None:
+                    text += f", Wavelengths: {wave_min:.4f}-{wave_max:.4f} µm"
+                        
+                self.lbl_slice_info.setText(text)
+            except ValueError:
+                self.lbl_slice_info.setText("Collapsed: Invalid Range")
+        else:
+            if self.transposed_data.ndim == 3:
+                z = self.imv.currentIndex
+                boxcar = 1
+                try:
+                    boxcar = int(self.txt_boxcar.text())
+                except ValueError:
+                    pass
+                if boxcar > 1:
+                    half = boxcar // 2
+                    zmin = max(0, z - half)
+                    zmax = min(self.transposed_data.shape[0]-1, z + half)
+                    text = f"Slice (Boxcar): {zmin}-{zmax}"
+                    wave_min = self.get_wavelength_for_slice(zmin)
+                    wave_max = self.get_wavelength_for_slice(zmax)
+                    if wave_min is not None and wave_max is not None:
+                        text += f", Wavelengths: {wave_min:.4f}-{wave_max:.4f} µm"
+                else:
+                    text = f"Slice: {z}"
+                    wave = self.get_wavelength_for_slice(z)
+                    if wave is not None:
+                        text += f", Wavelength: {wave:.4f} µm"
+                
+                self.lbl_slice_info.setText(text)
+            else:
+                self.lbl_slice_info.setText("Slice: N/A (2D Image)")
 
     def on_tab_changed(self, index):
         widget = self.tabs.widget(index)
@@ -155,21 +206,15 @@ class ImageViewer(QWidget):
         self.lbl_x = QLabel("X: N/A")
         self.lbl_y = QLabel("Y: N/A")
         self.lbl_val = QLabel("Value: N/A")
-        self.lbl_xscale = QLabel("XScale: N/A")
-        self.lbl_yscale = QLabel("YScale: N/A")
-        self.lbl_pointing = QLabel("Pointing: Normal")
+        self.lbl_slice_info = QLabel("Slice: N/A")
         
         sep1 = QFrame(); sep1.setFrameShape(QFrame.VLine); sep1.setFrameShadow(QFrame.Sunken)
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine); sep2.setFrameShadow(QFrame.Sunken)
         
         hbox1.addWidget(self.lbl_x)
         hbox1.addWidget(self.lbl_y)
         hbox1.addWidget(self.lbl_val)
         hbox1.addWidget(sep1)
-        hbox1.addWidget(self.lbl_xscale)
-        hbox1.addWidget(self.lbl_yscale)
-        hbox1.addWidget(sep2)
-        hbox1.addWidget(self.lbl_pointing)
+        hbox1.addWidget(self.lbl_slice_info)
         hbox1.addStretch()
         
         hbox2 = QHBoxLayout()
@@ -486,6 +531,7 @@ class ImageViewer(QWidget):
             
             if boxcar <= 1:
                 self.imv.setCurrentIndex(value)
+                self.update_slice_info()
             else:
                 self.apply_z_slice()
 
@@ -522,6 +568,7 @@ class ImageViewer(QWidget):
             self.update_image_display(bypass_imv=True)
             self.lbl_zmin.setText(f"ZMin: {zmin}")
             self.lbl_zmax.setText(f"ZMax: {zmax}")
+            self.update_slice_info()
         except ValueError:
             pass
 
@@ -587,6 +634,7 @@ class ImageViewer(QWidget):
                 
             self.lbl_zmin.setText(f"ZMin: {val}")
             self.lbl_zmax.setText(f"ZMax: {val}")
+            self.update_slice_info()
         except ValueError:
             pass
 
@@ -643,8 +691,6 @@ class ImageViewer(QWidget):
             
             self.apply_axis_mapping()
             
-        self.update_zoom_scale()
-        
     def on_axis_changed(self):
         if self.raw_data is None or self.raw_data.ndim != 3:
             return
@@ -918,6 +964,7 @@ class ImageViewer(QWidget):
             self.imv.setImage(render_data, autoLevels=False, levels=(render_vmin, render_vmax))
             if set_index is not None:
                 self.imv.setCurrentIndex(set_index)
+        self.update_slice_info()
 
     def mouse_moved(self, evt):
         if self.display_data is None:

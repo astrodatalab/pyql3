@@ -1,7 +1,8 @@
+import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QMenuBar, QMenu, QFileDialog, 
                                QMessageBox, QLabel)
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction, QActionGroup, QIcon
 from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
@@ -15,6 +16,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OSIRIS QuickLook v3 (Python)")
+        
+        # Set application icon
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
+        self.setWindowIcon(QIcon(icon_path))
+        
         self.resize(600, 850)
         
         self.fits_reader = FitsReader()
