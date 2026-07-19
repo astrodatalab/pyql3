@@ -437,14 +437,14 @@ class PlotCatalogDialog(BaseToolDialog):
                 disp_x, disp_y = map_to_display(self.image_viewer, orig_x, orig_y)
                 
             if 0 <= disp_x < max_x and 0 <= disp_y < max_y:
-                pts_x.append(disp_x)
-                pts_y.append(disp_y)
+                pts_x.append(disp_x + 0.5)
+                pts_y.append(disp_y + 0.5)
                 
                 if self.chk_show_name.isChecked() and name_col in self.catalog_data.colnames:
                     name_str = str(row[name_col])
                     txt = pg.TextItem(name_str, color=self.marker_color.name(), anchor=(0, 1))
                     txt.setZValue(12)
-                    txt.setPos(disp_x, disp_y)
+                    txt.setPos(disp_x + 0.5, disp_y + 0.5)
                     self.image_viewer.imv.getView().addItem(txt)
                     self.text_items.append(txt)
             else:

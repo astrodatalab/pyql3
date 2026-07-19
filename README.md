@@ -47,6 +47,26 @@ uv run python main.py
 
 ## Usage
 
+### Building a Standalone Application
+
+### macOS
+You can compile PyQL3 into a standalone application that does not require users to install Python or any dependencies:
+
+```bash
+./build_app.sh
+```
+
+This will create `QuickLook3.app` in the `dist/` directory, along with a `.dmg` package containing the executable for your architecture (Intel or Apple Silicon).
+
+### Windows
+You can compile PyQL3 into a standalone `.exe` application bundle on Windows:
+
+```cmd
+build_app.bat
+```
+
+This will create a `QuickLook3` folder inside the `dist\` directory containing the main executable.
+
 ### Launching the Application
 You can launch QuickLook 3 directly from the terminal. 
 

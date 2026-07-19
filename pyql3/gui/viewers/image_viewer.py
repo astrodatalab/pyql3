@@ -36,6 +36,7 @@ class ImageViewer(QWidget):
         self.imv.ui.roiBtn.hide()
         self.imv.ui.menuBtn.hide()
         self.imv.getView().setAspectLocked(True)
+        self.imv.getView().invertY(False)
         self.imv.ui.roiPlot.setMinimumHeight(65)
         self.imv.ui.roiPlot.setMaximumHeight(85)
         self.layout.addWidget(self.imv, stretch=1)
@@ -144,7 +145,7 @@ class ImageViewer(QWidget):
                 self.lbl_slice_info.setText("Collapsed: Invalid Range")
         else:
             if self.transposed_data.ndim == 3:
-                z = self.imv.currentIndex
+                z = self.slider_slice.value()
                 boxcar = 1
                 try:
                     boxcar = int(self.txt_boxcar.text())
@@ -260,11 +261,13 @@ class ImageViewer(QWidget):
         hbox.addWidget(QLabel("Min:"))
         self.txt_min = QLineEdit("0.000")
         self.txt_min.setFixedWidth(60)
+        self.txt_min.editingFinished.connect(self.apply_contrast)
         hbox.addWidget(self.txt_min)
         
         hbox.addWidget(QLabel("Max:"))
         self.txt_max = QLineEdit("1.000")
         self.txt_max.setFixedWidth(60)
+        self.txt_max.editingFinished.connect(self.apply_contrast)
         hbox.addWidget(self.txt_max)
         
         self.btn_apply_contrast = QPushButton("Apply")
@@ -275,7 +278,7 @@ class ImageViewer(QWidget):
         hbox.addWidget(QLabel("Scale:"))
         self.combo_scale = QComboBox()
         self.combo_scale.addItems(["Linear", "Negative", "HistEq", "Logarithmic", "Sqrt", "AsinH"])
-        self.combo_scale.currentIndexChanged.connect(self.update_image_display)
+        self.combo_scale.currentIndexChanged.connect(self.apply_contrast)
         hbox.addWidget(self.combo_scale)
         
         hbox.addStretch()
@@ -408,10 +411,12 @@ class ImageViewer(QWidget):
         range_hbox.addWidget(QLabel("Z Min:"))
         self.txt_zmin = QLineEdit("0")
         self.txt_zmin.setFixedWidth(50)
+        self.txt_zmin.editingFinished.connect(self.apply_z_range)
         range_hbox.addWidget(self.txt_zmin)
         range_hbox.addWidget(QLabel("Z Max:"))
         self.txt_zmax = QLineEdit("0")
         self.txt_zmax.setFixedWidth(50)
+        self.txt_zmax.editingFinished.connect(self.apply_z_range)
         range_hbox.addWidget(self.txt_zmax)
         self.btn_apply_range = QPushButton("Apply")
         self.btn_apply_range.clicked.connect(self.apply_z_range)
@@ -440,6 +445,7 @@ class ImageViewer(QWidget):
         slice_hbox.addWidget(QLabel("Boxcar:"))
         self.txt_boxcar = QLineEdit("1")
         self.txt_boxcar.setFixedWidth(40)
+        self.txt_boxcar.editingFinished.connect(self.apply_z_slice)
         slice_hbox.addWidget(self.txt_boxcar)
         self.btn_apply_slice = QPushButton("Apply")
         self.btn_apply_slice.clicked.connect(self.apply_z_slice)
@@ -495,7 +501,18 @@ class ImageViewer(QWidget):
         self.imv.getView().enableAutoRange(axis=pg.ViewBox.YAxis)
 
     def apply_contrast(self):
-        self.update_image_display(use_manual_levels=True)
+        is_range = hasattr(self, 'radio_range') and self.radio_range.isChecked()
+        boxcar = 1
+        if hasattr(self, 'txt_boxcar'):
+            try:
+                boxcar = int(self.txt_boxcar.text())
+            except ValueError:
+                pass
+                
+        needs_bypass = is_range or (boxcar > 1 and getattr(self, 'transposed_data', None) is not None and self.transposed_data.ndim == 3)
+        current_slice = getattr(self, 'slider_slice', None).value() if hasattr(self, 'slider_slice') else None
+        
+        self.update_image_display(use_manual_levels=True, bypass_imv=needs_bypass, set_index=current_slice)
 
     def z_mode_changed(self):
         is_range = self.radio_range.isChecked()
@@ -507,14 +524,16 @@ class ImageViewer(QWidget):
         self.txt_boxcar.setEnabled(not is_range)
         self.btn_apply_slice.setEnabled(not is_range)
         
-        # Enable region dragging only in range mode
-        self.z_range_region.setMovable(is_range)
+        # Always allow moving the region itself, but lock the edges in slice mode
+        self.z_range_region.setMovable(True)
         for line in self.z_range_region.lines:
             line.setMovable(is_range)
         
-        if not is_range and self.transposed_data is not None and self.transposed_data.ndim == 3:
-            # Restore 3D view
-            self.apply_z_slice()
+        if self.transposed_data is not None and self.transposed_data.ndim == 3:
+            if not is_range:
+                self.apply_z_slice()
+            else:
+                self.apply_z_range()
 
     def on_collapse_changed(self):
         if self.radio_range.isChecked():
@@ -530,8 +549,11 @@ class ImageViewer(QWidget):
                 pass
             
             if boxcar <= 1:
-                self.imv.setCurrentIndex(value)
-                self.update_slice_info()
+                if getattr(self, 'z_range_region', None) and self.z_range_region.isVisible():
+                    self.apply_z_slice()
+                else:
+                    self.imv.setCurrentIndex(value)
+                    self.update_slice_info()
             else:
                 self.apply_z_slice()
 
@@ -541,6 +563,9 @@ class ImageViewer(QWidget):
         if self._updating_region:
             return
         try:
+            if getattr(self.imv, 'timeLine', None) is not None:
+                self.imv.timeLine.hide()
+                
             zmin = max(0, int(self.txt_zmin.text()))
             zmax = min(self.transposed_data.shape[0]-1, int(self.txt_zmax.text()))
             collapse_method = self.combo_collapse.currentText()
@@ -582,17 +607,26 @@ class ImageViewer(QWidget):
                 if self.transposed_data is not None:
                     max_val = self.transposed_data.shape[0] - 1
                     x_val = max(0, min(x_val, max_val))
-                    self.imv.setCurrentIndex(x_val)
-                    self.slider_slice.blockSignals(True)
-                    self.slider_slice.setValue(x_val)
-                    self.slider_slice.blockSignals(False)
-                    self.lbl_slice_val.setText(str(x_val))
+                    
+                    if not self.radio_range.isChecked():
+                        # Using setValue on the slider will correctly trigger the signals
+                        self.slider_slice.setValue(x_val)
 
     def on_region_change_finished(self):
-        if not self.radio_range.isChecked() or self._updating_region:
+        if self._updating_region:
             return
         
         r_min, r_max = self.z_range_region.getRegion()
+        
+        if not self.radio_range.isChecked():
+            # Z Slice mode with Boxcar > 1
+            # User dragged the yellow boxcar region. Update the slice slider to the center!
+            center = int(round((r_min + r_max) / 2.0))
+            if self.transposed_data is not None:
+                center = max(0, min(self.transposed_data.shape[0]-1, center))
+            self.slider_slice.setValue(center)
+            return
+            
         zmin = max(0, int(round(r_min)))
         
         if self.transposed_data is not None:
@@ -612,11 +646,15 @@ class ImageViewer(QWidget):
             boxcar = max(1, int(self.txt_boxcar.text()))
             
             if boxcar == 1:
+                if getattr(self.imv, 'timeLine', None) is not None:
+                    self.imv.timeLine.show()
                 self.z_range_region.hide()
                 self.display_data = self.transposed_data.copy()
                 self.apply_transforms()
                 self.update_image_display(set_index=val)
             else:
+                if getattr(self.imv, 'timeLine', None) is not None:
+                    self.imv.timeLine.hide()
                 half = boxcar // 2
                 zmin = max(0, val - half)
                 zmax = min(self.transposed_data.shape[0]-1, val + half)
@@ -710,12 +748,13 @@ class ImageViewer(QWidget):
             # Avoid duplicate axes by picking the first available one
             available = [a for a in axes if a != x_axis]
             y_axis = available[0]
-            # Disconnect to prevent infinite loop
+            # Update the UI without triggering the signal again
             self.combo_y.blockSignals(True)
             self.combo_y.setCurrentText(y_axis)
             self.combo_y.blockSignals(False)
             
         z_axis = [a for a in axes if a not in (x_axis, y_axis)][0]
+        self.current_z_axis = z_axis
         
         # FITS AXIS 1 -> py 2 (Nx)
         # FITS AXIS 2 -> py 1 (Ny)
@@ -748,6 +787,7 @@ class ImageViewer(QWidget):
             self.apply_transforms()
         
         zs = self.transposed_data.shape[0]
+        self.slider_slice.setMaximum(zs - 1)
         self.lbl_zsize.setText(f"ZSize: {zs}")
         cur_val = self.slider_slice.value()
         if cur_val >= zs:
@@ -773,13 +813,6 @@ class ImageViewer(QWidget):
             return getattr(self, '_itime_coadds', 1.0)
         return 1.0
 
-    def z_mode_changed(self):
-        # Refresh the display
-        if self.radio_slice.isChecked():
-            self.apply_z_slice()
-        else:
-            self.apply_z_range()
-            
     def apply_transforms(self):
         """Applies DN scaling, rotation, and flips to display_data"""
         if self.display_data is None:
@@ -883,26 +916,26 @@ class ImageViewer(QWidget):
         # Draw North
         rad_n = math.radians(vis_n)
         tip_x_n = cx - L * math.cos(rad_n)
-        tip_y_n = cy - L * math.sin(rad_n)
+        tip_y_n = cy + L * math.sin(rad_n)
         self.pa_arrow_n = pg.ArrowItem(pos=(tip_x_n, tip_y_n), angle=vis_n, headLen=headLen, tailLen=L, tailWidth=tailWidth, pen='r', brush='r', pxMode=False)
         self.imv.getView().addItem(self.pa_arrow_n)
         
         self.pa_text_n = pg.TextItem('N', color='r', anchor=(0.5, 0.5))
         txt_x_n = cx - (L + headLen * 1.5) * math.cos(rad_n)
-        txt_y_n = cy - (L + headLen * 1.5) * math.sin(rad_n)
+        txt_y_n = cy + (L + headLen * 1.5) * math.sin(rad_n)
         self.pa_text_n.setPos(txt_x_n, txt_y_n)
         self.imv.getView().addItem(self.pa_text_n)
         
         # Draw East
         rad_e = math.radians(vis_e)
         tip_x_e = cx - L * math.cos(rad_e)
-        tip_y_e = cy - L * math.sin(rad_e)
+        tip_y_e = cy + L * math.sin(rad_e)
         self.pa_arrow_e = pg.ArrowItem(pos=(tip_x_e, tip_y_e), angle=vis_e, headLen=headLen, tailLen=L, tailWidth=tailWidth, pen='r', brush='r', pxMode=False)
         self.imv.getView().addItem(self.pa_arrow_e)
         
         self.pa_text_e = pg.TextItem('E', color='r', anchor=(0.5, 0.5))
         txt_x_e = cx - (L + headLen * 1.5) * math.cos(rad_e)
-        txt_y_e = cy - (L + headLen * 1.5) * math.sin(rad_e)
+        txt_y_e = cy + (L + headLen * 1.5) * math.sin(rad_e)
         self.pa_text_e.setPos(txt_x_e, txt_y_e)
         self.imv.getView().addItem(self.pa_text_e)
         
@@ -986,7 +1019,7 @@ class ImageViewer(QWidget):
                 self.lbl_y.setText(f"Y: {y}")
                 
                 if is_3d:
-                    z = self.imv.currentIndex
+                    z = self.slider_slice.value()
                     val = self.display_data[z, x, y]
                 else:
                     val = self.display_data[x, y]
@@ -1018,8 +1051,17 @@ class ImageViewer(QWidget):
                             p1 = orig_x; p2 = orig_y
                             world = self.wcs.pixel_to_world(p1, p2)
                             self.lbl_wcs.setText(f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  {world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
-                        elif self.wcs.naxis == 3:
-                            z = self.imv.currentIndex if is_3d else 0
+                        if self.wcs.naxis >= 3 and self.wcs_z_idx is not None:
+                            if hasattr(self, 'radio_range') and self.radio_range.isChecked():
+                                try:
+                                    z_min = max(0, int(self.txt_zmin.text() or 0))
+                                    z_max = max(0, int(self.txt_zmax.text() or 0))
+                                    z = (z_min + z_max) // 2
+                                except ValueError:
+                                    z = 0
+                            else:
+                                z = self.slider_slice.value()
+                            
                             val_dict = {
                                 getattr(self, 'current_x_axis', 'AXIS 1'): orig_x,
                                 getattr(self, 'current_y_axis', 'AXIS 2'): orig_y,
