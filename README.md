@@ -1,19 +1,19 @@
 # QuickLook 3
 
-QuickLook 3 is a modern, high-performance Python/Qt-based application designed to replace the legacy IDL `qlook2` GUI for viewing and analyzing FITS data originally built for the OSIRIS instrument at the Keck Observatory.
+QuickLook 3 is a modern, high-performance Python/Qt-based application designed for viewing integral field spectroscopy data. It provides a comprehensive graphical interface to interactively visualize both 2D images and 3D data cubes. This tool is a replacement for the legacy IDL `qlook2` GUI for viewing and analyzing FITS data originally built for the OSIRIS instrument at the Keck Observatory. While QuickLook 3 is optimized for OSIRIS data, it should work for most IFU instruments including JWST NIRSpec IFU and Gemini NIFS. 
 
-It provides a comprehensive graphical interface to interactively visualize both 2D images and 3D data cubes.
+
 
 ## Features
 
 - **High-Performance Rendering**: Built on PySide6 and pyqtgraph for efficient, hardware-accelerated visualization of large FITS data cubes.
-- **3D Cube Visualization**: View volumetric FITS cubes with an interactive slider. Extract depth spectra from specific spatial pixels.
+- **IFU Data Cube Visualization**: View FITS cubes with an interactively. Extract depth spectra from specific spatial pixels.
 - **Z-Axis Collapsing**: Collapse 3D ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
-- **Astronomical Coordinates**: Seamless `astropy.wcs` integration ensures precise pixel-to-world (RA/Dec) coordinate translations at your mouse pointer. 
+- **Astronomical Coordinates**: Integrates WCS pixel-to-world (RA/Dec) coordinate translations at your mouse pointer. 
 - **Array Transformations**: Rotate and flip the data array for visual alignment while preserving spatial coordinate integrity.
-- **Analysis Tools**: Features built-in region cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, and 2D Peak Fitting.
-- **Live File Polling**: Monitor a directory for incoming OSIRIS data files and automatically load them in real-time.
+- **Analysis Tools**: Features built-in region cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and Catalog Plotting.
+- **Live File Polling**: Monitor a directory for incoming data files and automatically load them in real-time.
 - **Header Editor**: View and modify FITS header cards directly in the UI.
 
 ## Installation
@@ -97,5 +97,7 @@ Found under the **Plot** menu bar:
 * **Surface Plot**: Pop out a 3D OpenGL topographical surface render of the image data.
 * **Catalog Plot**: Load standard CSV, TXT catalog files and overlay sources onto the FITS image. Features intelligent coordinate parsing (Display Pixels, FITS Pixels, or WCS RA/Dec), real-time search filtering, extensive marker styling, and context menus for coordinate extraction and centering.
 
-## Author
+## Authors
 Tuan Do (UCLA)
+
+Based on QuickLook 2 (ql2) for IDL from the OSIRIS Data Reduction Pipeline. See the contributors of the OSIRIS DRP here: https://github.com/Keck-DataReductionPipelines/OsirisDRP#alphabetical-list-of-contributors
