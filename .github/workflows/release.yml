@@ -21,6 +21,9 @@ jobs:
           - os: macos-latest
             artifact_name: QuickLook3-${{ github.ref_name }}-macOS-AppleSilicon
             archive_ext: dmg
+          - os: macos-13
+            artifact_name: QuickLook3-${{ github.ref_name }}-macOS-Intel
+            archive_ext: dmg
 
     steps:
       - name: Checkout code

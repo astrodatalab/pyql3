@@ -105,6 +105,39 @@ class MainWindow(QMainWindow):
                 
         display_menu.addSeparator()
         
+        colormap_menu = display_menu.addMenu("Colormap")
+        self.cmap_action_group = QActionGroup(self)
+        self.cmap_actions = {}
+        
+        colormap_groups = [
+            ("Perceptually Uniform", ["viridis", "plasma", "inferno", "magma", "cividis"]),
+            ("Sequential", ["gray", "Blues", "YlOrBr", "hot"]),
+            ("Scientific", ["cmc.oslo", "cmc.grayC", "cmc.devon", "cmc.lapaz", "cmc.vik", "cmc.roma"]),
+            ("Diverging", ["RdBu", "coolwarm", "bwr", "seismic", "Spectral"])
+        ]
+        
+        for i, (group_name, cmaps) in enumerate(colormap_groups):
+            if i > 0:
+                colormap_menu.addSeparator()
+            for cmap in cmaps:
+                act = colormap_menu.addAction(cmap)
+                act.setCheckable(True)
+                self.cmap_action_group.addAction(act)
+                self.cmap_actions[cmap] = act
+                act.triggered.connect(lambda checked, c=cmap: self.image_viewer.set_colormap(cmap_name=c))
+                if cmap == "cmc.oslo":
+                    act.setChecked(True)
+                    
+        invert_cmap_action = display_menu.addAction("Invert Colormap")
+        invert_cmap_action.setCheckable(True)
+        invert_cmap_action.triggered.connect(lambda checked: self.image_viewer.set_colormap(invert=checked))
+                
+        self.colorbar_action = display_menu.addAction("Show Colorbar")
+        self.colorbar_action.setCheckable(True)
+        self.colorbar_action.triggered.connect(self.image_viewer.toggle_colorbar)
+        
+        display_menu.addSeparator()
+        
         self.pa_action = display_menu.addAction("Position Angle")
         self.pa_action.setCheckable(True)
         self.pa_action.triggered.connect(self.toggle_pa)
@@ -290,6 +323,8 @@ class MainWindow(QMainWindow):
     def set_display_unit(self, as_total_dn):
         if self.image_viewer.disp_as_dn != as_total_dn:
             self.image_viewer.disp_as_dn = as_total_dn
+            self.image_viewer.update_colorbar_label()
+            
             if self.image_viewer.transposed_data is not None:
                 self.image_viewer.refresh_display()
                 

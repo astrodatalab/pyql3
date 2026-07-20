@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "astropy>=8.0.1",
+    "cmcrameri>=1.9",
     "matplotlib>=3.11.1",
     "numpy>=2.5.1",
     "photutils>=3.0.0",

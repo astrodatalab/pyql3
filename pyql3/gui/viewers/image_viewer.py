@@ -63,7 +63,7 @@ class ImageViewer(QWidget):
         self.imv.timeLine.setPen(pg.mkPen('y', width=3))
         self.imv.timeLine.setHoverPen(pg.mkPen('y', width=5))
         
-        self.set_colormap('viridis')
+        self.set_colormap('cmc.oslo')
         
         # Data state
         self.raw_data = None
@@ -1099,9 +1099,47 @@ class ImageViewer(QWidget):
             else:
                 self.lbl_val.setText("Value: Out of Bounds")
 
-    def set_colormap(self, cmap_name='viridis'):
+    def set_colormap(self, cmap_name=None, invert=None):
+        if cmap_name is not None:
+            self.current_cmap_name = cmap_name
+        else:
+            cmap_name = getattr(self, 'current_cmap_name', 'cmc.oslo')
+            
+        if invert is not None:
+            self.is_cmap_inverted = invert
+        else:
+            invert = getattr(self, 'is_cmap_inverted', False)
+            
+        lookup_name = cmap_name
+        if invert:
+            if lookup_name.endswith('_r'):
+                lookup_name = lookup_name[:-2]
+            else:
+                lookup_name = lookup_name + '_r'
+                
         try:
-            cmap = pg.colormap.get(cmap_name)
+            import pyqtgraph as pg
+            try:
+                cmap = pg.colormap.get(lookup_name)
+            except Exception:
+                try:
+                    import cmcrameri.cm
+                except ImportError:
+                    pass
+                cmap = pg.colormap.getFromMatplotlib(lookup_name)
+                
             self.imv.setColorMap(cmap)
         except Exception as e:
-            print(f"Warning: Could not set colormap {cmap_name}: {e}")
+            print(f"Warning: Could not set colormap {lookup_name}: {e}")
+
+    def toggle_colorbar(self, show: bool):
+        if show:
+            self.imv.ui.histogram.show()
+            self.update_colorbar_label()
+        else:
+            self.imv.ui.histogram.hide()
+
+    def update_colorbar_label(self):
+        if self.imv.ui.histogram.isVisible():
+            unit = "Total DN" if getattr(self, 'disp_as_dn', False) else "DN/s"
+            self.imv.ui.histogram.axis.setLabel("Pixel Value", units=unit)

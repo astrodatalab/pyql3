@@ -51,7 +51,7 @@ class PlotCatalogDialog(BaseToolDialog):
         self.text_items = []
         
         # Default marker settings
-        self.marker_color = QColor(255, 255, 255) # White default
+        self.marker_color = QColor(255, 165, 0) # Orange default
         
         self.setup_ui()
         
