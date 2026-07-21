@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QHeaderView, QWidget, QAbstractItemView, QColorDialog, QLineEdit,
     QGroupBox, QFormLayout, QMenu, QApplication
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
 import pyqtgraph as pg
 import astropy.io.ascii as ascii
@@ -129,13 +129,6 @@ class PlotCatalogDialog(BaseToolDialog):
         self.combo_name.currentIndexChanged.connect(self.update_plot)
         style_layout.addWidget(self.combo_name)
 
-        style_layout.addWidget(QLabel("  Max:"))
-        self.spin_max_labels = QSpinBox()
-        self.spin_max_labels.setRange(10, 5000)
-        self.spin_max_labels.setValue(500)
-        self.spin_max_labels.setToolTip("Maximum number of visible text labels rendered simultaneously in active viewport")
-        self.spin_max_labels.valueChanged.connect(self.update_visible_text_labels)
-        style_layout.addWidget(self.spin_max_labels)
         
         style_layout.addStretch()
         style_group.setLayout(style_layout)
@@ -167,7 +160,10 @@ class PlotCatalogDialog(BaseToolDialog):
         filepath, _ = QFileDialog.getOpenFileName(self, "Open Catalog", "", "Catalog Files (*.csv *.txt *.dat);;All Files (*)")
         if not filepath:
             return
-            
+        self.load_catalog_file(filepath)
+
+    def load_catalog_file(self, filepath):
+        """Load a catalog from a file path. Can be called programmatically."""
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
@@ -461,17 +457,30 @@ class PlotCatalogDialog(BaseToolDialog):
         self.scatter_item.setData(x=pts_x, y=pts_y, symbol=symbol, size=size, pen=pen, brush=brush)
         self.lbl_status.setText(f"Loaded: {len(self.catalog_data)} sources | {len(pts_x)} plotted | {oob_count} out of bounds")
 
-        # Connect view range changes for viewport culling if not already connected
+        # Connect view range changes for debounced hide-on-pan / show-on-stop
         view = self.image_viewer.imv.getView()
         if not getattr(self, '_range_connected', False):
-            view.sigRangeChanged.connect(self.update_visible_text_labels)
+            self._label_timer = QTimer()
+            self._label_timer.setSingleShot(True)
+            self._label_timer.setInterval(200)  # ms delay after panning stops
+            self._label_timer.timeout.connect(self.update_visible_text_labels)
+            view.sigRangeChanged.connect(self._on_view_range_changed)
             self._range_connected = True
 
         self.update_visible_text_labels()
         self.on_table_selection()
 
+    def _on_view_range_changed(self):
+        """Called on every pan/zoom frame. Hides text instantly and debounces re-render."""
+        # Hide all text items immediately for smooth panning
+        for txt in self.text_items:
+            txt.setVisible(False)
+        # Restart debounce timer — labels re-appear 200ms after panning stops
+        if hasattr(self, '_label_timer'):
+            self._label_timer.start()
+
     def update_visible_text_labels(self):
-        """Viewport culling: Renders text labels ONLY for catalog sources within current screen viewport (max 150 labels)."""
+        """Viewport culling: Renders text labels ONLY for catalog sources within current screen viewport."""
         if self.image_viewer is None or not hasattr(self.image_viewer, 'imv'):
             return
 
@@ -492,8 +501,6 @@ class PlotCatalogDialog(BaseToolDialog):
             return
 
         rect = view.viewRect()
-        max_labels = self.spin_max_labels.value() if hasattr(self, 'spin_max_labels') else 500
-        count = 0
 
         for px, py, name_str in self.all_label_points:
             if rect.contains(px, py):
@@ -502,9 +509,6 @@ class PlotCatalogDialog(BaseToolDialog):
                 txt.setPos(px, py)
                 view.addItem(txt)
                 self.text_items.append(txt)
-                count += 1
-                if count >= max_labels:
-                    break
         
     def on_table_selection(self):
         if self.highlight_item is None or self.catalog_data is None:
@@ -641,10 +645,12 @@ class PlotCatalogDialog(BaseToolDialog):
     def closeEvent(self, event):
         if getattr(self, '_range_connected', False) and self.image_viewer is not None:
             try:
-                self.image_viewer.imv.getView().sigRangeChanged.disconnect(self.update_visible_text_labels)
+                self.image_viewer.imv.getView().sigRangeChanged.disconnect(self._on_view_range_changed)
             except Exception:
                 pass
             self._range_connected = False
+        if hasattr(self, '_label_timer'):
+            self._label_timer.stop()
 
         if self.scatter_item is not None and self.image_viewer is not None:
             try:

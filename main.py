@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--collapsed", action="store_true", help="Start the app with collapsed view activated (defaults to full cube)")
     parser.add_argument("--collapse-range", nargs=2, type=int, metavar=('ZMIN', 'ZMAX'), help="Start collapsed over the specified range of channels (implies --collapsed)")
     parser.add_argument("--poll-dir", help="Directory to poll for new FITS files (initializes with the most recent one)")
+    parser.add_argument("--catalog", help="Catalog file (.csv, .txt, .dat) to load into the Plot Catalog tool on startup")
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
@@ -54,6 +55,10 @@ def main():
                     window.image_viewer.txt_zmax.setText(str(args.collapse_range[1]))
                 # This will trigger z_mode_changed which applies the range and updates the view
                 window.image_viewer.radio_range.setChecked(True)
+
+    if args.catalog and os.path.isfile(args.catalog):
+        window.open_plot_catalog()
+        window._plot_catalog_dialog.load_catalog_file(args.catalog)
         
     if splash:
         splash.finish(window)
