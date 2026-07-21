@@ -9,7 +9,7 @@ from pyql3 import get_resource_path
 from pyql3.gui.main_window import MainWindow
 
 def main():
-    parser = argparse.ArgumentParser(description="OSIRIS QuickLook v3")
+    parser = argparse.ArgumentParser(description="QuickLook 3")
     parser.add_argument("filename", nargs="?", help="Optional FITS file to load on startup")
     parser.add_argument("--collapsed", action="store_true", help="Start the app with collapsed view activated (defaults to full cube)")
     parser.add_argument("--collapse-range", nargs=2, type=int, metavar=('ZMIN', 'ZMAX'), help="Start collapsed over the specified range of channels (implies --collapsed)")

@@ -1037,7 +1037,7 @@ class ImageViewer(QWidget):
             self.imv.getImageItem().setImage(render_data, autoLevels=False, levels=(render_vmin, render_vmax))
         else:
             self.imv.setImage(render_data, autoRange=is_new, autoLevels=False, levels=(render_vmin, render_vmax))
-            if set_index is not None:
+            if set_index is not None and hasattr(self.imv, 'tVals'):
                 self.imv.setCurrentIndex(set_index)
 
         if is_new:
