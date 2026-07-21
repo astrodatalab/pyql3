@@ -22,6 +22,7 @@ a = Analysis(
     excludes=[],
     noarchive=False,
     optimize=0,
+    module_collection_mode={'cmcrameri': 'py'},
 )
 pyz = PYZ(a.pure)
 
