@@ -128,6 +128,14 @@ class PlotCatalogDialog(BaseToolDialog):
         self.combo_name = QComboBox()
         self.combo_name.currentIndexChanged.connect(self.update_plot)
         style_layout.addWidget(self.combo_name)
+
+        style_layout.addWidget(QLabel("  Max:"))
+        self.spin_max_labels = QSpinBox()
+        self.spin_max_labels.setRange(10, 5000)
+        self.spin_max_labels.setValue(500)
+        self.spin_max_labels.setToolTip("Maximum number of visible text labels rendered simultaneously in active viewport")
+        self.spin_max_labels.valueChanged.connect(self.update_visible_text_labels)
+        style_layout.addWidget(self.spin_max_labels)
         
         style_layout.addStretch()
         style_group.setLayout(style_layout)
@@ -373,6 +381,9 @@ class PlotCatalogDialog(BaseToolDialog):
             max_x = float('inf')
             max_y = float('inf')
         
+        # Save list of all valid label coordinates for viewport culling: (center_x, center_y, name_str)
+        self.all_label_points = []
+
         for row in self.catalog_data:
             val_x = row[x_col]
             val_y = row[y_col]
@@ -380,18 +391,15 @@ class PlotCatalogDialog(BaseToolDialog):
             if coord_idx == 2:
                 try:
                     try:
-                        # Try parsing as float degrees
                         f_x = float(val_x)
                         f_y = float(val_y)
                         crd = SkyCoord(f_x, f_y, unit=(u.deg, u.deg))
                     except ValueError:
-                        # Parse as HMS/DMS string
                         crd = SkyCoord(val_x, val_y, unit=(u.hourangle, u.deg))
-                    val_x = crd.ra.deg
-                    val_y = crd.dec.deg
+                    val_x = float(crd.ra.deg) if hasattr(crd, 'ra') else float(crd[0])
+                    val_y = float(crd.dec.deg) if hasattr(crd, 'dec') else float(crd[1])
                     orig_x, orig_y = val_x, val_y
                 except Exception as e:
-                    print(f"RA/DEC Parse Error: {e}")
                     continue
             else:
                 try:
@@ -402,13 +410,11 @@ class PlotCatalogDialog(BaseToolDialog):
                 orig_x, orig_y = val_x, val_y
             
             if coord_idx == 0:
-                # Display Pixels: Map exactly to Screen
                 disp_x, disp_y = val_x, val_y
             else:
                 if coord_idx == 2:
                     if getattr(self.image_viewer, 'wcs', None) is None:
                         continue
-                    # Transform RA/DEC to FITS pixels
                     try:
                         if self.image_viewer.wcs.naxis == 2:
                             orig_x, orig_y = self.image_viewer.wcs.world_to_pixel_values(val_x, val_y)
@@ -428,11 +434,10 @@ class PlotCatalogDialog(BaseToolDialog):
                             ax1_idx = int(getattr(self.image_viewer, 'current_x_axis', 'AXIS 1').split()[-1]) - 1
                             ax2_idx = int(getattr(self.image_viewer, 'current_y_axis', 'AXIS 2').split()[-1]) - 1
                             
-                            orig_x = pixel_coords[ax1_idx]
-                            orig_y = pixel_coords[ax2_idx]
+                            orig_x = float(pixel_coords[ax1_idx])
+                            orig_y = float(pixel_coords[ax2_idx])
                             
-                    except Exception as e:
-                        print(f"WCS Transform Error: {e}")
+                    except Exception:
                         continue
                         
                 disp_x, disp_y = map_to_display(self.image_viewer, orig_x, orig_y)
@@ -441,26 +446,65 @@ class PlotCatalogDialog(BaseToolDialog):
                 pts_x.append(disp_x + 0.5)
                 pts_y.append(disp_y + 0.5)
                 
-                if self.chk_show_name.isChecked() and name_col in self.catalog_data.colnames:
+                if name_col in self.catalog_data.colnames:
                     name_str = str(row[name_col])
-                    txt = pg.TextItem(name_str, color=self.marker_color.name(), anchor=(0, 1))
-                    txt.setZValue(12)
-                    txt.setPos(disp_x + 0.5, disp_y + 0.5)
-                    self.image_viewer.imv.getView().addItem(txt)
-                    self.text_items.append(txt)
+                    self.all_label_points.append((disp_x + 0.5, disp_y + 0.5, name_str))
             else:
                 oob_count += 1
                 
         symbol = self._get_pg_symbol()
         size = self.spin_size.value()
         
-        # Transparent brush, solid pen (outline)
         pen = pg.mkPen(color=self.marker_color, width=2)
         brush = pg.mkBrush(color=(0, 0, 0, 0))
         
         self.scatter_item.setData(x=pts_x, y=pts_y, symbol=symbol, size=size, pen=pen, brush=brush)
         self.lbl_status.setText(f"Loaded: {len(self.catalog_data)} sources | {len(pts_x)} plotted | {oob_count} out of bounds")
-        self.on_table_selection() # Update highlight
+
+        # Connect view range changes for viewport culling if not already connected
+        view = self.image_viewer.imv.getView()
+        if not getattr(self, '_range_connected', False):
+            view.sigRangeChanged.connect(self.update_visible_text_labels)
+            self._range_connected = True
+
+        self.update_visible_text_labels()
+        self.on_table_selection()
+
+    def update_visible_text_labels(self):
+        """Viewport culling: Renders text labels ONLY for catalog sources within current screen viewport (max 150 labels)."""
+        if self.image_viewer is None or not hasattr(self.image_viewer, 'imv'):
+            return
+
+        view = self.image_viewer.imv.getView()
+        
+        # Remove old visible text items
+        for txt in self.text_items:
+            try:
+                view.removeItem(txt)
+            except Exception:
+                pass
+        self.text_items.clear()
+
+        if not hasattr(self, 'chk_show_name') or not self.chk_show_name.isChecked():
+            return
+
+        if not getattr(self, 'all_label_points', None):
+            return
+
+        rect = view.viewRect()
+        max_labels = self.spin_max_labels.value() if hasattr(self, 'spin_max_labels') else 500
+        count = 0
+
+        for px, py, name_str in self.all_label_points:
+            if rect.contains(px, py):
+                txt = pg.TextItem(name_str, color=self.marker_color.name(), anchor=(0, 1))
+                txt.setZValue(12)
+                txt.setPos(px, py)
+                view.addItem(txt)
+                self.text_items.append(txt)
+                count += 1
+                if count >= max_labels:
+                    break
         
     def on_table_selection(self):
         if self.highlight_item is None or self.catalog_data is None:
@@ -535,11 +579,11 @@ class PlotCatalogDialog(BaseToolDialog):
                     
             disp_x, disp_y = map_to_display(self.image_viewer, orig_x, orig_y)
         
-        # Draw white highlight marker
-        pen = pg.mkPen(color=QColor(255, 255, 255), width=4)
+        # Draw red highlight marker centered on pixel (disp_x + 0.5, disp_y + 0.5)
+        pen = pg.mkPen(color=QColor(255, 0, 0), width=3)
         brush = pg.mkBrush(color=(0, 0, 0, 0))
         size = self.spin_size.value() + 10
-        self.highlight_item.setData(x=[disp_x], y=[disp_y], symbol='o', size=size, pen=pen, brush=brush)
+        self.highlight_item.setData(x=[disp_x + 0.5], y=[disp_y + 0.5], symbol='o', size=size, pen=pen, brush=brush)
         self.highlight_item.setVisible(True)
         
         # Center view if within valid data range
@@ -555,8 +599,10 @@ class PlotCatalogDialog(BaseToolDialog):
                 width = view_rect.width()
                 height = view_rect.height()
                 # Use setRange with padding=0 to preserve current zoom exactly
-                view.setRange(xRange=(disp_x - width/2, disp_x + width/2), 
-                              yRange=(disp_y - height/2, disp_y + height/2), 
+                center_x = disp_x + 0.5
+                center_y = disp_y + 0.5
+                view.setRange(xRange=(center_x - width/2, center_x + width/2), 
+                              yRange=(center_y - height/2, center_y + height/2), 
                               padding=0)
         
     def show_context_menu(self, pos):
@@ -593,6 +639,13 @@ class PlotCatalogDialog(BaseToolDialog):
             self.update_plot()
 
     def closeEvent(self, event):
+        if getattr(self, '_range_connected', False) and self.image_viewer is not None:
+            try:
+                self.image_viewer.imv.getView().sigRangeChanged.disconnect(self.update_visible_text_labels)
+            except Exception:
+                pass
+            self._range_connected = False
+
         if self.scatter_item is not None and self.image_viewer is not None:
             try:
                 self.image_viewer.imv.getView().removeItem(self.scatter_item)

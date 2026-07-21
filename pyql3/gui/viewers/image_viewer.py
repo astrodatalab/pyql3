@@ -680,6 +680,7 @@ class ImageViewer(QWidget):
         """Sets the FITS data into the viewer."""
         self.raw_data = data
         self.header = header
+        self._is_new_data = True
         if data is None:
             self.imv.clear()
             self.wcs = None
@@ -973,10 +974,13 @@ class ImageViewer(QWidget):
         self.pa_text_e.setPos(txt_x_e, txt_y_e)
         self.imv.getView().addItem(self.pa_text_e)
         
-    def update_image_display(self, set_index=None, bypass_imv=False, use_manual_levels=False):
+    def update_image_display(self, set_index=None, bypass_imv=False, use_manual_levels=False, reset_view=False):
         if self.display_data is None:
             return
-            
+
+        is_new = getattr(self, '_is_new_data', False) or reset_view
+        self._is_new_data = False
+
         try:
             if use_manual_levels:
                 vmin = float(self.txt_min.text())
@@ -1026,12 +1030,21 @@ class ImageViewer(QWidget):
             render_data[valid_mask] = np.searchsorted(sorted_flat, self.display_data[valid_mask]) / float(len(sorted_flat))
             render_vmin, render_vmax = 0.0, 1.0
             
+        view = self.imv.getView()
+        view_rect = None if is_new else (view.viewRect() if self.imv.image is not None else None)
+
         if bypass_imv:
             self.imv.getImageItem().setImage(render_data, autoLevels=False, levels=(render_vmin, render_vmax))
         else:
-            self.imv.setImage(render_data, autoLevels=False, levels=(render_vmin, render_vmax))
+            self.imv.setImage(render_data, autoRange=is_new, autoLevels=False, levels=(render_vmin, render_vmax))
             if set_index is not None:
                 self.imv.setCurrentIndex(set_index)
+
+        if is_new:
+            view.autoRange()
+        elif view_rect is not None and not view_rect.isEmpty():
+            view.setRange(rect=view_rect, padding=0)
+
         self.update_slice_info()
         if getattr(self, 'show_pa', False):
             self.toggle_position_angle(True)

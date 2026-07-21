@@ -1,7 +1,7 @@
 import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QMenuBar, QMenu, QFileDialog, 
-                               QMessageBox, QLabel)
+                               QMessageBox, QLabel, QApplication)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
@@ -200,11 +200,83 @@ class MainWindow(QMainWindow):
         
         # Removed Math Menu as Arithmetic was moved to File Menu
         
+        # Window Menu
+        self.window_menu = menubar.addMenu("Window")
+        self.window_menu.aboutToShow.connect(self.update_window_menu)
+        self.update_window_menu()
+
         # Help Menu
         help_menu = menubar.addMenu("Help")
         about_action = help_menu.addAction("About QuickLook 3")
         about_action.setMenuRole(QAction.MenuRole.AboutRole)
         about_action.triggered.connect(self.show_about)
+
+    def get_open_tool_windows(self):
+        """Returns a list of all visible top-level and child tool windows / dialogs excluding MainWindow itself."""
+        windows = []
+        app = QApplication.instance()
+        if app:
+            for w in app.topLevelWidgets():
+                if isinstance(w, QWidget) and w.isWindow() and w.isVisible() and w != self:
+                    if not isinstance(w, QMenu) and not w.inherits("QMenu") and w.windowTitle():
+                        if w not in windows:
+                            windows.append(w)
+        for w in self.findChildren(QWidget):
+            if w.isWindow() and w.isVisible() and w != self and w.windowTitle():
+                if not isinstance(w, QMenu) and not w.inherits("QMenu"):
+                    if w not in windows:
+                        windows.append(w)
+        return windows
+
+    def bring_window_to_front(self, window):
+        """Brings the specified window or dialog to front and focuses it."""
+        if window:
+            if window.isMinimized():
+                window.showNormal()
+            window.show()
+            window.raise_()
+            window.activateWindow()
+
+    def bring_all_to_front(self):
+        """Brings MainWindow and all open tool windows / dialogs to front."""
+        self.bring_window_to_front(self)
+        for w in self.get_open_tool_windows():
+            self.bring_window_to_front(w)
+
+    def update_window_menu(self):
+        """Populates the Window menu dynamically with all currently open windows and dialogs."""
+        if not hasattr(self, 'window_menu'):
+            return
+
+        self.window_menu.clear()
+
+        bring_all_act = self.window_menu.addAction("Bring All to Front")
+        bring_all_act.triggered.connect(self.bring_all_to_front)
+
+        self.window_menu.addSeparator()
+
+        # Main window action
+        main_title = self.windowTitle() or "QuickLook 3"
+        main_act = self.window_menu.addAction(main_title)
+        main_act.setCheckable(True)
+        if self.isActiveWindow():
+            main_act.setChecked(True)
+        main_act.triggered.connect(lambda: self.bring_window_to_front(self))
+
+        open_wins = self.get_open_tool_windows()
+        if open_wins:
+            self.window_menu.addSeparator()
+            title_counts = {}
+            for w in open_wins:
+                base_title = w.windowTitle() or type(w).__name__
+                title_counts[base_title] = title_counts.get(base_title, 0) + 1
+                display_title = base_title if title_counts[base_title] == 1 else f"{base_title} #{title_counts[base_title]}"
+
+                act = self.window_menu.addAction(display_title)
+                act.setCheckable(True)
+                if w.isActiveWindow():
+                    act.setChecked(True)
+                act.triggered.connect(lambda checked=False, target=w: self.bring_window_to_front(target))
 
     def show_about(self):
         QMessageBox.about(
