@@ -12,16 +12,26 @@ class SurfacePlotDialog(BaseToolDialog):
         main_layout = QVBoxLayout()
         self.layout.addLayout(main_layout)
         
-        self.gl_widget = gl.GLViewWidget()
-        main_layout.addWidget(self.gl_widget)
-        
+        try:
+            self.gl_widget = gl.GLViewWidget()
+            main_layout.addWidget(self.gl_widget)
+            self.gl_available = True
+        except Exception as e:
+            self.gl_available = False
+            lbl = QLabel(f"3D Surface View requires OpenGL support.\n\nOpenGL initialization message: {e}")
+            lbl.setWordWrap(True)
+            main_layout.addWidget(lbl)
+            
         self.surface_item = None
-        self.update_plot()
+        if self.gl_available:
+            self.update_plot()
         
         if self.image_viewer and self.image_viewer.imv:
             self.image_viewer.imv.sigTimeChanged.connect(self.update_plot)
         
     def update_plot(self):
+        if not getattr(self, 'gl_available', True):
+            return
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return
             

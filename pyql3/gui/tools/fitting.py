@@ -44,9 +44,15 @@ class DisplayPeakFitDialog(QDialog):
         from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout
         layout = QHBoxLayout(self)
         
-        # Raw Data Surface
-        self.gl_raw = gl.GLViewWidget()
-        layout.addWidget(self.gl_raw)
+        try:
+            # Raw Data Surface
+            self.gl_raw = gl.GLViewWidget()
+            layout.addWidget(self.gl_raw)
+        except Exception as e:
+            lbl = QLabel(f"3D Peak Fit View requires OpenGL support.\n\nOpenGL initialization message: {e}")
+            lbl.setWordWrap(True)
+            layout.addWidget(lbl)
+            return
         
         raw_label = QLabel("Raw Data", self.gl_raw)
         raw_label.setStyleSheet("color: white; font-weight: bold; font-size: 16px; background: transparent;")
@@ -207,6 +213,9 @@ class GaussianFitDialog(BaseToolDialog):
         
         self.update_fit()
         
+    def update_stats(self):
+        self.update_fit()
+
     def update_fit(self):
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return
@@ -227,10 +236,10 @@ class GaussianFitDialog(BaseToolDialog):
         self.value_labels["Min Pixel Value"].setText(f"{data.min():.4f}")
         self.value_labels["Max Pixel Value"].setText(f"{data.max():.4f}")
             
-        ny, nx = data.shape
+        nx, ny = data.shape[0], data.shape[1]
         x = np.arange(0, nx)
         y = np.arange(0, ny)
-        x, y = np.meshgrid(x, y)
+        x, y = np.meshgrid(x, y, indexing='ij')
         
         amplitude = data.max() - data.min()
         offset = data.min()

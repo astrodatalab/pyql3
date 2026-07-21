@@ -78,6 +78,9 @@ class PhotometryDialog(BaseToolDialog):
             self.image_viewer.imv.getView().removeItem(self.roi_outer)
         super().closeEvent(event)
         
+    def update_stats(self):
+        self.update_photometry()
+
     def update_photometry(self):
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return

@@ -393,13 +393,10 @@ class DepthPlotDialog(BaseToolDialog):
                 # elif z_axis == 'y': x_idx=2, y_idx=0, z_idx=1
                 # else: x_idx=0, y_idx=1, z_idx=2
                 
-                z_axis_str = getattr(self.image_viewer, 'z_axis', 'z')
-                if z_axis_str == 'x':
-                    x_idx, y_idx = 2, 1
-                elif z_axis_str == 'y':
-                    x_idx, y_idx = 2, 0
-                else:
-                    x_idx, y_idx = 0, 1
+                current_x_axis = getattr(self.image_viewer, 'current_x_axis', 'AXIS 3')
+                current_y_axis = getattr(self.image_viewer, 'current_y_axis', 'AXIS 2')
+                x_idx = int(current_x_axis.split()[-1]) - 1
+                y_idx = int(current_y_axis.split()[-1]) - 1
                     
                 fixed_coords = np.zeros(wcs.naxis)
                 if wcs.naxis > max(x_idx, y_idx):

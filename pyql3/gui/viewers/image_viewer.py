@@ -780,11 +780,9 @@ class ImageViewer(QWidget):
             self.wcs_z_idx = None
             self.imv.ui.roiPlot.hideAxis('top')
         
-        # pyqtgraph needs (z, x, y)
         self.transposed_data = self.raw_data.transpose(py_z, py_x, py_y)
-        self.display_data = self.transposed_data
-        if self.display_data.ndim == 2:
-            self.apply_transforms()
+        self.display_data = self.transposed_data.copy()
+        self.apply_transforms()
         
         zs = self.transposed_data.shape[0]
         self.slider_slice.setMaximum(zs - 1)
@@ -801,12 +799,9 @@ class ImageViewer(QWidget):
         if self.transposed_data is None:
             return
             
-        if self.transposed_data.ndim == 2:
-            self.display_data = self.transposed_data.copy()
-            self.apply_transforms()
-            self.update_image_display(bypass_imv=True)
-        else:
-            self.z_mode_changed()
+        self.display_data = self.transposed_data.copy()
+        self.apply_transforms()
+        self.update_image_display(bypass_imv=(self.display_data.ndim == 2))
     @property
     def data_multiplier(self):
         if self.disp_as_dn:
@@ -839,103 +834,142 @@ class ImageViewer(QWidget):
                 self.display_data = np.rot90(self.display_data, k=k)
                 
     def toggle_position_angle(self, checked):
-        if not checked:
-            if getattr(self, 'pa_arrow_n', None):
+        self.show_pa = bool(checked)
+
+        # Always remove any existing compass items first to prevent accumulating multiple arrows
+        for item_attr in ('pa_arrow_n', 'pa_text_n', 'pa_arrow_e', 'pa_text_e'):
+            item = getattr(self, item_attr, None)
+            if item is not None:
                 try:
-                    self.imv.getView().removeItem(self.pa_arrow_n)
-                    self.imv.getView().removeItem(self.pa_text_n)
-                    self.imv.getView().removeItem(self.pa_arrow_e)
-                    self.imv.getView().removeItem(self.pa_text_e)
+                    self.imv.getView().removeItem(item)
                 except Exception:
                     pass
-                self.pa_arrow_n = None
-                self.pa_text_n = None
-                self.pa_arrow_e = None
-                self.pa_text_e = None
+                setattr(self, item_attr, None)
+
+        if not self.show_pa or self.display_data is None or self.transposed_data is None:
             return
-            
-        if self.raw_data is None or not self.header:
-            return
-            
-        header = self.header
-        
-        rotposn = header.get('ROTPOSN', 0.0)
-        instangl = header.get('INSTANGL', 0.0)
-        instr = header.get('INSTR', '').strip()
-        tel = header.get('TELESCOP', '').strip()
-        
-        if tel == 'Keck I':
-            iangle = 42.5
-        else:
-            iangle = 47.5
-            
-        if instr.lower() == 'spec':
-            north = rotposn - instangl
-        elif instr.lower() == 'imag':
-            north = rotposn - instangl + iangle
-        else:
-            north = rotposn - instangl
-            
-        east = north - 90
-        
-        # In pyqtgraph, angle 0 is pointing left.
-        # But we want to just draw an arrow indicating North. 
-        # Standard astronomical images have North up, East left.
-        if getattr(self, 'pa_arrow_n', None):
-            try:
-                self.imv.getView().removeItem(self.pa_arrow_n)
-                self.imv.getView().removeItem(self.pa_text_n)
-                self.imv.getView().removeItem(self.pa_arrow_e)
-                self.imv.getView().removeItem(self.pa_text_e)
-            except Exception:
-                pass
-                
-        # To draw a "compass", we can just draw one arrow pointing North.
-        shape = self.display_data.shape
-        cx, cy = shape[-2]/2, shape[-1]/2
-        
-        # Calculate base angles (North is UP: PA=0. East is LEFT: PA=90)
-        vis_n = 90 - north
-        vis_e = 90 - (north + 90)
-        
-        # Adjust for rotation (rot_angle is CCW in pyqtgraph coordinates, so it subtracts from visual angle)
-        vis_n -= self.rot_angle
-        vis_e -= self.rot_angle
-        
-        # Adjust for X flip
-        if self.flip:
-            vis_n = 180 - vis_n
-            vis_e = 180 - vis_e
-            
-        # Set compass size relative to image size so it scales naturally and connects perfectly
-        L = max(shape[-2], shape[-1]) * 0.15
-        headLen = L * 0.3
-        tailWidth = max(max(shape[-2], shape[-1]) * 0.01, 0.5)
+
+        # Display array shape (ny, nx) or (nz, ny, nx) in current display orientation
+        disp_shape = self.display_data.shape
+        nx = disp_shape[-1]
+        ny = disp_shape[-2]
+        cx = (nx - 1) / 2.0
+        cy = (ny - 1) / 2.0
+
         import math
-        
-        # Draw North
-        rad_n = math.radians(vis_n)
-        tip_x_n = cx - L * math.cos(rad_n)
+
+        # 1. Derive base North and East angles from unrotated WCS (or header)
+        has_wcs_pa = False
+        if self.wcs is not None and getattr(self.wcs, 'naxis', 0) >= 2:
+            try:
+                wcs_ctypes = [str(c).upper() for c in self.wcs.wcs.ctype]
+                ra_axis = -1
+                dec_axis = -1
+                for idx, ctype in enumerate(wcs_ctypes):
+                    if 'RA' in ctype:
+                        ra_axis = idx
+                    elif 'DEC' in ctype:
+                        dec_axis = idx
+
+                if ra_axis >= 0 and dec_axis >= 0:
+                    x_axis_str = getattr(self, 'current_x_axis', 'AXIS 3')
+                    y_axis_str = getattr(self, 'current_y_axis', 'AXIS 2')
+                    x_axis_idx = int(x_axis_str.split()[-1]) - 1
+                    y_axis_idx = int(y_axis_str.split()[-1]) - 1
+
+                    # Un-rotated transposed data shape
+                    trans_shape = self.transposed_data.shape
+                    raw_cx = (trans_shape[-1] - 1) / 2.0
+                    raw_cy = (trans_shape[-2] - 1) / 2.0
+
+                    center_pix = [0.0] * self.wcs.naxis
+                    center_pix[x_axis_idx] = raw_cx
+                    center_pix[y_axis_idx] = raw_cy
+
+                    world0 = list(self.wcs.pixel_to_world_values(*center_pix))
+                    dec0 = world0[dec_axis]
+                    ra0 = world0[ra_axis]
+
+                    delta_deg = 0.001
+                    world_n = list(world0)
+                    world_n[dec_axis] = dec0 + delta_deg
+                    pix_n = self.wcs.world_to_pixel_values(*world_n)
+                    dx_n = pix_n[x_axis_idx] - raw_cx
+                    dy_n = pix_n[y_axis_idx] - raw_cy
+
+                    world_e = list(world0)
+                    cos_dec = math.cos(math.radians(dec0)) if abs(dec0) < 89.5 else 1.0
+                    world_e[ra_axis] = ra0 + (delta_deg / cos_dec)
+                    pix_e = self.wcs.world_to_pixel_values(*world_e)
+                    dx_e = pix_e[x_axis_idx] - raw_cx
+                    dy_e = pix_e[y_axis_idx] - raw_cy
+
+                    if math.hypot(dx_n, dy_n) > 1e-6 and math.hypot(dx_e, dy_e) > 1e-6:
+                        theta_n_base = math.degrees(math.atan2(dy_n, dx_n))
+                        theta_e_base = math.degrees(math.atan2(dy_e, dx_e))
+                        has_wcs_pa = True
+            except Exception:
+                has_wcs_pa = False
+
+        if not has_wcs_pa:
+            header = self.header or {}
+            rotposn = float(header.get('ROTPOSN', 0.0))
+            instangl = float(header.get('INSTANGL', 0.0))
+            instr = str(header.get('INSTR', '')).strip().lower()
+            tel = str(header.get('TELESCOP', '')).strip()
+
+            iangle = 42.5 if tel == 'Keck I' else 47.5
+            if instr == 'spec':
+                north_pa = rotposn - instangl
+            elif instr == 'imag':
+                north_pa = rotposn - instangl + iangle
+            else:
+                north_pa = rotposn - instangl
+
+            # Unrotated: North is UP (theta_n_base = 90 deg), East is LEFT (theta_e_base = 180 deg)
+            theta_n_base = 90.0 + north_pa
+            theta_e_base = theta_n_base + 90.0
+
+        # 2. Apply GUI view rotation (rot_angle in deg CCW) and horizontal flip
+        theta_n_vis = (theta_n_base + self.rot_angle) % 360.0
+        theta_e_vis = (theta_e_base + self.rot_angle) % 360.0
+
+        if self.flip:
+            theta_n_vis = (180.0 - theta_n_vis) % 360.0
+            theta_e_vis = (180.0 - theta_e_vis) % 360.0
+
+        # Compass size relative to image dimensions
+        L = max(nx, ny) * 0.18
+        headLen = L * 0.35
+        tailWidth = max(max(nx, ny) * 0.012, 1.0)
+
+        # --- Draw North arrow ---
+        rad_n = math.radians(theta_n_vis)
+        tip_x_n = cx + L * math.cos(rad_n)
         tip_y_n = cy + L * math.sin(rad_n)
-        self.pa_arrow_n = pg.ArrowItem(pos=(tip_x_n, tip_y_n), angle=vis_n, headLen=headLen, tailLen=L, tailWidth=tailWidth, pen='r', brush='r', pxMode=False)
+        angle_n = (theta_n_vis + 180.0) % 360.0
+
+        self.pa_arrow_n = pg.ArrowItem(pos=(tip_x_n, tip_y_n), angle=angle_n, headLen=headLen, tailLen=L, tailWidth=tailWidth, pen='r', brush='r', pxMode=False)
         self.imv.getView().addItem(self.pa_arrow_n)
-        
+
+        txt_x_n = cx + (L + headLen * 1.6) * math.cos(rad_n)
+        txt_y_n = cy + (L + headLen * 1.6) * math.sin(rad_n)
         self.pa_text_n = pg.TextItem('N', color='r', anchor=(0.5, 0.5))
-        txt_x_n = cx - (L + headLen * 1.5) * math.cos(rad_n)
-        txt_y_n = cy + (L + headLen * 1.5) * math.sin(rad_n)
         self.pa_text_n.setPos(txt_x_n, txt_y_n)
         self.imv.getView().addItem(self.pa_text_n)
-        
-        # Draw East
-        rad_e = math.radians(vis_e)
-        tip_x_e = cx - L * math.cos(rad_e)
+
+        # --- Draw East arrow ---
+        rad_e = math.radians(theta_e_vis)
+        tip_x_e = cx + L * math.cos(rad_e)
         tip_y_e = cy + L * math.sin(rad_e)
-        self.pa_arrow_e = pg.ArrowItem(pos=(tip_x_e, tip_y_e), angle=vis_e, headLen=headLen, tailLen=L, tailWidth=tailWidth, pen='r', brush='r', pxMode=False)
+        angle_e = (theta_e_vis + 180.0) % 360.0
+
+        self.pa_arrow_e = pg.ArrowItem(pos=(tip_x_e, tip_y_e), angle=angle_e, headLen=headLen, tailLen=L, tailWidth=tailWidth, pen='r', brush='r', pxMode=False)
         self.imv.getView().addItem(self.pa_arrow_e)
-        
+
+        txt_x_e = cx + (L + headLen * 1.6) * math.cos(rad_e)
+        txt_y_e = cy + (L + headLen * 1.6) * math.sin(rad_e)
         self.pa_text_e = pg.TextItem('E', color='r', anchor=(0.5, 0.5))
-        txt_x_e = cx - (L + headLen * 1.5) * math.cos(rad_e)
-        txt_y_e = cy + (L + headLen * 1.5) * math.sin(rad_e)
         self.pa_text_e.setPos(txt_x_e, txt_y_e)
         self.imv.getView().addItem(self.pa_text_e)
         
@@ -950,8 +984,9 @@ class ImageViewer(QWidget):
             else:
                 valid_data = self.display_data[~np.isnan(self.display_data)]
                 if valid_data.size > 0:
-                    vmin = np.percentile(valid_data, 1)
-                    vmax = np.percentile(valid_data, 99)
+                    sample = valid_data[::4] if valid_data.size > 10000 else valid_data
+                    vmin = np.percentile(sample, 1)
+                    vmax = np.percentile(sample, 99)
                 else:
                     vmin, vmax = 0, 1
                 if vmin == vmax:
@@ -998,6 +1033,8 @@ class ImageViewer(QWidget):
             if set_index is not None:
                 self.imv.setCurrentIndex(set_index)
         self.update_slice_info()
+        if getattr(self, 'show_pa', False):
+            self.toggle_position_angle(True)
 
     def mouse_moved(self, evt):
         if self.display_data is None:

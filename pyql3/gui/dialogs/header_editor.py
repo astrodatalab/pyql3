@@ -102,8 +102,25 @@ class HeaderEditorDialog(QDialog):
                         
                     self.fits_reader.update_header_card(keyword, value, comment)
             
-            self.fits_reader.save()
-            QMessageBox.information(self, "Success", "FITS Header saved successfully.")
+            if not self.fits_reader.filepath:
+                # In-memory data: prompt user via main window save_file_as if available
+                if self.parent() and hasattr(self.parent(), 'save_file_as'):
+                    self.parent().save_file_as()
+                else:
+                    QMessageBox.information(self, "Header Updated", "Header cards updated in memory.")
+            else:
+                reply = QMessageBox.question(
+                    self, 
+                    "Confirm Overwrite", 
+                    f"Save header changes directly to file?\n\n{self.fits_reader.filepath}",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.fits_reader.save()
+                    QMessageBox.information(self, "Success", "FITS Header saved successfully.")
+                else:
+                    QMessageBox.information(self, "Header Updated", "Header cards updated in memory (file not overwritten).")
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save header: {str(e)}")

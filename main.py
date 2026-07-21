@@ -2,8 +2,10 @@ import sys
 import argparse
 import os
 import glob
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QApplication, QSplashScreen
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import Qt
+from pyql3 import get_resource_path
 from pyql3.gui.main_window import MainWindow
 
 def main():
@@ -19,9 +21,18 @@ def main():
     app.setApplicationDisplayName("QuickLook3")
     
     # Set the dock/application icon (especially important for macOS)
-    icon_path = os.path.join(os.path.dirname(__file__), "pyql3", "icon.png")
+    icon_path = get_resource_path("pyql3/icon.png")
     app.setWindowIcon(QIcon(icon_path))
     
+    # Show splash screen immediately
+    splash = None
+    if os.path.exists(icon_path):
+        pixmap = QPixmap(icon_path).scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        splash = QSplashScreen(pixmap, Qt.WindowType.WindowStaysOnTopHint)
+        splash.showMessage("Loading QuickLook 3...", Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, Qt.GlobalColor.white)
+        splash.show()
+        app.processEvents()
+        
     window = MainWindow()
     window.show()
     
@@ -43,6 +54,9 @@ def main():
                     window.image_viewer.txt_zmax.setText(str(args.collapse_range[1]))
                 # This will trigger z_mode_changed which applies the range and updates the view
                 window.image_viewer.radio_range.setChecked(True)
+        
+    if splash:
+        splash.finish(window)
         
     sys.exit(app.exec())
 

@@ -157,7 +157,8 @@ class ArithmeticDialog(QDialog):
             if not path:
                 raise ValueError("No file selected.")
             data, header = fits.getdata(path, header=True)
-            return data.astype(float), header, path.split('/')[-1]
+            import os
+            return data.astype(float), header, os.path.basename(path)
         elif bg_id == 2: # Number
             return float(spin_box.value()), None, str(spin_box.value())
             

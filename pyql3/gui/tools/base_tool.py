@@ -26,11 +26,17 @@ class BaseToolDialog(QDialog):
         
     def remove_roi_from_viewer(self):
         if self.roi is not None and self.image_viewer is not None:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    self.roi.sigRegionChanged.disconnect(self.on_roi_changed)
+                except Exception:
+                    pass
             try:
-                self.roi.sigRegionChanged.disconnect(self.on_roi_changed)
-            except RuntimeError:
+                self.image_viewer.imv.getView().removeItem(self.roi)
+            except Exception:
                 pass
-            self.image_viewer.imv.getView().removeItem(self.roi)
             self.roi = None
             
     def closeEvent(self, event):
@@ -57,7 +63,8 @@ class BaseToolDialog(QDialog):
     def enable_draw_mode(self):
         if self.image_viewer is None or self.roi is None:
             return
-        self._old_drag = self.image_viewer.imv.getView().mouseDragEvent
+        if not hasattr(self, '_old_drag'):
+            self._old_drag = self.image_viewer.imv.getView().mouseDragEvent
         self.image_viewer.imv.getView().mouseDragEvent = self.custom_mouse_drag
         # Disable panning temporarily
         self.image_viewer.imv.getView().setMouseEnabled(x=False, y=False)
@@ -67,6 +74,8 @@ class BaseToolDialog(QDialog):
             self.image_viewer.imv.getView().mouseDragEvent = self._old_drag
             self.image_viewer.imv.getView().setMouseEnabled(x=True, y=True)
             del self._old_drag
+        if hasattr(self, '_drag_start_pos'):
+            del self._drag_start_pos
         if hasattr(self, 'btn_draw') and self.btn_draw.isChecked():
             self.btn_draw.setChecked(False)
             
@@ -85,29 +94,29 @@ class BaseToolDialog(QDialog):
 
         if ev.isStart():
             pos = self.image_viewer.imv.getImageItem().mapFromScene(ev.buttonDownScenePos())
+            self._drag_start_pos = (pos.x(), pos.y())
             self.roi.blockSignals(True)
             self.roi.setPos(pos)
             self.roi.setSize([1e-5, 1e-5]) # very small
             self.roi.blockSignals(False)
             ev.accept()
         elif ev.isFinish():
+            if hasattr(self, '_drag_start_pos'):
+                del self._drag_start_pos
             self.disable_draw_mode()
             self.on_roi_changed()
             ev.accept()
         else:
             pos = self.image_viewer.imv.getImageItem().mapFromScene(ev.scenePos())
-            start = self.roi.pos()
+            start = getattr(self, '_drag_start_pos', (self.roi.pos().x(), self.roi.pos().y()))
             
-            # Handle drawing in any direction by keeping width/height positive 
-            # and moving the pos if needed, or Pyqtgraph ROIs handle negative sizes sometimes.
-            # Pyqtgraph RectROI prefers positive sizes.
-            x0, y0 = start.x(), start.y()
+            x0, y0 = start[0], start[1]
             x1, y1 = pos.x(), pos.y()
             
             new_x = min(x0, x1)
             new_y = min(y0, y1)
-            new_w = abs(x1 - x0)
-            new_h = abs(y1 - y0)
+            new_w = max(1e-5, abs(x1 - x0))
+            new_h = max(1e-5, abs(y1 - y0))
             
             self.roi.blockSignals(True)
             self.roi.setPos([new_x, new_y])

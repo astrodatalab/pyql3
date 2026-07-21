@@ -45,7 +45,7 @@ jobs:
           uv add --dev pyinstaller pillow
 
       - name: Build with PyInstaller
-        run: uv run pyinstaller --name "QuickLook3" --windowed --icon "pyql3/icon.png" --collect-all photutils --noconfirm main.py
+        run: uv run pyinstaller --name "QuickLook3" --windowed --icon "pyql3/icon.png" --add-data "pyql3/icon.png:pyql3" --collect-all photutils --noconfirm main.py
 
       - name: Package Linux
         if: runner.os == 'Linux'

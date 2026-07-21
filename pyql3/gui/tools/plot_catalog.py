@@ -165,7 +165,8 @@ class PlotCatalogDialog(BaseToolDialog):
                 warnings.simplefilter('ignore')
                 self.catalog_data = ascii.read(filepath, guess=True)
                 
-            self.lbl_file.setText(filepath.split('/')[-1])
+            import os
+            self.lbl_file.setText(os.path.basename(filepath))
             self.populate_table()
             self.auto_assign_columns()
             self.update_plot()

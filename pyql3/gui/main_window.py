@@ -2,16 +2,16 @@ import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QMenuBar, QMenu, QFileDialog, 
                                QMessageBox, QLabel)
-from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
-from pyql3.gui.tools.strehl import StrehlDialog
 from pyql3.services.poller import DirectoryPoller
 from pyql3.gui.dialogs.polling import PollingDialog
 from pyql3.services.config import ConfigManager
 from PySide6.QtCore import QTimer
 import pyql3
+from pyql3 import get_resource_path
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -19,7 +19,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("QuickLook 3")
         
         # Set application icon
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
+        icon_path = get_resource_path("pyql3/icon.png")
         self.setWindowIcon(QIcon(icon_path))
         
         self.resize(600, 850)
@@ -57,11 +57,11 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("File")
         
         open_action = file_menu.addAction("Open...")
-        open_action.setShortcut("Ctrl+O")
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_file)
         
         save_action = file_menu.addAction("Save FITS As...")
-        save_action.setShortcut("Ctrl+S")
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_file_as)
         
         header_action = file_menu.addAction("Edit FITS Header")
@@ -76,7 +76,8 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         
         exit_action = file_menu.addAction("Exit")
-        exit_action.setShortcut("Ctrl+Q")
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.setMenuRole(QAction.MenuRole.QuitRole)
         exit_action.triggered.connect(self.close)
 
         # Display Menu
@@ -202,6 +203,7 @@ class MainWindow(QMainWindow):
         # Help Menu
         help_menu = menubar.addMenu("Help")
         about_action = help_menu.addAction("About QuickLook 3")
+        about_action.setMenuRole(QAction.MenuRole.AboutRole)
         about_action.triggered.connect(self.show_about)
 
     def show_about(self):
@@ -335,7 +337,7 @@ class MainWindow(QMainWindow):
                     if dialog and dialog.isVisible():
                         if hasattr(dialog, 'update_plot'):
                             dialog.update_plot()
-                        elif hasattr(dialog, 'update_stats'):
+                        if hasattr(dialog, 'update_stats'):
                             dialog.update_stats()
 
     def edit_header(self):
@@ -387,7 +389,10 @@ class MainWindow(QMainWindow):
         
     def open_rotate(self):
         from pyql3.gui.tools.rotate import RotateDialog
-        self._launch_tool(RotateDialog, "RotateDialog")
+        if not hasattr(self, '_rotate_dialog') or not self._rotate_dialog.isVisible():
+            self._rotate_dialog = RotateDialog(self, self.image_viewer)
+        self._rotate_dialog.show()
+        self._rotate_dialog.raise_()
         
     def open_statistics(self):
         from pyql3.gui.tools.statistics import StatisticsDialog
@@ -419,6 +424,7 @@ class MainWindow(QMainWindow):
         self.arithmetic_dialog.raise_()
 
     def open_strehl_tool(self):
+        from pyql3.gui.tools.strehl import StrehlDialog
         self.strehl_dialog = StrehlDialog(self, self.image_viewer)
         self.strehl_dialog.show()
 

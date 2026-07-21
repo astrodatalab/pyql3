@@ -205,7 +205,7 @@ class CutPlotDialog(BaseToolDialog):
                 else:
                     profile = np.nansum(region, axis=1)
                     
-                self.plot_curve.setData(np.arange(len(profile)), profile)
+                self.plot_curve.setData(np.arange(len(profile)), profile * self.image_viewer.data_multiplier)
             else:
                 self.plot_curve.setData([], [])
                 
@@ -224,7 +224,7 @@ class CutPlotDialog(BaseToolDialog):
                 else:
                     profile = np.nansum(region, axis=0)
                     
-                self.plot_curve.setData(np.arange(len(profile)), profile)
+                self.plot_curve.setData(np.arange(len(profile)), profile * self.image_viewer.data_multiplier)
             else:
                 self.plot_curve.setData([], [])
                 
