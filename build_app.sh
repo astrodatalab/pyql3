@@ -7,7 +7,7 @@ uv add --dev pyinstaller pillow
 
 echo "Building QuickLook3.app bundle..."
 # --noconfirm ensures it overwrites previous builds without prompting
-uv run pyinstaller --name "QuickLook3" --windowed --icon "pyql3/icon.png" --collect-all photutils --noconfirm main.py
+uv run pyinstaller --noconfirm QuickLook3.spec
 
 echo "Build complete! The application is located at dist/QuickLook3.app"
 
@@ -20,7 +20,8 @@ elif [ "$ARCH" = "x86_64" ]; then
 else
     MAC_LABEL="macOS-${ARCH}"
 fi
-DMG_NAME="QuickLook3-${MAC_LABEL}.dmg"
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "vUnknown")
+DMG_NAME="QuickLook3-${VERSION}-${MAC_LABEL}.dmg"
 hdiutil create -volname "QuickLook3" -srcfolder dist/QuickLook3.app -ov -format UDZO dist/${DMG_NAME}
 
 echo "Release package created at dist/${DMG_NAME}"

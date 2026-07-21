@@ -1,9 +1,11 @@
 from PySide6.QtWidgets import QDialog, QVBoxLayout
+from PySide6.QtCore import Qt
 import pyqtgraph as pg
 
 class BaseToolDialog(QDialog):
     def __init__(self, parent=None, image_viewer=None, title="Tool"):
         super().__init__(parent)
+        self.setWindowFlags(Qt.Window)
         self.setWindowTitle(title)
         self.image_viewer = image_viewer
         self.roi = None

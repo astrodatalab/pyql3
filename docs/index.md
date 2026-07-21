@@ -8,7 +8,7 @@ This tool is a replacement for the legacy IDL `qlook2` GUI for viewing and analy
 
 ---
 
-## 🚀 Downloads (Version 3.0.0)
+## 🚀 Downloads (Version {{ version }})
 
 Download the standalone compiled application for your operating system below. No Python installation is required.
 
@@ -24,6 +24,18 @@ Download the standalone compiled application for your operating system below. No
         View all releases and source code on GitHub
     </a>
 </p>
+
+!!! warning "macOS Installation Note"
+    Because this is an open-source tool, it is not signed with a paid Apple Developer certificate. When you first open the app, macOS may block it and display a warning that the app "cannot be opened" or "is from an unidentified developer".
+
+    **How to open the app:**
+    
+    1. **The Right-Click Method (Easiest)**: Instead of double-clicking, **Right-click** (or Control-click) on `QuickLook3.app` and select **Open**. You will get a similar warning dialog, but this one will have an **Open** button.
+    2. **The Settings Method**: Double-click the app. When it fails, open your Mac's **System Settings** ➔ **Privacy & Security**. Scroll down, and you will see a message that QuickLook 3 was blocked. Click **Open Anyway**.
+    3. **The Terminal Method**: If macOS falsely claims the app is "damaged and should be moved to the trash", open your Terminal and remove the quarantine attribute by running: 
+    ```bash
+    xattr -cr /path/to/QuickLook3.app
+    ```
 
 ---
 
@@ -51,3 +63,11 @@ cd pyql3
 # 2. Run with uv (auto-installs all dependencies)
 uv run python main.py
 ```
+
+---
+
+## 👨‍💻 Authors
+
+Tuan Do (UCLA)
+
+Based on QuickLook 2 (ql2) for IDL from the OSIRIS Data Reduction Pipeline. See the contributors of the OSIRIS DRP here: [https://github.com/Keck-DataReductionPipelines/OsirisDRP#alphabetical-list-of-contributors](https://github.com/Keck-DataReductionPipelines/OsirisDRP#alphabetical-list-of-contributors)

@@ -58,3 +58,6 @@ markdown_extensions:
 
 extra_javascript:
   - javascripts/script.js
+
+hooks:
+  - docs/hooks.py
