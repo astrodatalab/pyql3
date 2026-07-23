@@ -2,7 +2,10 @@
 
 QuickLook 3 is a modern, high-performance Python/Qt-based application designed for viewing integral field spectroscopy data. It provides a comprehensive graphical interface to interactively visualize both 2D images and 3D data cubes. This tool is a replacement for the legacy IDL `qlook2` GUI for viewing and analyzing FITS data originally built for the OSIRIS instrument at the Keck Observatory. While QuickLook 3 is optimized for OSIRIS data, it should work for most IFU instruments including JWST NIRSpec IFU and Gemini NIFS. 
 
-
+<p float="left">
+  <img src="docs/images/main_window.png" width="49%" alt="Main Window" />
+  <img src="docs/images/depth_plot.png" width="49%" alt="Depth Plot" />
+</p>
 
 ## Features
 
@@ -96,6 +99,10 @@ Found under the **Plot** menu bar:
 * **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise. 
 * **Surface Plot**: Pop out a 3D OpenGL topographical surface render of the image data.
 * **Catalog Plot**: Load standard CSV, TXT catalog files and overlay sources onto the FITS image. Features intelligent coordinate parsing (Display Pixels, FITS Pixels, or WCS RA/Dec), real-time search filtering, extensive marker styling, and context menus for coordinate extraction and centering.
+
+## License
+
+QuickLook 3 is licensed under the [BSD 3-Clause License](LICENSE). You are free to use, modify, and redistribute this software, provided that the original copyright notice and license text are retained.
 
 ## Authors
 Tuan Do (UCLA)
