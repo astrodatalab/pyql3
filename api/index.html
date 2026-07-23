@@ -1728,7 +1728,57 @@
 <span class="normal">1142</span>
 <span class="normal">1143</span>
 <span class="normal">1144</span>
-<span class="normal">1145</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ImageViewer</span><span class="p">(</span><span class="n">QWidget</span><span class="p">):</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span>
+<span class="normal">1149</span>
+<span class="normal">1150</span>
+<span class="normal">1151</span>
+<span class="normal">1152</span>
+<span class="normal">1153</span>
+<span class="normal">1154</span>
+<span class="normal">1155</span>
+<span class="normal">1156</span>
+<span class="normal">1157</span>
+<span class="normal">1158</span>
+<span class="normal">1159</span>
+<span class="normal">1160</span>
+<span class="normal">1161</span>
+<span class="normal">1162</span>
+<span class="normal">1163</span>
+<span class="normal">1164</span>
+<span class="normal">1165</span>
+<span class="normal">1166</span>
+<span class="normal">1167</span>
+<span class="normal">1168</span>
+<span class="normal">1169</span>
+<span class="normal">1170</span>
+<span class="normal">1171</span>
+<span class="normal">1172</span>
+<span class="normal">1173</span>
+<span class="normal">1174</span>
+<span class="normal">1175</span>
+<span class="normal">1176</span>
+<span class="normal">1177</span>
+<span class="normal">1178</span>
+<span class="normal">1179</span>
+<span class="normal">1180</span>
+<span class="normal">1181</span>
+<span class="normal">1182</span>
+<span class="normal">1183</span>
+<span class="normal">1184</span>
+<span class="normal">1185</span>
+<span class="normal">1186</span>
+<span class="normal">1187</span>
+<span class="normal">1188</span>
+<span class="normal">1189</span>
+<span class="normal">1190</span>
+<span class="normal">1191</span>
+<span class="normal">1192</span>
+<span class="normal">1193</span>
+<span class="normal">1194</span>
+<span class="normal">1195</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ImageViewer</span><span class="p">(</span><span class="n">QWidget</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">parent</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">layout</span> <span class="o">=</span> <span class="n">QVBoxLayout</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
@@ -2384,6 +2434,7 @@
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Sets the FITS data into the viewer.&quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">raw_data</span> <span class="o">=</span> <span class="n">data</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">header</span> <span class="o">=</span> <span class="n">header</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_new_data</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="k">if</span> <span class="n">data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span> <span class="o">=</span> <span class="kc">None</span>
@@ -2484,11 +2535,9 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">wcs_z_idx</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">ui</span><span class="o">.</span><span class="n">roiPlot</span><span class="o">.</span><span class="n">hideAxis</span><span class="p">(</span><span class="s1">&#39;top&#39;</span><span class="p">)</span>
 
-        <span class="c1"># pyqtgraph needs (z, x, y)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">raw_data</span><span class="o">.</span><span class="n">transpose</span><span class="p">(</span><span class="n">py_z</span><span class="p">,</span> <span class="n">py_x</span><span class="p">,</span> <span class="n">py_y</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="o">.</span><span class="n">ndim</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">apply_transforms</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">apply_transforms</span><span class="p">()</span>
 
         <span class="n">zs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">slider_slice</span><span class="o">.</span><span class="n">setMaximum</span><span class="p">(</span><span class="n">zs</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
@@ -2505,12 +2554,9 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
 
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span><span class="o">.</span><span class="n">ndim</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">apply_transforms</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">update_image_display</span><span class="p">(</span><span class="n">bypass_imv</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">z_mode_changed</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">apply_transforms</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">update_image_display</span><span class="p">(</span><span class="n">bypass_imv</span><span class="o">=</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="o">.</span><span class="n">ndim</span> <span class="o">==</span> <span class="mi">2</span><span class="p">))</span>
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">data_multiplier</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">disp_as_dn</span><span class="p">:</span>
@@ -2543,109 +2589,151 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">rot90</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="n">k</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">toggle_position_angle</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">checked</span><span class="p">):</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="n">checked</span><span class="p">:</span>
-            <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;pa_arrow_n&#39;</span><span class="p">,</span> <span class="kc">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">show_pa</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">checked</span><span class="p">)</span>
+
+        <span class="c1"># Always remove any existing compass items first to prevent accumulating multiple arrows</span>
+        <span class="k">for</span> <span class="n">item_attr</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;pa_arrow_n&#39;</span><span class="p">,</span> <span class="s1">&#39;pa_text_n&#39;</span><span class="p">,</span> <span class="s1">&#39;pa_arrow_e&#39;</span><span class="p">,</span> <span class="s1">&#39;pa_text_e&#39;</span><span class="p">):</span>
+            <span class="n">item</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item_attr</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">item</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">try</span><span class="p">:</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_n</span><span class="p">)</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_text_n</span><span class="p">)</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_e</span><span class="p">)</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_text_e</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
                 <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
                     <span class="k">pass</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_n</span> <span class="o">=</span> <span class="kc">None</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">pa_text_n</span> <span class="o">=</span> <span class="kc">None</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_e</span> <span class="o">=</span> <span class="kc">None</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">pa_text_e</span> <span class="o">=</span> <span class="kc">None</span>
+                <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item_attr</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">show_pa</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
 
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">raw_data</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">header</span><span class="p">:</span>
-            <span class="k">return</span>
+        <span class="c1"># Display array shape (ny, nx) or (nz, ny, nx) in current display orientation</span>
+        <span class="n">disp_shape</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="o">.</span><span class="n">shape</span>
+        <span class="n">nx</span> <span class="o">=</span> <span class="n">disp_shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="n">ny</span> <span class="o">=</span> <span class="n">disp_shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span>
+        <span class="n">cx</span> <span class="o">=</span> <span class="p">(</span><span class="n">nx</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>
+        <span class="n">cy</span> <span class="o">=</span> <span class="p">(</span><span class="n">ny</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>
 
-        <span class="n">header</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">header</span>
-
-        <span class="n">rotposn</span> <span class="o">=</span> <span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ROTPOSN&#39;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
-        <span class="n">instangl</span> <span class="o">=</span> <span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;INSTANGL&#39;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
-        <span class="n">instr</span> <span class="o">=</span> <span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;INSTR&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
-        <span class="n">tel</span> <span class="o">=</span> <span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;TELESCOP&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
-
-        <span class="k">if</span> <span class="n">tel</span> <span class="o">==</span> <span class="s1">&#39;Keck I&#39;</span><span class="p">:</span>
-            <span class="n">iangle</span> <span class="o">=</span> <span class="mf">42.5</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">iangle</span> <span class="o">=</span> <span class="mf">47.5</span>
-
-        <span class="k">if</span> <span class="n">instr</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s1">&#39;spec&#39;</span><span class="p">:</span>
-            <span class="n">north</span> <span class="o">=</span> <span class="n">rotposn</span> <span class="o">-</span> <span class="n">instangl</span>
-        <span class="k">elif</span> <span class="n">instr</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s1">&#39;imag&#39;</span><span class="p">:</span>
-            <span class="n">north</span> <span class="o">=</span> <span class="n">rotposn</span> <span class="o">-</span> <span class="n">instangl</span> <span class="o">+</span> <span class="n">iangle</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">north</span> <span class="o">=</span> <span class="n">rotposn</span> <span class="o">-</span> <span class="n">instangl</span>
-
-        <span class="n">east</span> <span class="o">=</span> <span class="n">north</span> <span class="o">-</span> <span class="mi">90</span>
-
-        <span class="c1"># In pyqtgraph, angle 0 is pointing left.</span>
-        <span class="c1"># But we want to just draw an arrow indicating North. </span>
-        <span class="c1"># Standard astronomical images have North up, East left.</span>
-        <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;pa_arrow_n&#39;</span><span class="p">,</span> <span class="kc">None</span><span class="p">):</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_n</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_text_n</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_e</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">removeItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_text_e</span><span class="p">)</span>
-            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-                <span class="k">pass</span>
-
-        <span class="c1"># To draw a &quot;compass&quot;, we can just draw one arrow pointing North.</span>
-        <span class="n">shape</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="o">.</span><span class="n">shape</span>
-        <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span> <span class="o">=</span> <span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span><span class="o">/</span><span class="mi">2</span><span class="p">,</span> <span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="o">/</span><span class="mi">2</span>
-
-        <span class="c1"># Calculate base angles (North is UP: PA=0. East is LEFT: PA=90)</span>
-        <span class="n">vis_n</span> <span class="o">=</span> <span class="mi">90</span> <span class="o">-</span> <span class="n">north</span>
-        <span class="n">vis_e</span> <span class="o">=</span> <span class="mi">90</span> <span class="o">-</span> <span class="p">(</span><span class="n">north</span> <span class="o">+</span> <span class="mi">90</span><span class="p">)</span>
-
-        <span class="c1"># Adjust for rotation (rot_angle is CCW in pyqtgraph coordinates, so it subtracts from visual angle)</span>
-        <span class="n">vis_n</span> <span class="o">-=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rot_angle</span>
-        <span class="n">vis_e</span> <span class="o">-=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rot_angle</span>
-
-        <span class="c1"># Adjust for X flip</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">flip</span><span class="p">:</span>
-            <span class="n">vis_n</span> <span class="o">=</span> <span class="mi">180</span> <span class="o">-</span> <span class="n">vis_n</span>
-            <span class="n">vis_e</span> <span class="o">=</span> <span class="mi">180</span> <span class="o">-</span> <span class="n">vis_e</span>
-
-        <span class="c1"># Set compass size relative to image size so it scales naturally and connects perfectly</span>
-        <span class="n">L</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">],</span> <span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span> <span class="o">*</span> <span class="mf">0.15</span>
-        <span class="n">headLen</span> <span class="o">=</span> <span class="n">L</span> <span class="o">*</span> <span class="mf">0.3</span>
-        <span class="n">tailWidth</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">],</span> <span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span> <span class="o">*</span> <span class="mf">0.01</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">)</span>
         <span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 
-        <span class="c1"># Draw North</span>
-        <span class="n">rad_n</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">vis_n</span><span class="p">)</span>
-        <span class="n">tip_x_n</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">-</span> <span class="n">L</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
+        <span class="c1"># 1. Derive base North and East angles from unrotated WCS (or header)</span>
+        <span class="n">has_wcs_pa</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">wcs</span><span class="p">,</span> <span class="s1">&#39;naxis&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">wcs_ctypes</span> <span class="o">=</span> <span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">c</span><span class="p">)</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span><span class="o">.</span><span class="n">wcs</span><span class="o">.</span><span class="n">ctype</span><span class="p">]</span>
+                <span class="n">ra_axis</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+                <span class="n">dec_axis</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+                <span class="k">for</span> <span class="n">idx</span><span class="p">,</span> <span class="n">ctype</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">wcs_ctypes</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="s1">&#39;RA&#39;</span> <span class="ow">in</span> <span class="n">ctype</span><span class="p">:</span>
+                        <span class="n">ra_axis</span> <span class="o">=</span> <span class="n">idx</span>
+                    <span class="k">elif</span> <span class="s1">&#39;DEC&#39;</span> <span class="ow">in</span> <span class="n">ctype</span><span class="p">:</span>
+                        <span class="n">dec_axis</span> <span class="o">=</span> <span class="n">idx</span>
+
+                <span class="k">if</span> <span class="n">ra_axis</span> <span class="o">&gt;=</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">dec_axis</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="n">x_axis_str</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;current_x_axis&#39;</span><span class="p">,</span> <span class="s1">&#39;AXIS 3&#39;</span><span class="p">)</span>
+                    <span class="n">y_axis_str</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;current_y_axis&#39;</span><span class="p">,</span> <span class="s1">&#39;AXIS 2&#39;</span><span class="p">)</span>
+                    <span class="n">x_axis_idx</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">x_axis_str</span><span class="o">.</span><span class="n">split</span><span class="p">()[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span> <span class="o">-</span> <span class="mi">1</span>
+                    <span class="n">y_axis_idx</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">y_axis_str</span><span class="o">.</span><span class="n">split</span><span class="p">()[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span> <span class="o">-</span> <span class="mi">1</span>
+
+                    <span class="c1"># Un-rotated transposed data shape</span>
+                    <span class="n">trans_shape</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transposed_data</span><span class="o">.</span><span class="n">shape</span>
+                    <span class="n">raw_cx</span> <span class="o">=</span> <span class="p">(</span><span class="n">trans_shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>
+                    <span class="n">raw_cy</span> <span class="o">=</span> <span class="p">(</span><span class="n">trans_shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>
+
+                    <span class="n">center_pix</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">]</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span><span class="o">.</span><span class="n">naxis</span>
+                    <span class="n">center_pix</span><span class="p">[</span><span class="n">x_axis_idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">raw_cx</span>
+                    <span class="n">center_pix</span><span class="p">[</span><span class="n">y_axis_idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">raw_cy</span>
+
+                    <span class="n">world0</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">wcs</span><span class="o">.</span><span class="n">pixel_to_world_values</span><span class="p">(</span><span class="o">*</span><span class="n">center_pix</span><span class="p">))</span>
+                    <span class="n">dec0</span> <span class="o">=</span> <span class="n">world0</span><span class="p">[</span><span class="n">dec_axis</span><span class="p">]</span>
+                    <span class="n">ra0</span> <span class="o">=</span> <span class="n">world0</span><span class="p">[</span><span class="n">ra_axis</span><span class="p">]</span>
+
+                    <span class="n">delta_deg</span> <span class="o">=</span> <span class="mf">0.001</span>
+                    <span class="n">world_n</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">world0</span><span class="p">)</span>
+                    <span class="n">world_n</span><span class="p">[</span><span class="n">dec_axis</span><span class="p">]</span> <span class="o">=</span> <span class="n">dec0</span> <span class="o">+</span> <span class="n">delta_deg</span>
+                    <span class="n">pix_n</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span><span class="o">.</span><span class="n">world_to_pixel_values</span><span class="p">(</span><span class="o">*</span><span class="n">world_n</span><span class="p">)</span>
+                    <span class="n">dx_n</span> <span class="o">=</span> <span class="n">pix_n</span><span class="p">[</span><span class="n">x_axis_idx</span><span class="p">]</span> <span class="o">-</span> <span class="n">raw_cx</span>
+                    <span class="n">dy_n</span> <span class="o">=</span> <span class="n">pix_n</span><span class="p">[</span><span class="n">y_axis_idx</span><span class="p">]</span> <span class="o">-</span> <span class="n">raw_cy</span>
+
+                    <span class="n">world_e</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">world0</span><span class="p">)</span>
+                    <span class="n">cos_dec</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">dec0</span><span class="p">))</span> <span class="k">if</span> <span class="nb">abs</span><span class="p">(</span><span class="n">dec0</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mf">89.5</span> <span class="k">else</span> <span class="mf">1.0</span>
+                    <span class="n">world_e</span><span class="p">[</span><span class="n">ra_axis</span><span class="p">]</span> <span class="o">=</span> <span class="n">ra0</span> <span class="o">+</span> <span class="p">(</span><span class="n">delta_deg</span> <span class="o">/</span> <span class="n">cos_dec</span><span class="p">)</span>
+                    <span class="n">pix_e</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span><span class="o">.</span><span class="n">world_to_pixel_values</span><span class="p">(</span><span class="o">*</span><span class="n">world_e</span><span class="p">)</span>
+                    <span class="n">dx_e</span> <span class="o">=</span> <span class="n">pix_e</span><span class="p">[</span><span class="n">x_axis_idx</span><span class="p">]</span> <span class="o">-</span> <span class="n">raw_cx</span>
+                    <span class="n">dy_e</span> <span class="o">=</span> <span class="n">pix_e</span><span class="p">[</span><span class="n">y_axis_idx</span><span class="p">]</span> <span class="o">-</span> <span class="n">raw_cy</span>
+
+                    <span class="k">if</span> <span class="n">math</span><span class="o">.</span><span class="n">hypot</span><span class="p">(</span><span class="n">dx_n</span><span class="p">,</span> <span class="n">dy_n</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">1e-6</span> <span class="ow">and</span> <span class="n">math</span><span class="o">.</span><span class="n">hypot</span><span class="p">(</span><span class="n">dx_e</span><span class="p">,</span> <span class="n">dy_e</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">1e-6</span><span class="p">:</span>
+                        <span class="n">theta_n_base</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">degrees</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">atan2</span><span class="p">(</span><span class="n">dy_n</span><span class="p">,</span> <span class="n">dx_n</span><span class="p">))</span>
+                        <span class="n">theta_e_base</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">degrees</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">atan2</span><span class="p">(</span><span class="n">dy_e</span><span class="p">,</span> <span class="n">dx_e</span><span class="p">))</span>
+                        <span class="n">has_wcs_pa</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">has_wcs_pa</span> <span class="o">=</span> <span class="kc">False</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">has_wcs_pa</span><span class="p">:</span>
+            <span class="n">header</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">header</span> <span class="ow">or</span> <span class="p">{}</span>
+            <span class="n">rotposn</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ROTPOSN&#39;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+            <span class="n">instangl</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;INSTANGL&#39;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
+            <span class="n">instr</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;INSTR&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">))</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+            <span class="n">tel</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;TELESCOP&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">))</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+
+            <span class="n">iangle</span> <span class="o">=</span> <span class="mf">42.5</span> <span class="k">if</span> <span class="n">tel</span> <span class="o">==</span> <span class="s1">&#39;Keck I&#39;</span> <span class="k">else</span> <span class="mf">47.5</span>
+            <span class="k">if</span> <span class="n">instr</span> <span class="o">==</span> <span class="s1">&#39;spec&#39;</span><span class="p">:</span>
+                <span class="n">north_pa</span> <span class="o">=</span> <span class="n">rotposn</span> <span class="o">-</span> <span class="n">instangl</span>
+            <span class="k">elif</span> <span class="n">instr</span> <span class="o">==</span> <span class="s1">&#39;imag&#39;</span><span class="p">:</span>
+                <span class="n">north_pa</span> <span class="o">=</span> <span class="n">rotposn</span> <span class="o">-</span> <span class="n">instangl</span> <span class="o">+</span> <span class="n">iangle</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">north_pa</span> <span class="o">=</span> <span class="n">rotposn</span> <span class="o">-</span> <span class="n">instangl</span>
+
+            <span class="c1"># Unrotated: North is UP (theta_n_base = 90 deg), East is LEFT (theta_e_base = 180 deg)</span>
+            <span class="n">theta_n_base</span> <span class="o">=</span> <span class="mf">90.0</span> <span class="o">+</span> <span class="n">north_pa</span>
+            <span class="n">theta_e_base</span> <span class="o">=</span> <span class="n">theta_n_base</span> <span class="o">+</span> <span class="mf">90.0</span>
+
+        <span class="c1"># 2. Apply GUI view rotation (rot_angle in deg CCW) and horizontal flip</span>
+        <span class="n">theta_n_vis</span> <span class="o">=</span> <span class="p">(</span><span class="n">theta_n_base</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">rot_angle</span><span class="p">)</span> <span class="o">%</span> <span class="mf">360.0</span>
+        <span class="n">theta_e_vis</span> <span class="o">=</span> <span class="p">(</span><span class="n">theta_e_base</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">rot_angle</span><span class="p">)</span> <span class="o">%</span> <span class="mf">360.0</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">flip</span><span class="p">:</span>
+            <span class="n">theta_n_vis</span> <span class="o">=</span> <span class="p">(</span><span class="mf">180.0</span> <span class="o">-</span> <span class="n">theta_n_vis</span><span class="p">)</span> <span class="o">%</span> <span class="mf">360.0</span>
+            <span class="n">theta_e_vis</span> <span class="o">=</span> <span class="p">(</span><span class="mf">180.0</span> <span class="o">-</span> <span class="n">theta_e_vis</span><span class="p">)</span> <span class="o">%</span> <span class="mf">360.0</span>
+
+        <span class="c1"># Compass size relative to image dimensions</span>
+        <span class="n">L</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">)</span> <span class="o">*</span> <span class="mf">0.18</span>
+        <span class="n">headLen</span> <span class="o">=</span> <span class="n">L</span> <span class="o">*</span> <span class="mf">0.35</span>
+        <span class="n">tailWidth</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">)</span> <span class="o">*</span> <span class="mf">0.012</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+
+        <span class="c1"># --- Draw North arrow ---</span>
+        <span class="n">rad_n</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">theta_n_vis</span><span class="p">)</span>
+        <span class="n">tip_x_n</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">+</span> <span class="n">L</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
         <span class="n">tip_y_n</span> <span class="o">=</span> <span class="n">cy</span> <span class="o">+</span> <span class="n">L</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_n</span> <span class="o">=</span> <span class="n">pg</span><span class="o">.</span><span class="n">ArrowItem</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="p">(</span><span class="n">tip_x_n</span><span class="p">,</span> <span class="n">tip_y_n</span><span class="p">),</span> <span class="n">angle</span><span class="o">=</span><span class="n">vis_n</span><span class="p">,</span> <span class="n">headLen</span><span class="o">=</span><span class="n">headLen</span><span class="p">,</span> <span class="n">tailLen</span><span class="o">=</span><span class="n">L</span><span class="p">,</span> <span class="n">tailWidth</span><span class="o">=</span><span class="n">tailWidth</span><span class="p">,</span> <span class="n">pen</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">brush</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">pxMode</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">angle_n</span> <span class="o">=</span> <span class="p">(</span><span class="n">theta_n_vis</span> <span class="o">+</span> <span class="mf">180.0</span><span class="p">)</span> <span class="o">%</span> <span class="mf">360.0</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_n</span> <span class="o">=</span> <span class="n">pg</span><span class="o">.</span><span class="n">ArrowItem</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="p">(</span><span class="n">tip_x_n</span><span class="p">,</span> <span class="n">tip_y_n</span><span class="p">),</span> <span class="n">angle</span><span class="o">=</span><span class="n">angle_n</span><span class="p">,</span> <span class="n">headLen</span><span class="o">=</span><span class="n">headLen</span><span class="p">,</span> <span class="n">tailLen</span><span class="o">=</span><span class="n">L</span><span class="p">,</span> <span class="n">tailWidth</span><span class="o">=</span><span class="n">tailWidth</span><span class="p">,</span> <span class="n">pen</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">brush</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">pxMode</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">addItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_n</span><span class="p">)</span>
 
+        <span class="n">txt_x_n</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">+</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.6</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
+        <span class="n">txt_y_n</span> <span class="o">=</span> <span class="n">cy</span> <span class="o">+</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.6</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">pa_text_n</span> <span class="o">=</span> <span class="n">pg</span><span class="o">.</span><span class="n">TextItem</span><span class="p">(</span><span class="s1">&#39;N&#39;</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">anchor</span><span class="o">=</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">))</span>
-        <span class="n">txt_x_n</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">-</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.5</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
-        <span class="n">txt_y_n</span> <span class="o">=</span> <span class="n">cy</span> <span class="o">+</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.5</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">rad_n</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">pa_text_n</span><span class="o">.</span><span class="n">setPos</span><span class="p">(</span><span class="n">txt_x_n</span><span class="p">,</span> <span class="n">txt_y_n</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">addItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_text_n</span><span class="p">)</span>
 
-        <span class="c1"># Draw East</span>
-        <span class="n">rad_e</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">vis_e</span><span class="p">)</span>
-        <span class="n">tip_x_e</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">-</span> <span class="n">L</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
+        <span class="c1"># --- Draw East arrow ---</span>
+        <span class="n">rad_e</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">theta_e_vis</span><span class="p">)</span>
+        <span class="n">tip_x_e</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">+</span> <span class="n">L</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
         <span class="n">tip_y_e</span> <span class="o">=</span> <span class="n">cy</span> <span class="o">+</span> <span class="n">L</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_e</span> <span class="o">=</span> <span class="n">pg</span><span class="o">.</span><span class="n">ArrowItem</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="p">(</span><span class="n">tip_x_e</span><span class="p">,</span> <span class="n">tip_y_e</span><span class="p">),</span> <span class="n">angle</span><span class="o">=</span><span class="n">vis_e</span><span class="p">,</span> <span class="n">headLen</span><span class="o">=</span><span class="n">headLen</span><span class="p">,</span> <span class="n">tailLen</span><span class="o">=</span><span class="n">L</span><span class="p">,</span> <span class="n">tailWidth</span><span class="o">=</span><span class="n">tailWidth</span><span class="p">,</span> <span class="n">pen</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">brush</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">pxMode</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">angle_e</span> <span class="o">=</span> <span class="p">(</span><span class="n">theta_e_vis</span> <span class="o">+</span> <span class="mf">180.0</span><span class="p">)</span> <span class="o">%</span> <span class="mf">360.0</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_e</span> <span class="o">=</span> <span class="n">pg</span><span class="o">.</span><span class="n">ArrowItem</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="p">(</span><span class="n">tip_x_e</span><span class="p">,</span> <span class="n">tip_y_e</span><span class="p">),</span> <span class="n">angle</span><span class="o">=</span><span class="n">angle_e</span><span class="p">,</span> <span class="n">headLen</span><span class="o">=</span><span class="n">headLen</span><span class="p">,</span> <span class="n">tailLen</span><span class="o">=</span><span class="n">L</span><span class="p">,</span> <span class="n">tailWidth</span><span class="o">=</span><span class="n">tailWidth</span><span class="p">,</span> <span class="n">pen</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">brush</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">pxMode</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">addItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_arrow_e</span><span class="p">)</span>
 
+        <span class="n">txt_x_e</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">+</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.6</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
+        <span class="n">txt_y_e</span> <span class="o">=</span> <span class="n">cy</span> <span class="o">+</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.6</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">pa_text_e</span> <span class="o">=</span> <span class="n">pg</span><span class="o">.</span><span class="n">TextItem</span><span class="p">(</span><span class="s1">&#39;E&#39;</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">,</span> <span class="n">anchor</span><span class="o">=</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">))</span>
-        <span class="n">txt_x_e</span> <span class="o">=</span> <span class="n">cx</span> <span class="o">-</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.5</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
-        <span class="n">txt_y_e</span> <span class="o">=</span> <span class="n">cy</span> <span class="o">+</span> <span class="p">(</span><span class="n">L</span> <span class="o">+</span> <span class="n">headLen</span> <span class="o">*</span> <span class="mf">1.5</span><span class="p">)</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">rad_e</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">pa_text_e</span><span class="o">.</span><span class="n">setPos</span><span class="p">(</span><span class="n">txt_x_e</span><span class="p">,</span> <span class="n">txt_y_e</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span><span class="o">.</span><span class="n">addItem</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pa_text_e</span><span class="p">)</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">update_image_display</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">set_index</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypass_imv</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_manual_levels</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">update_image_display</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">set_index</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">bypass_imv</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_manual_levels</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">reset_view</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
+
+        <span class="n">is_new</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;_is_new_data&#39;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span> <span class="ow">or</span> <span class="n">reset_view</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_new_data</span> <span class="o">=</span> <span class="kc">False</span>
 
         <span class="k">try</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">use_manual_levels</span><span class="p">:</span>
@@ -2654,8 +2742,9 @@
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">valid_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="p">[</span><span class="o">~</span><span class="n">np</span><span class="o">.</span><span class="n">isnan</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="p">)]</span>
                 <span class="k">if</span> <span class="n">valid_data</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-                    <span class="n">vmin</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">valid_data</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
-                    <span class="n">vmax</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">valid_data</span><span class="p">,</span> <span class="mi">99</span><span class="p">)</span>
+                    <span class="n">sample</span> <span class="o">=</span> <span class="n">valid_data</span><span class="p">[::</span><span class="mi">4</span><span class="p">]</span> <span class="k">if</span> <span class="n">valid_data</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">10000</span> <span class="k">else</span> <span class="n">valid_data</span>
+                    <span class="n">vmin</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">sample</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+                    <span class="n">vmax</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">sample</span><span class="p">,</span> <span class="mi">99</span><span class="p">)</span>
                 <span class="k">else</span><span class="p">:</span>
                     <span class="n">vmin</span><span class="p">,</span> <span class="n">vmax</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span>
                 <span class="k">if</span> <span class="n">vmin</span> <span class="o">==</span> <span class="n">vmax</span><span class="p">:</span>
@@ -2695,13 +2784,24 @@
             <span class="n">render_data</span><span class="p">[</span><span class="n">valid_mask</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">searchsorted</span><span class="p">(</span><span class="n">sorted_flat</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span><span class="p">[</span><span class="n">valid_mask</span><span class="p">])</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">sorted_flat</span><span class="p">))</span>
             <span class="n">render_vmin</span><span class="p">,</span> <span class="n">render_vmax</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span>
 
+        <span class="n">view</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getView</span><span class="p">()</span>
+        <span class="n">view_rect</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">is_new</span> <span class="k">else</span> <span class="p">(</span><span class="n">view</span><span class="o">.</span><span class="n">viewRect</span><span class="p">()</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">image</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span><span class="p">)</span>
+
         <span class="k">if</span> <span class="n">bypass_imv</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">getImageItem</span><span class="p">()</span><span class="o">.</span><span class="n">setImage</span><span class="p">(</span><span class="n">render_data</span><span class="p">,</span> <span class="n">autoLevels</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">levels</span><span class="o">=</span><span class="p">(</span><span class="n">render_vmin</span><span class="p">,</span> <span class="n">render_vmax</span><span class="p">))</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">setImage</span><span class="p">(</span><span class="n">render_data</span><span class="p">,</span> <span class="n">autoLevels</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">levels</span><span class="o">=</span><span class="p">(</span><span class="n">render_vmin</span><span class="p">,</span> <span class="n">render_vmax</span><span class="p">))</span>
-            <span class="k">if</span> <span class="n">set_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">setImage</span><span class="p">(</span><span class="n">render_data</span><span class="p">,</span> <span class="n">autoRange</span><span class="o">=</span><span class="n">is_new</span><span class="p">,</span> <span class="n">autoLevels</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">levels</span><span class="o">=</span><span class="p">(</span><span class="n">render_vmin</span><span class="p">,</span> <span class="n">render_vmax</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">set_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="p">,</span> <span class="s1">&#39;tVals&#39;</span><span class="p">):</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">setCurrentIndex</span><span class="p">(</span><span class="n">set_index</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">is_new</span><span class="p">:</span>
+            <span class="n">view</span><span class="o">.</span><span class="n">autoRange</span><span class="p">()</span>
+        <span class="k">elif</span> <span class="n">view_rect</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">view_rect</span><span class="o">.</span><span class="n">isEmpty</span><span class="p">():</span>
+            <span class="n">view</span><span class="o">.</span><span class="n">setRange</span><span class="p">(</span><span class="n">rect</span><span class="o">=</span><span class="n">view_rect</span><span class="p">,</span> <span class="n">padding</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+
         <span class="bp">self</span><span class="o">.</span><span class="n">update_slice_info</span><span class="p">()</span>
+        <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;show_pa&#39;</span><span class="p">,</span> <span class="kc">False</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">toggle_position_angle</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">mouse_moved</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">evt</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
@@ -2879,7 +2979,11 @@
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>pyql3/gui/viewers/image_viewer.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">816</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span>
+<span class="normal">815</span>
+<span class="normal">816</span>
 <span class="normal">817</span>
 <span class="normal">818</span>
 <span class="normal">819</span>
@@ -2898,11 +3002,7 @@
 <span class="normal">832</span>
 <span class="normal">833</span>
 <span class="normal">834</span>
-<span class="normal">835</span>
-<span class="normal">836</span>
-<span class="normal">837</span>
-<span class="normal">838</span>
-<span class="normal">839</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">apply_transforms</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="normal">835</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">apply_transforms</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Applies DN scaling, rotation, and flips to display_data&quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">display_data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span>
@@ -2999,10 +3099,12 @@
 <span class="normal">727</span>
 <span class="normal">728</span>
 <span class="normal">729</span>
-<span class="normal">730</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">header</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="normal">730</span>
+<span class="normal">731</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">header</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Sets the FITS data into the viewer.&quot;&quot;&quot;</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">raw_data</span> <span class="o">=</span> <span class="n">data</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">header</span> <span class="o">=</span> <span class="n">header</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_is_new_data</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">if</span> <span class="n">data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">imv</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">wcs</span> <span class="o">=</span> <span class="kc">None</span>
