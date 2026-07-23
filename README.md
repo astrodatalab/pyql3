@@ -10,13 +10,14 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 ## Features
 
 - **High-Performance Rendering**: Built on PySide6 and pyqtgraph for efficient, hardware-accelerated visualization of large FITS data cubes.
-- **IFU Data Cube Visualization**: View FITS cubes with an interactively. Extract depth spectra from specific spatial pixels.
-- **Z-Axis Collapsing**: Collapse 3D ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
+- **IFU Data Cube Visualization**: Interactively view FITS cubes across spatial and spectral dimensions. Extract 1D depth spectra from specific spatial pixels or regions.
+- **Z-Axis Collapsing**: Collapse 3D spectral ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
-- **Astronomical Coordinates**: Integrates WCS pixel-to-world (RA/Dec) coordinate translations at your mouse pointer. 
-- **Array Transformations**: Rotate and flip the data array for visual alignment while preserving spatial coordinate integrity.
-- **Analysis Tools**: Features built-in region cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and Catalog Plotting.
-- **Live File Polling**: Monitor a directory for incoming data files and automatically load them in real-time.
+- **Astronomical Coordinates & WCS**: Integrates WCS pixel-to-world (RA/Dec) coordinate translations dynamically at your mouse pointer.
+- **Interactive Catalog Overlay**: Overlay astronomical catalogs (CSV, TXT, DAT) using Display Pixels, FITS Pixels, or WCS RA/Dec coordinates. Features viewport label culling for fast performance, custom marker styling, search filtering, and row selection highlighting.
+- **Analysis Tools**: Built-in 1D profile cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and 3D OpenGL Surface Rendering.
+- **FITS Datacube Arithmetic**: Execute image and cube math (addition, subtraction, division, scalar scaling) between open datasets.
+- **Live File Polling**: Monitor a directory for incoming FITS files and automatically load them in real time as observations complete.
 - **Header Editor**: View and modify FITS header cards directly in the UI.
 
 ## Installation
@@ -71,34 +72,50 @@ build_app.bat
 This will create a `QuickLook3` folder inside the `dist\` directory containing the main executable.
 
 ### Launching the Application
-You can launch QuickLook 3 directly from the terminal. 
+You can launch QuickLook 3 directly from the terminal with flexible command-line options:
 
 ```bash
+# Basic launch
 uv run python main.py
-```
-You can also pass a FITS file path as an argument to open it directly upon launch:
-```bash
-uv run python main.py /path/to/your/file.fits
+
+# Open a FITS image or 3D cube directly
+uv run python main.py /path/to/data.fits
+
+# Open image and automatically load a target source catalog
+uv run python main.py /path/to/data.fits --catalog /path/to/catalog.csv
+
+# Auto-poll a directory for new incoming FITS files
+uv run python main.py --poll-dir /path/to/raw_data/
+
+# Start with a collapsed spectral slice range
+uv run python main.py datacube.fits --collapse-range 100 200
 ```
 
 ### Basic Navigation
 * **Open File**: `File -> Open File`
 * **Polling**: `File -> Poll Directory` to auto-load new FITS files arriving in a specific folder.
-* **Header**: `File -> View/Edit Header`
+* **Header**: `File -> View/Edit Header` to inspect or modify header keywords.
+* **Window Manager**: `Window` menu bar collects all open tool dialogs, allowing you to select any window or click **Bring All to Front**.
 
 ### Visual Controls
-* **Slices & Slabs**: The bottom control panel allows you to switch between viewing a single Z-slice or a collapsed Z-range of a 3D datacube. Use the slider to navigate through the cube depth.
-* **Scaling**: Adjust scaling limits dynamically using the intensity histogram gradient on the right side of the image, or select scaling algorithms (Logarithmic, Negative, etc.) via the `Display -> Scaling` menu or the bottom left dropdown menu.
-* **Rotation**: `Display -> Rotate Image...` lets you orient the image properly.
+* **Slices & Slabs**: The bottom control panel allows you to switch between viewing a single Z-slice or a collapsed Z-range of a 3D datacube. Use the slider to navigate through cube depth.
+* **Scaling**: Adjust scaling limits dynamically using the intensity histogram gradient on the right side of the image, or select scaling algorithms (Linear, Logarithmic, Square Root, AsinH, Negative, Histogram Equalization) via the `Display -> Scaling` menu or bottom left dropdown.
+* **Rotation & Flips**: `Display -> Rotate Image...` lets you orient the image properly while preserving spatial coordinate accuracy.
 * **Data Units**: Toggle between native `As DN/s` and Total DN (`As Total DN`) through the `Display` menu.
+* **Position Angle (PA)**: Enable `Display -> Position Angle` to display dynamic North/East compass rose vectors.
 
-### Analysis Tools
-Found under the **Plot** menu bar:
-* **Horizontal/Vertical/Any Cut**: Draw lines or drag crosshairs across the image to generate 1D profile cuts. The cut tools support variable thickness for boxcar averaging.
-* **Depth**: Click anywhere on a 3D dataset to plot the 1D spectrum along the Z-axis.
-* **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise. 
-* **Surface Plot**: Pop out a 3D OpenGL topographical surface render of the image data.
-* **Catalog Plot**: Load standard CSV, TXT catalog files and overlay sources onto the FITS image. Features intelligent coordinate parsing (Display Pixels, FITS Pixels, or WCS RA/Dec), real-time search filtering, extensive marker styling, and context menus for coordinate extraction and centering.
+### Analysis & Catalog Tools
+Found under the **Plot** and **Analysis** menu bars:
+* **Catalog Plot Tool (`Plot -> Plot Catalog...`)**: Load astronomical catalog files (`.csv`, `.txt`, `.dat`) and overlay sources onto the FITS display.
+  - **Coordinates**: Supports Display Pixels, FITS Pixels, or WCS RA/Dec (HMS/DMS or decimal degrees).
+  - **High Performance**: Features debounced hide-on-pan text label rendering for smooth 60 FPS panning even with thousands of catalog sources.
+  - **Interactivity**: Filter table rows in real time with the built-in search bar, click rows to center sources on the image with a red highlight, or right-click rows to copy coordinates.
+  - **CLI Auto-Load**: Pass `--catalog <file>` on launch to auto-open the tool and load the catalog.
+* **1D Profile Cuts**: `Plot -> Horizontal / Vertical / Any Cut` to generate 1D profile cuts with adjustable boxcar averaging.
+* **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis.
+* **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise.
+* **Surface Plot**: `Plot -> Surface Plot` renders a 3D OpenGL topographical surface mesh of the image data.
+* **FITS Arithmetic**: `Analysis -> Arithmetic` performs addition, subtraction, division, and scalar scaling between open FITS datasets.
 
 ## License
 
