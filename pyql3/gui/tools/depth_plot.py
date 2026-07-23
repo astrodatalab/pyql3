@@ -89,7 +89,10 @@ class DepthPlotDialog(BaseToolDialog):
         
         self.layout.addWidget(self.plot_widget, stretch=1)
         
-        self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=1.5))
+        self.plot_legend = self.plot_widget.addLegend(offset=(10, 10))
+        self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=1.5), name="Source")
+        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=1.5, style=Qt.DashLine), name="Background")
+        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=1.5), name="Subtracted")
         
         # Crosshair / Hover Label
         self.lbl_cursor = QLabel("X: --  Y: --")
@@ -169,6 +172,41 @@ class DepthPlotDialog(BaseToolDialog):
         region_layout.addWidget(self.spin_y1, 1, 3)
         
         self.layout.addWidget(group_region)
+
+        # Background Region GroupBox
+        self.group_bg = QGroupBox("BACKGROUND REGION")
+        bg_layout = QGridLayout(self.group_bg)
+
+        self.chk_enable_bg = QCheckBox("Enable Background Subtraction")
+        self.combo_bg_calc = QComboBox()
+        self.combo_bg_calc.addItems(["Median", "Average", "Total"])
+        self.combo_bg_calc.setCurrentText("Median")
+        self.combo_bg_calc.setEnabled(False)
+
+        bg_layout.addWidget(self.chk_enable_bg, 0, 0, 1, 2)
+        bg_layout.addWidget(QLabel("Calc using:"), 0, 2)
+        bg_layout.addWidget(self.combo_bg_calc, 0, 3)
+
+        self.spin_bg_x0 = QSpinBox(); self.spin_bg_x0.setRange(0, 10000); self.spin_bg_x0.setEnabled(False)
+        self.spin_bg_x1 = QSpinBox(); self.spin_bg_x1.setRange(0, 10000); self.spin_bg_x1.setEnabled(False)
+        self.spin_bg_y0 = QSpinBox(); self.spin_bg_y0.setRange(0, 10000); self.spin_bg_y0.setEnabled(False)
+        self.spin_bg_y1 = QSpinBox(); self.spin_bg_y1.setRange(0, 10000); self.spin_bg_y1.setEnabled(False)
+
+        self._updating_bg_spins = False
+        for spin in [self.spin_bg_x0, self.spin_bg_x1, self.spin_bg_y0, self.spin_bg_y1]:
+            spin.valueChanged.connect(self.on_bg_spin_changed)
+
+        bg_layout.addWidget(QLabel("X Region:"), 1, 0)
+        bg_layout.addWidget(self.spin_bg_x0, 1, 1)
+        bg_layout.addWidget(QLabel("to"), 1, 2)
+        bg_layout.addWidget(self.spin_bg_x1, 1, 3)
+
+        bg_layout.addWidget(QLabel("Y Region:"), 2, 0)
+        bg_layout.addWidget(self.spin_bg_y0, 2, 1)
+        bg_layout.addWidget(QLabel("to"), 2, 2)
+        bg_layout.addWidget(self.spin_bg_y1, 2, 3)
+
+        self.layout.addWidget(self.group_bg)
         
         # Setup signals for view range changed to update spinboxes
         self.plot_widget.getViewBox().sigXRangeChanged.connect(self.on_x_range_changed)
@@ -188,6 +226,11 @@ class DepthPlotDialog(BaseToolDialog):
         roi.addScaleHandle([0, 0], [1, 1])
         self.add_roi_to_viewer(roi)
         
+        self.bg_roi = None
+
+        self.chk_enable_bg.stateChanged.connect(self.toggle_background)
+        self.combo_bg_calc.currentIndexChanged.connect(self.update_plot)
+
         self._updating_spins = False
         self._updating_range_spins = False
         
@@ -241,7 +284,6 @@ class DepthPlotDialog(BaseToolDialog):
             self.spin_y_max.setValue(range_val[1])
             self._updating_range_spins = False
 
-
     def toggle_log_scale(self):
         self.plot_widget.setLogMode(x=self.chk_log_x.isChecked(), y=self.chk_log_y.isChecked())
         
@@ -277,6 +319,107 @@ class DepthPlotDialog(BaseToolDialog):
         self._updating_spins = False
         
         self.update_plot()
+
+    def add_bg_roi(self):
+        if self.bg_roi is not None:
+            self.remove_bg_roi()
+
+        if self.image_viewer is None or getattr(self.image_viewer, 'imv', None) is None:
+            return
+
+        shape = self.combo_shape.currentText()
+        pos = self.roi.pos() if self.roi else [0, 0]
+        size = self.roi.size() if self.roi else [4, 4]
+
+        # Offset background ROI by width + 2 pixels
+        bg_pos = [pos.x() + size.x() + 2, pos.y()]
+
+        pen = pg.mkPen((255, 140, 0), width=3)
+        hover_pen = pg.mkPen((255, 140, 0), width=5)
+
+        if shape == "Circle":
+            self.bg_roi = pg.CircleROI(bg_pos, size, pen=pen, hoverPen=hover_pen)
+        else:
+            self.bg_roi = pg.RectROI(bg_pos, size, pen=pen, hoverPen=hover_pen)
+            self.bg_roi.addScaleHandle([1, 1], [0, 0])
+            self.bg_roi.addScaleHandle([0, 0], [1, 1])
+
+        self.image_viewer.imv.getView().addItem(self.bg_roi)
+        self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
+        self.on_bg_roi_changed()
+
+    def remove_bg_roi(self):
+        if self.bg_roi is not None and self.image_viewer is not None:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    self.bg_roi.sigRegionChanged.disconnect(self.on_bg_roi_changed)
+                except Exception:
+                    pass
+            try:
+                self.image_viewer.imv.getView().removeItem(self.bg_roi)
+            except Exception:
+                pass
+            self.bg_roi = None
+
+    def toggle_background(self, state=None):
+        checked = self.chk_enable_bg.isChecked()
+        if checked:
+            if self.bg_roi is None:
+                self.add_bg_roi()
+            self.spin_bg_x0.setEnabled(True)
+            self.spin_bg_x1.setEnabled(True)
+            self.spin_bg_y0.setEnabled(True)
+            self.spin_bg_y1.setEnabled(True)
+            self.combo_bg_calc.setEnabled(True)
+        else:
+            self.remove_bg_roi()
+            self.spin_bg_x0.setEnabled(False)
+            self.spin_bg_x1.setEnabled(False)
+            self.spin_bg_y0.setEnabled(False)
+            self.spin_bg_y1.setEnabled(False)
+            self.combo_bg_calc.setEnabled(False)
+        self.update_plot()
+
+    def on_bg_roi_changed(self):
+        if self.bg_roi is None:
+            return
+        pos = self.bg_roi.pos()
+        size = self.bg_roi.size()
+
+        x0, y0 = int(pos.x()), int(pos.y())
+        w, h = int(size.x()), int(size.y())
+
+        self._updating_bg_spins = True
+        self.spin_bg_x0.setValue(x0)
+        self.spin_bg_x1.setValue(x0 + w)
+        self.spin_bg_y0.setValue(y0)
+        self.spin_bg_y1.setValue(y0 + h)
+        self._updating_bg_spins = False
+
+        self.update_plot()
+
+    def on_bg_spin_changed(self):
+        if getattr(self, '_updating_bg_spins', False) or self.bg_roi is None:
+            return
+        x0 = self.spin_bg_x0.value()
+        x1 = self.spin_bg_x1.value()
+        y0 = self.spin_bg_y0.value()
+        y1 = self.spin_bg_y1.value()
+
+        w = max(1, x1 - x0)
+        h = max(1, y1 - y0)
+
+        self.bg_roi.blockSignals(True)
+        self.bg_roi.setPos([x0, y0])
+        self.bg_roi.setSize([w, h])
+        self.bg_roi.blockSignals(False)
+        self.update_plot()
+
+    def closeEvent(self, event):
+        self.remove_bg_roi()
+        super().closeEvent(event)
         
     def toggle_roi_shape(self):
         shape = self.combo_shape.currentText()
@@ -293,6 +436,22 @@ class DepthPlotDialog(BaseToolDialog):
             roi.addScaleHandle([0, 0], [1, 1])
             
         self.add_roi_to_viewer(roi)
+
+        if self.chk_enable_bg.isChecked() and self.bg_roi is not None:
+            bg_pos = self.bg_roi.pos()
+            bg_size = self.bg_roi.size()
+            self.remove_bg_roi()
+            pen = pg.mkPen((255, 140, 0), width=3)
+            hover_pen = pg.mkPen((255, 140, 0), width=5)
+            if shape == "Circle":
+                self.bg_roi = pg.CircleROI(bg_pos, bg_size, pen=pen, hoverPen=hover_pen)
+            else:
+                self.bg_roi = pg.RectROI(bg_pos, bg_size, pen=pen, hoverPen=hover_pen)
+                self.bg_roi.addScaleHandle([1, 1], [0, 0])
+                self.bg_roi.addScaleHandle([0, 0], [1, 1])
+            self.image_viewer.imv.getView().addItem(self.bg_roi)
+            self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
+
         self.update_plot()
 
     def update_plot(self):
@@ -301,6 +460,12 @@ class DepthPlotDialog(BaseToolDialog):
             
         if self.image_viewer.transposed_data.ndim != 3:
             return
+            
+        plot_type = self.combo_type.currentText()
+        calc_method = self.combo_calc.currentText()
+
+        if hasattr(self, 'group_bg'):
+            self.group_bg.setEnabled(plot_type == "Depth Plot")
             
         # Transform the 3D cube to match the display coordinates (rotation, flip)
         cube = self.image_viewer.transposed_data
@@ -324,11 +489,8 @@ class DepthPlotDialog(BaseToolDialog):
         x1 = max(x0+1, min(x0+w, x_len))
         y1 = max(y0+1, min(y0+h, y_len))
         
-        plot_type = self.combo_type.currentText()
-        calc_method = self.combo_calc.currentText()
-        
         if plot_type == "Depth Plot":
-            region = cube[:, x0:x1, y0:y1]
+            region = cube[:, x0:x1, y0:y1].astype(float, copy=True)
             if region.size == 0:
                 return
                 
@@ -346,6 +508,47 @@ class DepthPlotDialog(BaseToolDialog):
                 spectrum = np.nanmedian(region, axis=(1, 2))
             else:
                 spectrum = np.nansum(region, axis=(1, 2))
+
+            bg_spectrum = None
+            subtracted_spectrum = None
+
+            if self.chk_enable_bg.isChecked() and self.bg_roi is not None:
+                bg_pos = self.bg_roi.pos()
+                bg_size = self.bg_roi.size()
+                bg_x0, bg_y0 = int(bg_pos.x()), int(bg_pos.y())
+                bg_w, bg_h = int(bg_size.x()), int(bg_size.y())
+
+                bg_x0 = max(0, min(bg_x0, x_len-1))
+                bg_y0 = max(0, min(bg_y0, y_len-1))
+                bg_x1 = max(bg_x0+1, min(bg_x0+bg_w, x_len))
+                bg_y1 = max(bg_y0+1, min(bg_y0+bg_h, y_len))
+
+                bg_region = cube[:, bg_x0:bg_x1, bg_y0:bg_y1].astype(float, copy=True)
+                if bg_region.size > 0:
+                    if self.combo_shape.currentText() == "Circle":
+                        yy_bg, xx_bg = np.mgrid[:(bg_x1-bg_x0), :(bg_y1-bg_y0)]
+                        cx_bg, cy_bg = (bg_x1-bg_x0)/2.0 - 0.5, (bg_y1-bg_y0)/2.0 - 0.5
+                        r_bg = min((bg_x1-bg_x0)/2.0, (bg_y1-bg_y0)/2.0)
+                        mask_bg = ((xx_bg - cy_bg)**2 + (yy_bg - cx_bg)**2) <= r_bg**2
+                        bg_region = np.where(mask_bg, bg_region, np.nan)
+
+                    bg_calc_method = self.combo_bg_calc.currentText()
+                    if bg_calc_method == "Average":
+                        bg_spectrum = np.nanmean(bg_region, axis=(1, 2))
+                    elif bg_calc_method == "Median":
+                        bg_spectrum = np.nanmedian(bg_region, axis=(1, 2))
+                    else:
+                        bg_spectrum = np.nansum(bg_region, axis=(1, 2))
+
+                    # Option B: Subtract background spectrum from each pixel's spectrum in the source data
+                    subtracted_region = region - bg_spectrum[:, None, None]
+
+                    if calc_method == "Average":
+                        subtracted_spectrum = np.nanmean(subtracted_region, axis=(1, 2))
+                    elif calc_method == "Median":
+                        subtracted_spectrum = np.nanmedian(subtracted_region, axis=(1, 2))
+                    else:
+                        subtracted_spectrum = np.nansum(subtracted_region, axis=(1, 2))
                 
             x_axis = np.arange(z_len)
             
@@ -362,15 +565,6 @@ class DepthPlotDialog(BaseToolDialog):
                 except Exception:
                     cunit = ""
                 
-                # Compute fixed coordinates for the remaining axes
-                # The data in pyqtgraph is typically (X, Y) which corresponds to cube (x_len, y_len).
-                # The wcs might have a different mapping, but we know the z_idx in WCS space.
-                # In image_viewer.py, WCS coordinates are built based on transpose and flip.
-                # To be precise, we need the exact pixel coordinates in the original cube.
-                # Actually, image_viewer.py maintains the mapping. 
-                # A simpler approximation is that x_axis (WCS axis 0) is roughly x0 + w/2, etc.
-                # Let's map from the current display coordinates (center of ROI) back to original cube.
-                
                 cx, cy = x0 + w/2.0, y0 + h/2.0
                 
                 # Un-flip and un-rotate to get coords in transposed_data space
@@ -381,17 +575,6 @@ class DepthPlotDialog(BaseToolDialog):
                 
                 if self.image_viewer.flip:
                     cx = x_len - 1 - cx
-                
-                # Now cx, cy correspond to transposed_data spatial axes.
-                # In image_viewer:
-                # if z_axis == 'x': transposed_data is [X, Y, Z] -> slice over X. Spatial are Y and Z.
-                # Actually, image_viewer.transposed_data ALWAYS has the Z-slice axis FIRST.
-                # i.e., transposed_data is shape (slice_len, spatial_1, spatial_2).
-                # But wait, we need to map spatial_1 and spatial_2 to WCS axes (0, 1, 2).
-                # The viewer does this:
-                # if z_axis == 'x': x_idx=2, y_idx=1, z_idx=0
-                # elif z_axis == 'y': x_idx=2, y_idx=0, z_idx=1
-                # else: x_idx=0, y_idx=1, z_idx=2
                 
                 current_x_axis = getattr(self.image_viewer, 'current_x_axis', 'AXIS 3')
                 current_y_axis = getattr(self.image_viewer, 'current_y_axis', 'AXIS 2')
@@ -417,7 +600,16 @@ class DepthPlotDialog(BaseToolDialog):
                 self.world_axis.wcs = None
                 self.plot_widget.hideAxis('top')
             self.plot_widget.setLabel('bottom', "Slice Index (pixels)")
-            self.plot_data.setData(x_axis, spectrum * self.image_viewer.data_multiplier)
+            
+            mult = self.image_viewer.data_multiplier
+            self.plot_data.setData(x_axis, spectrum * mult)
+
+            if bg_spectrum is not None and subtracted_spectrum is not None:
+                self.plot_bg.setData(x_axis, bg_spectrum * mult)
+                self.plot_sub.setData(x_axis, subtracted_spectrum * mult)
+            else:
+                self.plot_bg.setData([], [])
+                self.plot_sub.setData([], [])
             
         elif plot_type == "Horizontal Cut":
             # For 2D cuts, we use the currently displayed Z slice
@@ -440,6 +632,8 @@ class DepthPlotDialog(BaseToolDialog):
             unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
             self.plot_widget.setLabel('left', f"Intensity ({unit})")
             self.plot_data.setData(x_axis, cut * self.image_viewer.data_multiplier)
+            self.plot_bg.setData([], [])
+            self.plot_sub.setData([], [])
             
         elif plot_type == "Vertical Cut":
             z_idx = self.image_viewer.imv.currentIndex
@@ -460,3 +654,4 @@ class DepthPlotDialog(BaseToolDialog):
             unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
             self.plot_widget.setLabel('left', f"Intensity ({unit})")
             self.plot_data.setData(x_axis, cut * self.image_viewer.data_multiplier)
+            self.plot_sub.setData([], [])
