@@ -330,18 +330,23 @@ class PlotCatalogDialog(BaseToolDialog):
         if self.image_viewer is None or self.catalog_data is None:
             return
             
+        img_item = self.image_viewer.imv.getImageItem()
         if self.scatter_item is None:
             self.scatter_item = pg.ScatterPlotItem()
             self.scatter_item.setZValue(10)
-            self.image_viewer.imv.getView().addItem(self.scatter_item)
+            self.scatter_item.setParentItem(img_item)
             
         if self.highlight_item is None:
             self.highlight_item = pg.ScatterPlotItem()
             self.highlight_item.setZValue(11)
-            self.image_viewer.imv.getView().addItem(self.highlight_item)
+            self.highlight_item.setParentItem(img_item)
         # Clean up old text items
+        view = self.image_viewer.imv.getView()
         for txt in self.text_items:
-            self.image_viewer.imv.getView().removeItem(txt)
+            try:
+                view.removeItem(txt)
+            except Exception:
+                pass
         self.text_items.clear()
         
         if not hasattr(self, 'chk_master_toggle'):
@@ -501,12 +506,14 @@ class PlotCatalogDialog(BaseToolDialog):
             return
 
         rect = view.viewRect()
+        img_item = self.image_viewer.imv.getImageItem()
 
         for px, py, name_str in self.all_label_points:
-            if rect.contains(px, py):
+            parent_pt = img_item.mapToParent(pg.QtCore.QPointF(px, py)) if img_item else pg.QtCore.QPointF(px, py)
+            if rect.contains(parent_pt.x(), parent_pt.y()):
                 txt = pg.TextItem(name_str, color=self.marker_color.name(), anchor=(0, 1))
                 txt.setZValue(12)
-                txt.setPos(px, py)
+                txt.setPos(parent_pt.x(), parent_pt.y())
                 view.addItem(txt)
                 self.text_items.append(txt)
         
@@ -652,16 +659,16 @@ class PlotCatalogDialog(BaseToolDialog):
         if hasattr(self, '_label_timer'):
             self._label_timer.stop()
 
-        if self.scatter_item is not None and self.image_viewer is not None:
+        if self.scatter_item is not None:
             try:
-                self.image_viewer.imv.getView().removeItem(self.scatter_item)
+                self.scatter_item.setParentItem(None)
             except Exception:
                 pass
             self.scatter_item = None
             
-        if self.highlight_item is not None and self.image_viewer is not None:
+        if self.highlight_item is not None:
             try:
-                self.image_viewer.imv.getView().removeItem(self.highlight_item)
+                self.highlight_item.setParentItem(None)
             except Exception:
                 pass
             self.highlight_item = None

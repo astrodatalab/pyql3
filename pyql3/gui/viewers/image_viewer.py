@@ -91,6 +91,7 @@ class ImageViewer(QWidget):
         # Transforms state
         self.disp_as_dn = False
         self.rot_angle = 0
+        self.view_rotation = 0.0
         self.flip = False
         self.pa_arrow = None
         self._itime_coadds = 1.0
@@ -681,6 +682,7 @@ class ImageViewer(QWidget):
         self.raw_data = data
         self.header = header
         self._is_new_data = True
+        self.view_rotation = 0.0
         if data is None:
             self.imv.clear()
             self.wcs = None
@@ -834,33 +836,19 @@ class ImageViewer(QWidget):
             if k != 0:
                 self.display_data = np.rot90(self.display_data, k=k)
                 
-    def toggle_position_angle(self, checked):
-        self.show_pa = bool(checked)
-
-        # Always remove any existing compass items first to prevent accumulating multiple arrows
-        for item_attr in ('pa_arrow_n', 'pa_text_n', 'pa_arrow_e', 'pa_text_e'):
-            item = getattr(self, item_attr, None)
-            if item is not None:
-                try:
-                    self.imv.getView().removeItem(item)
-                except Exception:
-                    pass
-                setattr(self, item_attr, None)
-
-        if not self.show_pa or self.display_data is None or self.transposed_data is None:
-            return
-
-        # Display array shape (ny, nx) or (nz, ny, nx) in current display orientation
-        disp_shape = self.display_data.shape
-        nx = disp_shape[-1]
-        ny = disp_shape[-2]
-        cx = (nx - 1) / 2.0
-        cy = (ny - 1) / 2.0
+    def get_north_angle_base(self):
+        """Return (theta_n_base, theta_e_base, is_wcs) representing the base angles
+        of North and East (degrees CCW from +X axis) in the un-rotated, un-flipped
+        transposed_data coordinate system. Returns (90.0, 180.0, False) if no info is available.
+        """
+        if self.display_data is None or self.transposed_data is None:
+            return None, None, False
 
         import math
-
-        # 1. Derive base North and East angles from unrotated WCS (or header)
         has_wcs_pa = False
+        theta_n_base = 90.0
+        theta_e_base = 180.0
+
         if self.wcs is not None and getattr(self.wcs, 'naxis', 0) >= 2:
             try:
                 wcs_ctypes = [str(c).upper() for c in self.wcs.wcs.ctype]
@@ -878,7 +866,6 @@ class ImageViewer(QWidget):
                     x_axis_idx = int(x_axis_str.split()[-1]) - 1
                     y_axis_idx = int(y_axis_str.split()[-1]) - 1
 
-                    # Un-rotated transposed data shape
                     trans_shape = self.transposed_data.shape
                     raw_cx = (trans_shape[-1] - 1) / 2.0
                     raw_cy = (trans_shape[-2] - 1) / 2.0
@@ -914,26 +901,80 @@ class ImageViewer(QWidget):
 
         if not has_wcs_pa:
             header = self.header or {}
-            rotposn = float(header.get('ROTPOSN', 0.0))
-            instangl = float(header.get('INSTANGL', 0.0))
-            instr = str(header.get('INSTR', '')).strip().lower()
-            tel = str(header.get('TELESCOP', '')).strip()
+            if 'ROTPOSN' in header:
+                rotposn = float(header.get('ROTPOSN', 0.0))
+                instangl = float(header.get('INSTANGL', 0.0))
+                instr = str(header.get('INSTR', '')).strip().lower()
+                tel = str(header.get('TELESCOP', '')).strip()
 
-            iangle = 42.5 if tel == 'Keck I' else 47.5
-            if instr == 'spec':
-                north_pa = rotposn - instangl
-            elif instr == 'imag':
-                north_pa = rotposn - instangl + iangle
-            else:
-                north_pa = rotposn - instangl
+                iangle = 42.5 if tel == 'Keck I' else 47.5
+                if instr == 'spec':
+                    north_pa = rotposn - instangl
+                elif instr == 'imag':
+                    north_pa = rotposn - instangl + iangle
+                else:
+                    north_pa = rotposn - instangl
 
-            # Unrotated: North is UP (theta_n_base = 90 deg), East is LEFT (theta_e_base = 180 deg)
-            theta_n_base = 90.0 + north_pa
-            theta_e_base = theta_n_base + 90.0
+                theta_n_base = 90.0 + north_pa
+                theta_e_base = theta_n_base + 90.0
+                has_wcs_pa = True
 
-        # 2. Apply GUI view rotation (rot_angle in deg CCW) and horizontal flip
-        theta_n_vis = (theta_n_base + self.rot_angle) % 360.0
-        theta_e_vis = (theta_e_base + self.rot_angle) % 360.0
+        return theta_n_base, theta_e_base, has_wcs_pa
+
+    def apply_view_rotation(self, angle):
+        """Apply a visual-only rotation to the ImageItem via QTransform.
+        Does not modify display_data or transposed_data."""
+        from PySide6.QtGui import QTransform
+        self.view_rotation = float(angle)
+        
+        if self.display_data is None:
+            return
+
+        disp_shape = self.display_data.shape
+        cx = (disp_shape[-1] - 1) / 2.0
+        cy = (disp_shape[-2] - 1) / 2.0
+
+        transform = QTransform()
+        transform.translate(cx, cy)
+        transform.rotate(self.view_rotation)
+        transform.translate(-cx, -cy)
+        self.imv.getImageItem().setTransform(transform)
+
+        if getattr(self, 'show_pa', False):
+            self.toggle_position_angle(True)
+
+    def toggle_position_angle(self, checked):
+        self.show_pa = bool(checked)
+
+        # Always remove any existing compass items first to prevent accumulating multiple arrows
+        for item_attr in ('pa_arrow_n', 'pa_text_n', 'pa_arrow_e', 'pa_text_e'):
+            item = getattr(self, item_attr, None)
+            if item is not None:
+                try:
+                    self.imv.getView().removeItem(item)
+                except Exception:
+                    pass
+                setattr(self, item_attr, None)
+
+        if not self.show_pa or self.display_data is None or self.transposed_data is None:
+            return
+
+        # Display array shape (ny, nx) or (nz, ny, nx) in current display orientation
+        disp_shape = self.display_data.shape
+        nx = disp_shape[-1]
+        ny = disp_shape[-2]
+        cx = (nx - 1) / 2.0
+        cy = (ny - 1) / 2.0
+
+        import math
+
+        theta_n_base, theta_e_base, _ = self.get_north_angle_base()
+        if theta_n_base is None:
+            return
+
+        # 2. Apply GUI view rotation (rot_angle + view_rotation in deg CCW) and horizontal flip
+        theta_n_vis = (theta_n_base + self.rot_angle + self.view_rotation) % 360.0
+        theta_e_vis = (theta_e_base + self.rot_angle + self.view_rotation) % 360.0
 
         if self.flip:
             theta_n_vis = (180.0 - theta_n_vis) % 360.0
@@ -1046,7 +1087,9 @@ class ImageViewer(QWidget):
             view.setRange(rect=view_rect, padding=0)
 
         self.update_slice_info()
-        if getattr(self, 'show_pa', False):
+        if getattr(self, 'view_rotation', 0.0) != 0.0:
+            self.apply_view_rotation(self.view_rotation)
+        elif getattr(self, 'show_pa', False):
             self.toggle_position_angle(True)
 
     def mouse_moved(self, evt):

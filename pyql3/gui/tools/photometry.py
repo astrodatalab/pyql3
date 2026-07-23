@@ -55,15 +55,32 @@ class PhotometryDialog(BaseToolDialog):
         self.roi = pg.CircleROI([center_x - r, center_y - r], [r*2, r*2], pen=pg.mkPen((255, 0, 0), width=3), hoverPen=pg.mkPen((255, 0, 0), width=5))
         self.add_roi_to_viewer(self.roi)
         
+        img_item = self.image_viewer.imv.getImageItem() if self.image_viewer and hasattr(self.image_viewer, 'imv') else None
+        
         self.roi_inner = pg.CircleROI([center_x - 10, center_y - 10], [20, 20], pen=pg.mkPen('y', width=2, style=pg.QtCore.Qt.DashLine), hoverPen=pg.mkPen('y', width=4, style=pg.QtCore.Qt.DashLine), movable=False, resizable=False)
         self.roi_inner.removeHandle(0)
-        self.image_viewer.imv.getView().addItem(self.roi_inner)
+        if img_item: self.roi_inner.setParentItem(img_item)
+        else: self.image_viewer.imv.getView().addItem(self.roi_inner)
         
         self.roi_outer = pg.CircleROI([center_x - 20, center_y - 20], [40, 40], pen=pg.mkPen('y', width=2, style=pg.QtCore.Qt.DashLine), hoverPen=pg.mkPen('y', width=4, style=pg.QtCore.Qt.DashLine), movable=False, resizable=False)
         self.roi_outer.removeHandle(0)
-        self.image_viewer.imv.getView().addItem(self.roi_outer)
+        if img_item: self.roi_outer.setParentItem(img_item)
+        else: self.image_viewer.imv.getView().addItem(self.roi_outer)
         
         self.update_photometry()
+
+    def closeEvent(self, event):
+        if hasattr(self, 'roi_inner') and self.roi_inner is not None:
+            try: self.roi_inner.setParentItem(None)
+            except Exception: pass
+            try: self.image_viewer.imv.getView().removeItem(self.roi_inner)
+            except Exception: pass
+        if hasattr(self, 'roi_outer') and self.roi_outer is not None:
+            try: self.roi_outer.setParentItem(None)
+            except Exception: pass
+            try: self.image_viewer.imv.getView().removeItem(self.roi_outer)
+            except Exception: pass
+        super().closeEvent(event)
         
     def on_roi_changed(self):
         r = self.roi.size().x() / 2.0

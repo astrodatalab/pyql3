@@ -21,7 +21,12 @@ class BaseToolDialog(QDialog):
             self.remove_roi_from_viewer()
             
         self.roi = roi
-        self.image_viewer.imv.getView().addItem(self.roi)
+        if self.image_viewer and hasattr(self.image_viewer, 'imv'):
+            img_item = self.image_viewer.imv.getImageItem()
+            if img_item:
+                self.roi.setParentItem(img_item)
+            else:
+                self.image_viewer.imv.getView().addItem(self.roi)
         self.roi.sigRegionChanged.connect(self.on_roi_changed)
         
     def remove_roi_from_viewer(self):
@@ -33,6 +38,10 @@ class BaseToolDialog(QDialog):
                     self.roi.sigRegionChanged.disconnect(self.on_roi_changed)
                 except Exception:
                     pass
+            try:
+                self.roi.setParentItem(None)
+            except Exception:
+                pass
             try:
                 self.image_viewer.imv.getView().removeItem(self.roi)
             except Exception:

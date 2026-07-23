@@ -225,6 +225,7 @@ class DepthPlotDialog(BaseToolDialog):
         roi.addScaleHandle([1, 1], [0, 0])
         roi.addScaleHandle([0, 0], [1, 1])
         self.add_roi_to_viewer(roi)
+        self.on_roi_changed()
         
         self.bg_roi = None
 
@@ -344,7 +345,11 @@ class DepthPlotDialog(BaseToolDialog):
             self.bg_roi.addScaleHandle([1, 1], [0, 0])
             self.bg_roi.addScaleHandle([0, 0], [1, 1])
 
-        self.image_viewer.imv.getView().addItem(self.bg_roi)
+        img_item = self.image_viewer.imv.getImageItem()
+        if img_item:
+            self.bg_roi.setParentItem(img_item)
+        else:
+            self.image_viewer.imv.getView().addItem(self.bg_roi)
         self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
         self.on_bg_roi_changed()
 
@@ -357,6 +362,10 @@ class DepthPlotDialog(BaseToolDialog):
                     self.bg_roi.sigRegionChanged.disconnect(self.on_bg_roi_changed)
                 except Exception:
                     pass
+            try:
+                self.bg_roi.setParentItem(None)
+            except Exception:
+                pass
             try:
                 self.image_viewer.imv.getView().removeItem(self.bg_roi)
             except Exception:
@@ -449,7 +458,11 @@ class DepthPlotDialog(BaseToolDialog):
                 self.bg_roi = pg.RectROI(bg_pos, bg_size, pen=pen, hoverPen=hover_pen)
                 self.bg_roi.addScaleHandle([1, 1], [0, 0])
                 self.bg_roi.addScaleHandle([0, 0], [1, 1])
-            self.image_viewer.imv.getView().addItem(self.bg_roi)
+            img_item = self.image_viewer.imv.getImageItem()
+            if img_item:
+                self.bg_roi.setParentItem(img_item)
+            else:
+                self.image_viewer.imv.getView().addItem(self.bg_roi)
             self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
 
         self.update_plot()

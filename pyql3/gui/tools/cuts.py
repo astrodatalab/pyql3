@@ -135,20 +135,25 @@ class CutPlotDialog(BaseToolDialog):
             
         cx, cy = nx // 2, ny // 2
         
+        img_item = self.image_viewer.imv.getImageItem() if self.image_viewer and hasattr(self.image_viewer, 'imv') else None
+        
         if self.cut_type == 'horizontal':
             self.roi = pg.LinearRegionItem([cy - 2, cy + 2], orientation='horizontal', pen=pg.mkPen('g', width=3), hoverPen=pg.mkPen('g', width=5), brush=(0, 255, 0, 50))
             self.roi.sigRegionChanged.connect(self.sync_spins_and_plot)
-            view.addItem(self.roi)
+            if img_item: self.roi.setParentItem(img_item)
+            else: view.addItem(self.roi)
             
         elif self.cut_type == 'vertical':
             self.roi = pg.LinearRegionItem([cx - 2, cx + 2], orientation='vertical', pen=pg.mkPen('g', width=3), hoverPen=pg.mkPen('g', width=5), brush=(0, 255, 0, 50))
             self.roi.sigRegionChanged.connect(self.sync_spins_and_plot)
-            view.addItem(self.roi)
+            if img_item: self.roi.setParentItem(img_item)
+            else: view.addItem(self.roi)
             
         elif self.cut_type == 'diagonal':
             self.roi = pg.LineROI([cx - 20, cy - 20], [cx + 20, cy + 20], width=5, pen=pg.mkPen('g', width=3), hoverPen=pg.mkPen('g', width=5))
             self.roi.sigRegionChanged.connect(self.sync_spins_and_plot)
-            view.addItem(self.roi)
+            if img_item: self.roi.setParentItem(img_item)
+            else: view.addItem(self.roi)
             
         self.sync_spins_and_plot()
             
