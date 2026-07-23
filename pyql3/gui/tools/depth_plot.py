@@ -34,7 +34,7 @@ class WorldCoordinateAxis(pg.AxisItem):
             return super().tickStrings(values, scale, spacing)
 
 class DepthPlotDialog(BaseToolDialog):
-    def __init__(self, parent=None, image_viewer=None):
+    def __init__(self, parent=None, image_viewer=None, initial_center=None):
         super().__init__(parent, image_viewer, "Plot Window")
         self.resize(700, 800)
         
@@ -212,7 +212,9 @@ class DepthPlotDialog(BaseToolDialog):
         self.plot_widget.getViewBox().sigXRangeChanged.connect(self.on_x_range_changed)
         self.plot_widget.getViewBox().sigYRangeChanged.connect(self.on_y_range_changed)
         
-        if self.image_viewer and self.image_viewer.display_data is not None:
+        if initial_center is not None:
+            center_x, center_y = initial_center
+        elif self.image_viewer and self.image_viewer.display_data is not None:
             shape = self.image_viewer.display_data.shape
             if len(shape) == 3:
                 center_x, center_y = shape[1]//2, shape[2]//2
@@ -228,6 +230,15 @@ class DepthPlotDialog(BaseToolDialog):
         self.on_roi_changed()
         
         self.bg_roi = None
+
+    def set_center(self, center):
+        if center is None or self.roi is None:
+            return
+        cx, cy = center
+        w = self.roi.size().x()
+        h = self.roi.size().y()
+        self.roi.setPos([cx - w / 2.0, cy - h / 2.0])
+        self.on_roi_changed()
 
         self.chk_enable_bg.stateChanged.connect(self.toggle_background)
         self.combo_bg_calc.currentIndexChanged.connect(self.update_plot)

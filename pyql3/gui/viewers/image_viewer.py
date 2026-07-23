@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                                QLabel, QPushButton, QLineEdit, QComboBox, 
                                QCheckBox, QRadioButton, QGroupBox, QSlider, QFrame,
                                QButtonGroup, QTabWidget, QStyle, QStyleOptionSlider)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 import numpy as np
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
@@ -25,6 +25,9 @@ class JumpSlider(QSlider):
         super().mousePressEvent(event)
 
 class ImageViewer(QWidget):
+    request_depth_plot = Signal(object)
+    request_gaussian_fit = Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -50,6 +53,17 @@ class ImageViewer(QWidget):
         self._updating_region = False
         
         self.imv.ui.roiPlot.scene().sigMouseClicked.connect(self.on_roi_plot_clicked)
+        
+        # Context menu setup on main image ViewBox
+        self.last_right_click_pixel_pos = None
+        view = self.imv.getView()
+        view.scene().sigMouseClicked.connect(self.on_view_clicked)
+        if hasattr(view, 'menu') and view.menu is not None:
+            view.menu.addSeparator()
+            act_depth = view.menu.addAction("Plot Depth...")
+            act_depth.triggered.connect(self.on_context_plot_depth)
+            act_fit = view.menu.addAction("Gaussian Fit...")
+            act_fit.triggered.connect(self.on_context_gaussian_fit)
         
 
 
@@ -1091,6 +1105,25 @@ class ImageViewer(QWidget):
             self.apply_view_rotation(self.view_rotation)
         elif getattr(self, 'show_pa', False):
             self.toggle_position_angle(True)
+
+    def on_view_clicked(self, evt):
+        if evt.button() == Qt.RightButton:
+            img_item = self.imv.getImageItem()
+            if img_item is not None and self.transposed_data is not None:
+                pt = img_item.mapFromScene(evt.scenePos())
+                nx = self.transposed_data.shape[-1]
+                ny = self.transposed_data.shape[-2]
+                x = int(np.clip(pt.x(), 0, nx - 1))
+                y = int(np.clip(pt.y(), 0, ny - 1))
+                self.last_right_click_pixel_pos = (x, y)
+
+    def on_context_plot_depth(self):
+        pos = getattr(self, 'last_right_click_pixel_pos', None)
+        self.request_depth_plot.emit(pos)
+
+    def on_context_gaussian_fit(self):
+        pos = getattr(self, 'last_right_click_pixel_pos', None)
+        self.request_gaussian_fit.emit(pos)
 
     def mouse_moved(self, evt):
         if self.display_data is None:

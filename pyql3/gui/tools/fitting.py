@@ -107,7 +107,7 @@ class DisplayPeakFitDialog(QDialog):
         self.gl_fit.addItem(ax_fit)
 
 class GaussianFitDialog(BaseToolDialog):
-    def __init__(self, parent=None, image_viewer=None):
+    def __init__(self, parent=None, image_viewer=None, initial_center=None):
         super().__init__(parent, image_viewer, "Peak Fit")
         self.resize(350, 450)
         
@@ -162,7 +162,9 @@ class GaussianFitDialog(BaseToolDialog):
         self.btn_recalc.clicked.connect(self.update_fit)
         grid.addWidget(self.btn_recalc, row, 2, 1, 2)
         
-        if self.image_viewer and self.image_viewer.display_data is not None:
+        if initial_center is not None:
+            center_x, center_y = initial_center
+        elif self.image_viewer and self.image_viewer.display_data is not None:
             shape = self.image_viewer.display_data.shape
             if len(shape) == 3:
                 shape = (shape[1], shape[2])
@@ -179,6 +181,15 @@ class GaussianFitDialog(BaseToolDialog):
         self.last_fit_data = None
         
         self.update_fit()
+        
+    def set_center(self, center):
+        if center is None or self.roi is None:
+            return
+        cx, cy = center
+        w = self.roi.size().x()
+        h = self.roi.size().y()
+        self.roi.setPos([cx - w / 2.0, cy - h / 2.0])
+        self.on_roi_changed()
         
     def on_spin_changed(self):
         if self._updating_spins:

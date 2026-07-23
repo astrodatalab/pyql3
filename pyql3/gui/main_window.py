@@ -48,6 +48,10 @@ class MainWindow(QMainWindow):
         # Connect extension changes
         self.image_viewer.combo_ext.currentIndexChanged.connect(self.on_extension_changed)
         
+        # Connect viewer context menu requests
+        self.image_viewer.request_depth_plot.connect(self.open_depth_plot)
+        self.image_viewer.request_gaussian_fit.connect(self.open_gaussian_fit)
+        
         self.create_menus()
 
     def create_menus(self):
@@ -469,13 +473,15 @@ class MainWindow(QMainWindow):
         dialog = HeaderEditorDialog(self.fits_reader, self)
         dialog.exec()
 
-    def open_depth_plot(self):
+    def open_depth_plot(self, initial_center=None):
         from pyql3.gui.tools.depth_plot import DepthPlotDialog
         if not hasattr(self, '_depth_plot_dialog') or not self._depth_plot_dialog.isVisible():
-            self._depth_plot_dialog = DepthPlotDialog(self, self.image_viewer)
+            self._depth_plot_dialog = DepthPlotDialog(self, self.image_viewer, initial_center=initial_center)
         self._depth_plot_dialog.show()
         self._depth_plot_dialog.raise_()
-        
+        if initial_center is not None and hasattr(self._depth_plot_dialog, 'set_center'):
+            self._depth_plot_dialog.set_center(initial_center)
+
     def open_horizontal_cut(self):
         from pyql3.gui.tools.cuts import CutPlotDialog
         self._hcut_dialog = CutPlotDialog('horizontal', self, self.image_viewer)
@@ -529,12 +535,14 @@ class MainWindow(QMainWindow):
         self._phot_dialog.show()
         self._phot_dialog.raise_()
 
-    def open_gaussian_fit(self):
+    def open_gaussian_fit(self, initial_center=None):
         from pyql3.gui.tools.fitting import GaussianFitDialog
         if not hasattr(self, '_gauss_dialog') or not self._gauss_dialog.isVisible():
-            self._gauss_dialog = GaussianFitDialog(self, self.image_viewer)
+            self._gauss_dialog = GaussianFitDialog(self, self.image_viewer, initial_center=initial_center)
         self._gauss_dialog.show()
         self._gauss_dialog.raise_()
+        if initial_center is not None and hasattr(self._gauss_dialog, 'set_center'):
+            self._gauss_dialog.set_center(initial_center)
 
 
     def open_arithmetic_tool(self):
