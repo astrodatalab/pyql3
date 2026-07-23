@@ -60,6 +60,9 @@ class MainWindow(QMainWindow):
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_file)
         
+        self.recent_menu = file_menu.addMenu("Recent Files")
+        self.update_recent_files_menu()
+        
         save_action = file_menu.addAction("Save FITS As...")
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_file_as)
@@ -302,7 +305,8 @@ class MainWindow(QMainWindow):
             if data is not None:
                 header = self.fits_reader.get_header()
                 self.image_viewer.set_data(data, header=header)
-                self.setWindowTitle(f"QuickLook 3 - {filepath}")
+                filename = os.path.basename(filepath)
+                self.setWindowTitle(f"QuickLook 3 - {filename}")
                 
                 # Update extension combobox
                 extensions = self.fits_reader.get_image_extensions()
@@ -317,11 +321,55 @@ class MainWindow(QMainWindow):
                 if combo_idx >= 0:
                     self.image_viewer.combo_ext.setCurrentIndex(combo_idx)
                 self.image_viewer.combo_ext.blockSignals(False)
-                
+
+                # Add to recent files and update menu
+                self.config.add_recent_file(filepath)
+                self.update_recent_files_menu()
             else:
                 QMessageBox.warning(self, "Warning", "No valid data found in FITS file.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{str(e)}")
+
+    def update_recent_files_menu(self):
+        if not hasattr(self, 'recent_menu'):
+            return
+        self.recent_menu.clear()
+        recent_files = self.config.get_recent_files()
+        
+        if not recent_files:
+            no_recent = self.recent_menu.addAction("No Recent Files")
+            no_recent.setEnabled(False)
+        else:
+            for idx, path in enumerate(recent_files):
+                filename = os.path.basename(path)
+                action_text = f"{idx + 1}. {filename}"
+                act = self.recent_menu.addAction(action_text)
+                act.setToolTip(path)
+                act.setStatusTip(path)
+                act.triggered.connect(lambda checked=False, p=path: self.open_recent_file(p))
+            
+            self.recent_menu.addSeparator()
+            clear_action = self.recent_menu.addAction("Clear Recent Files")
+            clear_action.triggered.connect(self.clear_recent_files)
+
+    def open_recent_file(self, filepath):
+        if os.path.exists(filepath):
+            self.load_fits(filepath)
+        else:
+            reply = QMessageBox.warning(
+                self,
+                "File Not Found",
+                f"The file no longer exists at:\n{filepath}\n\nRemove from recent files list?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.config.remove_recent_file(filepath)
+                self.update_recent_files_menu()
+
+    def clear_recent_files(self):
+        self.config.clear_recent_files()
+        self.update_recent_files_menu()
 
 
     def save_file_as(self):
@@ -347,7 +395,8 @@ class MainWindow(QMainWindow):
         try:
             self.fits_reader.load_from_memory(data, header)
             self.image_viewer.set_data(data, header=header)
-            self.setWindowTitle(f"QuickLook 3 - {title}")
+            filename = os.path.basename(title)
+            self.setWindowTitle(f"QuickLook 3 - {filename}")
             
             # Update extension combobox
             extensions = self.fits_reader.get_image_extensions()

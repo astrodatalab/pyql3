@@ -29,3 +29,29 @@ class ConfigManager:
     def set(self, key, value):
         self.config[key] = value
         self.save()
+
+    def get_recent_files(self):
+        recent = self.get("recent_files", [])
+        if not isinstance(recent, list):
+            return []
+        return [str(f) for f in recent if isinstance(f, str)]
+
+    def add_recent_file(self, filepath, max_items=10):
+        if not filepath:
+            return
+        filepath = os.path.abspath(filepath)
+        recent = [f for f in self.get_recent_files() if f != filepath]
+        recent.insert(0, filepath)
+        recent = recent[:max_items]
+        self.set("recent_files", recent)
+
+    def remove_recent_file(self, filepath):
+        if not filepath:
+            return
+        filepath = os.path.abspath(filepath)
+        recent = [f for f in self.get_recent_files() if f != filepath]
+        self.set("recent_files", recent)
+
+    def clear_recent_files(self):
+        self.set("recent_files", [])
+
