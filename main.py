@@ -37,12 +37,14 @@ def main():
     window = MainWindow()
     window.show()
     
-    if args.poll_dir and os.path.isdir(args.poll_dir):
-        window.poller.start_polling(args.poll_dir)
-        if not args.filename:
-            files = glob.glob(os.path.join(args.poll_dir, '*.fits')) + glob.glob(os.path.join(args.poll_dir, '*.fit'))
-            if files:
-                args.filename = max(files, key=os.path.getmtime)
+    if args.poll_dir:
+        poll_dir = os.path.expanduser(args.poll_dir)
+        if os.path.isdir(poll_dir):
+            window.poller.start_polling(poll_dir)
+            if not args.filename:
+                files = glob.glob(os.path.join(poll_dir, '*.fits')) + glob.glob(os.path.join(poll_dir, '*.fit'))
+                if files:
+                    args.filename = max(files, key=os.path.getmtime)
     
     if args.filename:
         window.load_fits(args.filename)

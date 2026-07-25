@@ -1,8 +1,54 @@
+import os
+import re
+import pathlib
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox
+from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
 from PySide6.QtCore import Qt
 from pyql3.gui.tools.base_tool import BaseToolDialog
+
+
+def latex_to_html(text):
+    if not text:
+        return ""
+    
+    s = text.strip()
+    # Strip wrapping $$...$$ or $...$
+    if s.startswith("$$") and s.endswith("$$") and len(s) >= 4:
+        s = s[2:-2].strip()
+    elif s.startswith("$") and s.endswith("$") and len(s) >= 2:
+        s = s[1:-1].strip()
+        
+    def replace_math(match):
+        return match.group(1) or match.group(2) or ""
+
+    s = re.sub(r"\$\$(.*?)\$\$|\$(.*?)\$", replace_math, s)
+
+    # Greek letters
+    greek = [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
+        "iota", "kappa", "lambda", "mu", "nu", "xi", "pi", "rho", "sigma", "tau",
+        "upsilon", "phi", "chi", "psi", "omega",
+        "Alpha", "Beta", "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi",
+        "Sigma", "Phi", "Psi", "Omega"
+    ]
+    for g in greek:
+        pattern = "\\\\" + g + "(?![a-zA-Z])"
+        s = re.sub(pattern, "&" + g + ";", s)
+
+    # Spacing & symbols
+    s = s.replace("\\;", "&nbsp;").replace("\\ ", "&nbsp;").replace("\\quad", "&nbsp;&nbsp;")
+    s = s.replace("\\AA", "&#8491;").replace("\\angstrom", "&#8491;").replace("\\pm", "&plusmn;")
+
+    # Subscripts: _{abc} or _abc
+    s = re.sub(r"_\{([^}]+)\}", r"<sub>\1</sub>", s)
+    s = re.sub(r"_([a-zA-Z0-9&;#]+)", r"<sub>\1</sub>", s)
+
+    # Superscripts: ^{abc} or ^abc
+    s = re.sub(r"\^\{([^}]+)\}", r"<sup>\1</sup>", s)
+    s = re.sub(r"\^([a-zA-Z0-9&;#]+)", r"<sup>\1</sup>", s)
+
+    return s
 
 
 class WorldCoordinateAxis(pg.AxisItem):
@@ -38,11 +84,10 @@ class DepthPlotDialog(BaseToolDialog):
         super().__init__(parent, image_viewer, "Plot Window")
         self.resize(700, 800)
         
-        self.setup_draw_button(self.layout)
-        
-        # Clear base layout if we want, but it's a QVBoxLayout.
         # Top Controls
         top_layout = QHBoxLayout()
+        self.setup_draw_button(top_layout)
+
         top_layout.addWidget(QLabel("Plot Type:"))
         
         self.combo_type = QComboBox()
@@ -90,9 +135,9 @@ class DepthPlotDialog(BaseToolDialog):
         self.layout.addWidget(self.plot_widget, stretch=1)
         
         self.plot_legend = self.plot_widget.addLegend(offset=(10, 10))
-        self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=1.5), name="Source")
-        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=1.5, style=Qt.DashLine), name="Background")
-        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=1.5), name="Subtracted")
+        self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=2.5), name="Source")
+        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=2.5, style=Qt.DashLine), name="Background")
+        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=2.5), name="Subtracted")
         
         # Crosshair / Hover Label
         self.lbl_cursor = QLabel("X: --  Y: --")
@@ -170,8 +215,6 @@ class DepthPlotDialog(BaseToolDialog):
         region_layout.addWidget(self.spin_y0, 1, 1)
         region_layout.addWidget(QLabel("to"), 1, 2)
         region_layout.addWidget(self.spin_y1, 1, 3)
-        
-        self.layout.addWidget(group_region)
 
         # Background Region GroupBox
         self.group_bg = QGroupBox("BACKGROUND REGION")
@@ -206,8 +249,45 @@ class DepthPlotDialog(BaseToolDialog):
         bg_layout.addWidget(QLabel("to"), 2, 2)
         bg_layout.addWidget(self.spin_bg_y1, 2, 3)
 
-        self.layout.addWidget(self.group_bg)
-        
+        # Add Cube Input Data and Background Region side-by-side
+        regions_row_layout = QHBoxLayout()
+        regions_row_layout.setContentsMargins(0, 0, 0, 0)
+        regions_row_layout.setSpacing(6)
+        regions_row_layout.addWidget(group_region)
+        regions_row_layout.addWidget(self.group_bg)
+
+        self.layout.addLayout(regions_row_layout)
+
+        # Spectral Line List GroupBox in its own row
+        self.group_linelist = QGroupBox("SPECTRAL LINE LIST")
+        linelist_layout = QGridLayout(self.group_linelist)
+
+        self.chk_enable_lines = QCheckBox("Overplot Line List")
+        self.combo_linelist = QComboBox()
+        self.btn_browse_linelist = QPushButton("Browse...")
+        self.lbl_line_info = QLabel("")
+
+        linelist_layout.addWidget(self.chk_enable_lines, 0, 0)
+        linelist_layout.addWidget(QLabel("Line List:"), 0, 1)
+        linelist_layout.addWidget(self.combo_linelist, 0, 2)
+        linelist_layout.addWidget(self.btn_browse_linelist, 0, 3)
+        linelist_layout.addWidget(self.lbl_line_info, 0, 4)
+
+        self.layout.addWidget(self.group_linelist)
+
+        self.line_items = []
+        self.loaded_lines = []
+        self.linelist_files = {}
+
+        self.chk_enable_lines.stateChanged.connect(self.update_line_overlays)
+        self.combo_linelist.currentIndexChanged.connect(self.on_linelist_selection_changed)
+        self.btn_browse_linelist.clicked.connect(self.browse_custom_linelist)
+
+        self._updating_spins = False
+        self._updating_range_spins = False
+
+        self.populate_linelists()
+
         # Setup signals for view range changed to update spinboxes
         self.plot_widget.getViewBox().sigXRangeChanged.connect(self.on_x_range_changed)
         self.plot_widget.getViewBox().sigYRangeChanged.connect(self.on_y_range_changed)
@@ -288,6 +368,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.spin_x_min.setValue(range_val[0])
             self.spin_x_max.setValue(range_val[1])
             self._updating_range_spins = False
+            self.update_line_overlays()
             
     def on_y_range_changed(self, _, range_val):
         if not self._updating_range_spins:
@@ -438,8 +519,257 @@ class DepthPlotDialog(BaseToolDialog):
         self.update_plot()
 
     def closeEvent(self, event):
+        self.clear_line_overlays()
         self.remove_bg_roi()
         super().closeEvent(event)
+
+    def get_data_dir(self):
+        data_dir = pathlib.Path(__file__).resolve().parents[2] / "data"
+        if not data_dir.exists():
+            data_dir = pathlib.Path(__file__).resolve().parents[1] / "data"
+        if not data_dir.exists():
+            import pyql3
+            data_dir = pathlib.Path(pyql3.__file__).resolve().parent / "data"
+        return data_dir
+
+    def populate_linelists(self):
+        self.combo_linelist.blockSignals(True)
+        self.combo_linelist.clear()
+        self.linelist_files.clear()
+
+        data_dir = self.get_data_dir()
+        if data_dir.exists():
+            for p in sorted(data_dir.glob("*")):
+                if p.suffix.lower() in [".txt", ".csv"]:
+                    display_name = p.name
+                    self.linelist_files[display_name] = str(p)
+                    self.combo_linelist.addItem(display_name)
+
+        self.combo_linelist.addItem("Load Custom CSV...")
+        self.combo_linelist.blockSignals(False)
+        if "nir_stellar_lines.txt" in self.linelist_files:
+            self.combo_linelist.setCurrentText("nir_stellar_lines.txt")
+        elif "rayner_arcturus_atomic_line_list_reformat.txt" in self.linelist_files:
+            self.combo_linelist.setCurrentText("rayner_arcturus_atomic_line_list_reformat.txt")
+        elif self.combo_linelist.count() > 0:
+            self.on_linelist_selection_changed()
+
+    def parse_line_list(self, filepath):
+        lines = []
+        if not filepath or not os.path.exists(filepath):
+            return lines
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or line.startswith(';'):
+                        continue
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        try:
+                            wl = float(parts[0].strip())
+                            name = parts[1].strip()
+                            lines.append((wl, name))
+                        except ValueError:
+                            continue
+        except Exception as e:
+            print(f"Error parsing line list {filepath}: {e}")
+        return lines
+
+    def on_linelist_selection_changed(self):
+        text = self.combo_linelist.currentText()
+        if text == "Load Custom CSV...":
+            self.browse_custom_linelist()
+        elif text in self.linelist_files:
+            filepath = self.linelist_files[text]
+            self.loaded_lines = self.parse_line_list(filepath)
+            self.update_line_overlays()
+
+    def browse_custom_linelist(self):
+        data_dir = self.get_data_dir()
+        initial_dir = str(data_dir) if data_dir.exists() else ""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Spectral Line List CSV", initial_dir, "CSV / Text Files (*.csv *.txt);;All Files (*)"
+        )
+        if filepath:
+            name = os.path.basename(filepath)
+            self.linelist_files[name] = filepath
+            idx = self.combo_linelist.findText("Load Custom CSV...")
+            if idx >= 0:
+                self.combo_linelist.insertItem(idx, name)
+                self.combo_linelist.setCurrentIndex(idx)
+            else:
+                self.combo_linelist.addItem(name)
+                self.combo_linelist.setCurrentText(name)
+            self.loaded_lines = self.parse_line_list(filepath)
+            self.update_line_overlays()
+        else:
+            if self.combo_linelist.currentText() == "Load Custom CSV..." and self.combo_linelist.count() > 1:
+                self.combo_linelist.setCurrentIndex(0)
+
+    def wavelength_to_pixel(self, wavelengths_um):
+        if self.image_viewer is None or getattr(self.image_viewer, 'wcs', None) is None:
+            return None
+        if getattr(self.image_viewer, 'wcs_z_idx', None) is None:
+            return None
+
+        wcs = self.image_viewer.wcs
+        z_idx = self.image_viewer.wcs_z_idx
+
+        try:
+            cunit = str(wcs.wcs.cunit[z_idx]).strip().lower()
+        except Exception:
+            cunit = "m"
+
+        if cunit == 'm':
+            scale = 1e-6
+        elif cunit in ['um', 'micron', 'microns', 'µm']:
+            scale = 1.0
+        elif cunit == 'nm':
+            scale = 1e3
+        elif cunit in ['angstrom', 'a', 'angstroms']:
+            scale = 1e4
+        else:
+            scale = 1e-6
+
+        wls_wcs = np.array(wavelengths_um) * scale
+        n_lines = len(wls_wcs)
+        coords_world = np.zeros((n_lines, wcs.naxis))
+
+        if hasattr(self, 'world_axis') and self.world_axis.fixed_coords is not None:
+            for i in range(wcs.naxis):
+                if i == z_idx:
+                    coords_world[:, i] = wls_wcs
+                else:
+                    coords_world[:, i] = self.world_axis.fixed_coords[i]
+        else:
+            ref_pix = np.zeros((1, wcs.naxis))
+            ref_world = wcs.wcs_pix2world(ref_pix, 0)[0]
+            for i in range(wcs.naxis):
+                if i == z_idx:
+                    coords_world[:, i] = wls_wcs
+                else:
+                    coords_world[:, i] = ref_world[i]
+
+        try:
+            pix_coords = wcs.wcs_world2pix(coords_world, 0)[:, z_idx]
+            return pix_coords
+        except Exception:
+            return None
+
+    def clear_line_overlays(self):
+        for item in self.line_items:
+            try:
+                if isinstance(item, tuple):
+                    line_item, text_item = item
+                    self.plot_widget.removeItem(line_item)
+                    self.plot_widget.removeItem(text_item)
+                else:
+                    self.plot_widget.removeItem(item)
+            except Exception:
+                pass
+        self.line_items.clear()
+
+    def update_line_overlays(self):
+        if not hasattr(self, 'chk_enable_lines'):
+            return
+
+        plot_type = self.combo_type.currentText()
+        lines_enabled = self.chk_enable_lines.isChecked() and (plot_type == "Depth Plot")
+
+        if not lines_enabled or not self.loaded_lines or self.image_viewer is None or getattr(self.image_viewer, 'wcs', None) is None:
+            self.clear_line_overlays()
+            if hasattr(self, 'lbl_line_info'):
+                if not self.chk_enable_lines.isChecked():
+                    self.lbl_line_info.setText("")
+                elif plot_type != "Depth Plot":
+                    self.lbl_line_info.setText("Line list only available in Depth Plot mode.")
+                elif getattr(self.image_viewer, 'wcs', None) is None:
+                    self.lbl_line_info.setText("No WCS present for wavelength mapping.")
+            return
+
+        z_idx = getattr(self.image_viewer, 'wcs_z_idx', None)
+        if z_idx is not None:
+            ctype_raw = str(self.image_viewer.wcs.wcs.ctype[z_idx]).upper()
+            if 'WAVE' not in ctype_raw and 'AWAV' not in ctype_raw:
+                self.clear_line_overlays()
+                self.lbl_line_info.setText("Z-axis is not Wavelength.")
+                return
+
+        wls_um = [item[0] for item in self.loaded_lines]
+        pix_coords = self.wavelength_to_pixel(wls_um)
+
+        if pix_coords is None:
+            self.clear_line_overlays()
+            self.lbl_line_info.setText("WCS conversion failed.")
+            return
+
+        view_box = self.plot_widget.getViewBox()
+        (view_x_min, view_x_max), (view_y_min, view_y_max) = view_box.viewRange()
+
+        if view_x_min == 0.0 and view_x_max == 1.0 and hasattr(self, 'plot_data'):
+            x_data, _ = self.plot_data.getData()
+            if x_data is not None and len(x_data) > 1:
+                view_x_min, view_x_max = float(x_data[0]), float(x_data[-1])
+
+        visible_lines = []
+        for (wl_um, name), x_px in zip(self.loaded_lines, pix_coords):
+            if view_x_min <= x_px <= view_x_max:
+                visible_lines.append((x_px, name, wl_um))
+
+        num_needed = len(visible_lines)
+
+        while len(self.line_items) > num_needed:
+            item = self.line_items.pop()
+            try:
+                if isinstance(item, tuple):
+                    line_item, text_item = item
+                    self.plot_widget.removeItem(line_item)
+                    self.plot_widget.removeItem(text_item)
+                else:
+                    self.plot_widget.removeItem(item)
+            except Exception:
+                pass
+
+        pen = pg.mkPen(color=(0, 100, 220), style=Qt.PenStyle.DotLine, width=1.5)
+        stagger_levels = [0.08, 0.22, 0.36, 0.50]
+        last_x = -9999.0
+        level = 0
+        y_span = view_y_max - view_y_min
+
+        for idx, (x_px, name, wl_um) in enumerate(visible_lines):
+            if abs(x_px - last_x) < 18.0:
+                level = (level + 1) % len(stagger_levels)
+            else:
+                level = 0
+            last_x = x_px
+
+            pos_val = stagger_levels[level]
+            y_pos = view_y_min + pos_val * y_span
+
+            html_content = latex_to_html(name)
+            html_text = f'<span style="color: rgb(0, 70, 180); font-size: 12pt; font-weight: bold;">{html_content}</span>'
+
+            if idx < len(self.line_items):
+                line_item, text_item = self.line_items[idx]
+                line_item.setPos(x_px)
+                line_item.setVisible(True)
+
+                text_item.setHtml(html_text)
+                text_item.setAngle(90)
+                text_item.setPos(x_px, y_pos)
+                text_item.setVisible(True)
+            else:
+                line_item = pg.InfiniteLine(pos=x_px, angle=90, pen=pen)
+                text_item = pg.TextItem(html=html_text, anchor=(0.0, 0.5))
+                text_item.setAngle(90)
+                text_item.setPos(x_px, y_pos)
+
+                self.plot_widget.addItem(line_item)
+                self.plot_widget.addItem(text_item)
+                self.line_items.append((line_item, text_item))
+
+        self.lbl_line_info.setText(f"{len(visible_lines)} line(s) visible (out of {len(self.loaded_lines)} total)")
         
     def toggle_roi_shape(self):
         shape = self.combo_shape.currentText()
@@ -490,6 +820,8 @@ class DepthPlotDialog(BaseToolDialog):
 
         if hasattr(self, 'group_bg'):
             self.group_bg.setEnabled(plot_type == "Depth Plot")
+        if hasattr(self, 'group_linelist'):
+            self.group_linelist.setEnabled(plot_type == "Depth Plot")
             
         # Transform the 3D cube to match the display coordinates (rotation, flip)
         cube = self.image_viewer.transposed_data
@@ -679,3 +1011,5 @@ class DepthPlotDialog(BaseToolDialog):
             self.plot_widget.setLabel('left', f"Intensity ({unit})")
             self.plot_data.setData(x_axis, cut * self.image_viewer.data_multiplier)
             self.plot_sub.setData([], [])
+
+        self.update_line_overlays()
