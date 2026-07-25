@@ -1,7 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('pyql3/icon.png', 'pyql3')]
+datas = [
+    ('pyql3/icon.png', 'pyql3'),
+    ('pyql3/data', 'pyql3/data'),
+]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('photutils')

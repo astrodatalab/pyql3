@@ -44,3 +44,6 @@ write_to = "pyql3/_version.py"
 
 [tool.setuptools]
 packages = ["pyql3"]
+
+[tool.setuptools.package-data]
+"pyql3" = ["data/*", "icon.png"]

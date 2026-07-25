@@ -524,6 +524,14 @@ class DepthPlotDialog(BaseToolDialog):
         super().closeEvent(event)
 
     def get_data_dir(self):
+        try:
+            from pyql3 import get_resource_path
+            p = pathlib.Path(get_resource_path("pyql3/data"))
+            if p.exists():
+                return p
+        except Exception:
+            pass
+
         data_dir = pathlib.Path(__file__).resolve().parents[2] / "data"
         if not data_dir.exists():
             data_dir = pathlib.Path(__file__).resolve().parents[1] / "data"
