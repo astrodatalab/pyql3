@@ -58,9 +58,10 @@ class ImageViewer(QWidget):
         self.last_right_click_pixel_pos = None
         view = self.imv.getView()
         view.scene().sigMouseClicked.connect(self.on_view_clicked)
+        view.sigRangeChanged.connect(self.on_view_range_changed)
         if hasattr(view, 'menu') and view.menu is not None:
             view.menu.addSeparator()
-            act_depth = view.menu.addAction("Plot Depth...")
+            act_depth = view.menu.addAction("Depth Plot...")
             act_depth.triggered.connect(self.on_context_plot_depth)
             act_fit = view.menu.addAction("Gaussian Fit...")
             act_fit.triggered.connect(self.on_context_gaussian_fit)
@@ -321,8 +322,8 @@ class ImageViewer(QWidget):
         hbox.setContentsMargins(0, 0, 0, 0)
         
         # X Axis Group
-        group_x = QGroupBox()
-        layout_x = QVBoxLayout(group_x)
+        self.group_x = QGroupBox()
+        layout_x = QVBoxLayout(self.group_x)
         layout_x.setContentsMargins(2, 2, 2, 2)
         layout_x.setSpacing(2)
         row1_x = QHBoxLayout()
@@ -355,11 +356,11 @@ class ImageViewer(QWidget):
         row2_x.addWidget(self.btn_x_11)
         row2_x.addWidget(self.btn_x_fit)
         layout_x.addLayout(row2_x)
-        hbox.addWidget(group_x)
+        hbox.addWidget(self.group_x)
         
         # Y Axis Group
-        group_y = QGroupBox()
-        layout_y = QVBoxLayout(group_y)
+        self.group_y = QGroupBox()
+        layout_y = QVBoxLayout(self.group_y)
         layout_y.setContentsMargins(2, 2, 2, 2)
         layout_y.setSpacing(2)
         row1_y = QHBoxLayout()
@@ -392,14 +393,14 @@ class ImageViewer(QWidget):
         row2_y.addWidget(self.btn_y_11)
         row2_y.addWidget(self.btn_y_fit)
         layout_y.addLayout(row2_y)
-        hbox.addWidget(group_y)
+        hbox.addWidget(self.group_y)
         
         hbox.addStretch()
         self.advanced_layout.addLayout(hbox)
         
     def setup_z_axis_panel(self):
-        group_z = QGroupBox()
-        layout_z = QVBoxLayout(group_z)
+        self.group_z = QGroupBox()
+        layout_z = QVBoxLayout(self.group_z)
         layout_z.setContentsMargins(2, 2, 2, 2)
         layout_z.setSpacing(2)
         
@@ -469,7 +470,7 @@ class ImageViewer(QWidget):
         layout_z.addLayout(slice_hbox)
         
         self.radio_range.toggled.connect(self.z_mode_changed)
-        self.advanced_layout.addWidget(group_z)
+        self.advanced_layout.addWidget(self.group_z)
 
 
 
@@ -722,9 +723,19 @@ class ImageViewer(QWidget):
             self.apply_transforms()
             self.update_image_display()
             self.lbl_zsize.setText("ZSize: 1")
-            self.tab_advanced.setEnabled(False) # Disable Z controls for 2D
+            self.tab_advanced.setEnabled(True)
+            self.combo_ext.setEnabled(True)
+            self.combo_collapse.setEnabled(False)
+            if hasattr(self, 'group_x'): self.group_x.setEnabled(False)
+            if hasattr(self, 'group_y'): self.group_y.setEnabled(False)
+            if hasattr(self, 'group_z'): self.group_z.setEnabled(False)
         elif data.ndim == 3:
             self.tab_advanced.setEnabled(True)
+            self.combo_ext.setEnabled(True)
+            self.combo_collapse.setEnabled(True)
+            if hasattr(self, 'group_x'): self.group_x.setEnabled(True)
+            if hasattr(self, 'group_y'): self.group_y.setEnabled(True)
+            if hasattr(self, 'group_z'): self.group_z.setEnabled(True)
             
             # Check CTYPE1 to determine default axes
             # OSIRIS has WAVE as CTYPE1, but non-OSIRIS usually has RA---TAN
@@ -865,20 +876,40 @@ class ImageViewer(QWidget):
 
         if self.wcs is not None and getattr(self.wcs, 'naxis', 0) >= 2:
             try:
-                wcs_ctypes = [str(c).upper() for c in self.wcs.wcs.ctype]
                 ra_axis = -1
                 dec_axis = -1
-                for idx, ctype in enumerate(wcs_ctypes):
-                    if 'RA' in ctype:
-                        ra_axis = idx
-                    elif 'DEC' in ctype:
-                        dec_axis = idx
+
+                # 1. Check Astropy physical types (e.g. 'pos.eq.ra', 'pos.eq.dec', 'pos.galactic.lon', etc.)
+                if hasattr(self.wcs, 'world_axis_physical_types'):
+                    phys_types = [str(pt).lower() for pt in self.wcs.world_axis_physical_types]
+                    for idx, pt in enumerate(phys_types):
+                        if ra_axis < 0 and ('ra' in pt or 'lon' in pt):
+                            ra_axis = idx
+                        elif dec_axis < 0 and ('dec' in pt or 'lat' in pt):
+                            dec_axis = idx
+
+                # 2. Fallback to CTYPE string matching
+                if ra_axis < 0 or dec_axis < 0:
+                    wcs_ctypes = [str(c).upper() for c in self.wcs.wcs.ctype]
+                    for idx, ctype in enumerate(wcs_ctypes):
+                        if ra_axis < 0 and ('RA' in ctype or 'LON' in ctype):
+                            ra_axis = idx
+                        elif dec_axis < 0 and ('DEC' in ctype or 'LAT' in ctype):
+                            dec_axis = idx
 
                 if ra_axis >= 0 and dec_axis >= 0:
-                    x_axis_str = getattr(self, 'current_x_axis', 'AXIS 3')
-                    y_axis_str = getattr(self, 'current_y_axis', 'AXIS 2')
-                    x_axis_idx = int(x_axis_str.split()[-1]) - 1
-                    y_axis_idx = int(y_axis_str.split()[-1]) - 1
+                    if self.wcs.naxis == 2:
+                        x_axis_idx = 0
+                        y_axis_idx = 1
+                    else:
+                        x_axis_str = getattr(self, 'current_x_axis', 'AXIS 3')
+                        y_axis_str = getattr(self, 'current_y_axis', 'AXIS 2')
+                        x_axis_idx = int(x_axis_str.split()[-1]) - 1
+                        y_axis_idx = int(y_axis_str.split()[-1]) - 1
+                        if x_axis_idx >= self.wcs.naxis:
+                            x_axis_idx = 0
+                        if y_axis_idx >= self.wcs.naxis:
+                            y_axis_idx = 1
 
                     trans_shape = self.transposed_data.shape
                     raw_cx = (trans_shape[-1] - 1) / 2.0
@@ -957,6 +988,16 @@ class ImageViewer(QWidget):
         if getattr(self, 'show_pa', False):
             self.toggle_position_angle(True)
 
+    def on_view_range_changed(self):
+        if getattr(self, '_updating_pa', False):
+            return
+        if getattr(self, 'show_pa', False):
+            self._updating_pa = True
+            try:
+                self.toggle_position_angle(True)
+            finally:
+                self._updating_pa = False
+
     def toggle_position_angle(self, checked):
         self.show_pa = bool(checked)
 
@@ -973,17 +1014,10 @@ class ImageViewer(QWidget):
         if not self.show_pa or self.display_data is None or self.transposed_data is None:
             return
 
-        # Display array shape (ny, nx) or (nz, ny, nx) in current display orientation
-        disp_shape = self.display_data.shape
-        nx = disp_shape[-1]
-        ny = disp_shape[-2]
-        cx = (nx - 1) / 2.0
-        cy = (ny - 1) / 2.0
-
         import math
 
-        theta_n_base, theta_e_base, _ = self.get_north_angle_base()
-        if theta_n_base is None:
+        theta_n_base, theta_e_base, is_wcs = self.get_north_angle_base()
+        if not is_wcs or theta_n_base is None:
             return
 
         # 2. Apply GUI view rotation (rot_angle + view_rotation in deg CCW) and horizontal flip
@@ -994,10 +1028,17 @@ class ImageViewer(QWidget):
             theta_n_vis = (180.0 - theta_n_vis) % 360.0
             theta_e_vis = (180.0 - theta_e_vis) % 360.0
 
-        # Compass size relative to image dimensions
-        L = max(nx, ny) * 0.18
+        # Compass size scaled to the visible view window
+        view_rect = self.imv.getView().viewRect()
+        cx = view_rect.center().x()
+        cy = view_rect.center().y()
+        v_width = abs(view_rect.width())
+        v_height = abs(view_rect.height())
+        v_size = min(v_width, v_height)
+
+        L = v_size * 0.18
         headLen = L * 0.35
-        tailWidth = max(max(nx, ny) * 0.012, 1.0)
+        tailWidth = max(v_size * 0.012, 1.0)
 
         # --- Draw North arrow ---
         rad_n = math.radians(theta_n_vis)
@@ -1176,8 +1217,13 @@ class ImageViewer(QWidget):
                         if self.wcs.naxis == 2:
                             p1 = orig_x; p2 = orig_y
                             world = self.wcs.pixel_to_world(p1, p2)
-                            self.lbl_wcs.setText(f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  {world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
-                        if self.wcs.naxis >= 3 and self.wcs_z_idx is not None:
+                            if hasattr(world, 'ra') and hasattr(world, 'dec'):
+                                self.lbl_wcs.setText(f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  {world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
+                            elif isinstance(world, (list, tuple)) and len(world) >= 2:
+                                self.lbl_wcs.setText(f"WCS: {world[0]:.5g}  {world[1]:.5g}")
+                            else:
+                                self.lbl_wcs.setText(f"WCS: {world}")
+                        elif self.wcs.naxis >= 3 and self.wcs_z_idx is not None:
                             if hasattr(self, 'radio_range') and self.radio_range.isChecked():
                                 try:
                                     z_min = max(0, int(self.txt_zmin.text() or 0))
@@ -1217,9 +1263,8 @@ class ImageViewer(QWidget):
                             wcs_text = "  |  ".join(wcs_parts)
                                 
                             self.lbl_wcs.setText(f"WCS: {wcs_text}")
-                    except Exception as e:
-                        print(f"WCS Error: {e}")
-                        self.lbl_wcs.setText("WCS: Error computing")
+                    except Exception:
+                        self.lbl_wcs.setText("WCS: N/A")
                 else:
                     self.lbl_wcs.setText("WCS: N/A")
             else:

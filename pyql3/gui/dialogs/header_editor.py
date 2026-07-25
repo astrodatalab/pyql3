@@ -1,14 +1,27 @@
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QMessageBox, QLineEdit
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, 
+    QHBoxLayout, QMessageBox, QLineEdit, QComboBox, QLabel
+)
 from PySide6.QtCore import Qt
 
 class HeaderEditorDialog(QDialog):
     def __init__(self, fits_reader, parent=None):
         super().__init__(parent)
         self.fits_reader = fits_reader
+        self.current_ext = getattr(fits_reader, 'current_ext', 0)
         self.setWindowTitle("FITS Header Editor")
-        self.resize(500, 400)
+        self.resize(550, 450)
         
         self.layout = QVBoxLayout(self)
+        
+        # Extension Selector Layout
+        ext_layout = QHBoxLayout()
+        ext_layout.addWidget(QLabel("Extension:"))
+        self.combo_ext = QComboBox()
+        self.populate_extensions()
+        self.combo_ext.currentIndexChanged.connect(self.on_extension_changed)
+        ext_layout.addWidget(self.combo_ext, stretch=1)
+        self.layout.addLayout(ext_layout)
         
         # Search bar
         self.search_bar = QLineEdit()
@@ -31,11 +44,33 @@ class HeaderEditorDialog(QDialog):
         self.button_layout.addWidget(self.cancel_btn)
         self.layout.addLayout(self.button_layout)
         
-        self.populate_table()
+        self.populate_table(self.current_ext)
 
-    def populate_table(self):
-        header = self.fits_reader.get_header()
+    def populate_extensions(self):
+        self.combo_ext.blockSignals(True)
+        self.combo_ext.clear()
+        extensions = self.fits_reader.get_all_extensions()
+        for idx, name in extensions:
+            self.combo_ext.addItem(f"{idx}: {name}", userData=idx)
+            
+        cur_idx = self.combo_ext.findData(self.current_ext)
+        if cur_idx >= 0:
+            self.combo_ext.setCurrentIndex(cur_idx)
+        self.combo_ext.blockSignals(False)
+
+    def on_extension_changed(self, index):
+        # Save edits from table to previous extension header in memory before switching
+        self.apply_table_edits(ext=self.current_ext)
+        new_ext = self.combo_ext.currentData()
+        if new_ext is not None:
+            self.current_ext = new_ext
+            self.search_bar.clear()
+            self.populate_table(self.current_ext)
+
+    def populate_table(self, ext=None):
+        header = self.fits_reader.get_header(ext=ext)
         if header is None:
+            self.table.setRowCount(0)
             return
             
         self.table.setRowCount(len(header))
@@ -66,41 +101,44 @@ class HeaderEditorDialog(QDialog):
                     break
             self.table.setRowHidden(row, not match)
 
-    def save_header(self):
-        header = self.fits_reader.get_header()
+    def apply_table_edits(self, ext=None):
+        header = self.fits_reader.get_header(ext=ext)
         if header is None:
-            self.accept()
             return
             
-        try:
-            for row in range(self.table.rowCount()):
-                keyword_item = self.table.item(row, 0)
-                value_item = self.table.item(row, 1)
-                comment_item = self.table.item(row, 2)
+        for row in range(self.table.rowCount()):
+            keyword_item = self.table.item(row, 0)
+            value_item = self.table.item(row, 1)
+            comment_item = self.table.item(row, 2)
+            
+            if keyword_item and value_item:
+                keyword = keyword_item.text()
+                value = value_item.text()
                 
-                if keyword_item and value_item:
-                    keyword = keyword_item.text()
-                    value = value_item.text()
-                    
-                    # Basic type conversion attempt
+                # Basic type conversion attempt
+                try:
+                    value = int(value)
+                except ValueError:
                     try:
-                        value = int(value)
+                        value = float(value)
                     except ValueError:
-                        try:
-                            value = float(value)
-                        except ValueError:
-                            if value.lower() in ('true', 't'):
-                                value = True
-                            elif value.lower() in ('false', 'f'):
-                                value = False
-                                
-                    comment = comment_item.text() if comment_item else ""
+                        if value.lower() in ('true', 't'):
+                            value = True
+                        elif value.lower() in ('false', 'f'):
+                            value = False
+                            
+                comment = comment_item.text() if comment_item else ""
+                
+                # Skip special keywords
+                if keyword in ('', 'COMMENT', 'HISTORY'):
+                    continue
                     
-                    # Skip special keywords or handle them carefully
-                    if keyword in ('', 'COMMENT', 'HISTORY'):
-                        continue
-                        
-                    self.fits_reader.update_header_card(keyword, value, comment)
+                self.fits_reader.update_header_card(keyword, value, comment, ext=ext)
+
+    def save_header(self):
+        try:
+            # Apply current table edits to currently selected extension
+            self.apply_table_edits(ext=self.current_ext)
             
             if not self.fits_reader.filepath:
                 # In-memory data: prompt user via main window save_file_as if available

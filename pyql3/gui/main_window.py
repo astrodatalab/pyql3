@@ -344,9 +344,15 @@ class MainWindow(QMainWindow):
             no_recent = self.recent_menu.addAction("No Recent Files")
             no_recent.setEnabled(False)
         else:
+            basenames = [os.path.basename(p) for p in recent_files]
             for idx, path in enumerate(recent_files):
-                filename = os.path.basename(path)
-                action_text = f"{idx + 1}. {filename}"
+                base = os.path.basename(path)
+                if basenames.count(base) > 1:
+                    parent_dir = os.path.basename(os.path.dirname(path))
+                    action_text = f"{idx + 1}. {base} ({parent_dir})"
+                else:
+                    action_text = f"{idx + 1}. {base}"
+                    
                 act = self.recent_menu.addAction(action_text)
                 act.setToolTip(path)
                 act.setStatusTip(path)

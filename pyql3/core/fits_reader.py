@@ -67,6 +67,16 @@ class FitsReader:
         self.data = data
         self.header = header
         
+    def get_all_extensions(self):
+        extensions = []
+        if self.hdul:
+            for idx, hdu in enumerate(self.hdul):
+                name = hdu.name if hdu.name else f"EXT {idx}"
+                extensions.append((idx, name))
+        elif self.header is not None:
+            extensions.append((0, "PRIMARY"))
+        return extensions
+
     def get_image_extensions(self):
         extensions = []
         if self.hdul:
@@ -75,19 +85,23 @@ class FitsReader:
                     name = hdu.name if hdu.name else f"EXT {idx}"
                     extensions.append((idx, name))
         return extensions
+
     def get_data(self):
         return self.data
         
-    def get_header(self):
+    def get_header(self, ext=None):
+        if ext is not None and self.hdul and 0 <= ext < len(self.hdul):
+            return self.hdul[ext].header
         return self.header
         
-    def update_header_card(self, keyword, value, comment=None):
+    def update_header_card(self, keyword, value, comment=None, ext=None):
         """Updates or adds a header card."""
-        if self.header is not None:
+        hdr = self.get_header(ext=ext)
+        if hdr is not None:
             if comment is not None:
-                self.header[keyword] = (value, comment)
+                hdr[keyword] = (value, comment)
             else:
-                self.header[keyword] = value
+                hdr[keyword] = value
 
     def save(self, output_filepath=None):
         """Saves the modified FITS file."""

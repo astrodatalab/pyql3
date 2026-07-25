@@ -39,8 +39,9 @@ class ConfigManager:
     def add_recent_file(self, filepath, max_items=10):
         if not filepath:
             return
-        filepath = os.path.abspath(filepath)
-        recent = [f for f in self.get_recent_files() if f != filepath]
+        filepath = os.path.realpath(os.path.abspath(os.path.expanduser(filepath)))
+        recent = [os.path.realpath(os.path.abspath(os.path.expanduser(f))) for f in self.get_recent_files()]
+        recent = [f for f in recent if f != filepath]
         recent.insert(0, filepath)
         recent = recent[:max_items]
         self.set("recent_files", recent)
@@ -48,8 +49,9 @@ class ConfigManager:
     def remove_recent_file(self, filepath):
         if not filepath:
             return
-        filepath = os.path.abspath(filepath)
-        recent = [f for f in self.get_recent_files() if f != filepath]
+        filepath = os.path.realpath(os.path.abspath(os.path.expanduser(filepath)))
+        recent = [os.path.realpath(os.path.abspath(os.path.expanduser(f))) for f in self.get_recent_files()]
+        recent = [f for f in recent if f != filepath]
         self.set("recent_files", recent)
 
     def clear_recent_files(self):
