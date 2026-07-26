@@ -20,6 +20,10 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 - **Live File Polling**: Monitor a directory for incoming FITS files and automatically load them in real time as observations complete.
 - **Header Editor**: View and modify FITS header cards directly in the UI.
 
+## Download
+
+Binaries of the applications are available for Linux, MacOS, and Windows. Download the latest release at [https://github.com/astrodatalab/pyql3/releases/latest](https://github.com/astrodatalab/pyql3/releases/latest)
+
 ## Installation
 
 PyQL3 manages its dependencies seamlessly using `uv`, an extremely fast Python package and project manager. `uv` will automatically download the correct Python version and all required libraries (`PySide6`, `pyqtgraph`, `astropy`, `scipy`, etc.) so you don't have to worry about complex virtual environments.

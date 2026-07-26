@@ -349,6 +349,8 @@ class DepthPlotDialog(BaseToolDialog):
     def auto_y_range(self):
         self.chk_fix_y.setChecked(False)
         self.plot_widget.enableAutoRange(axis=pg.ViewBox.YAxis)
+        self.plot_widget.getViewBox().autoRange()
+        self.update_line_overlays()
         
     def toggle_fix_x(self):
         if self.chk_fix_x.isChecked():
@@ -376,6 +378,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.spin_y_min.setValue(range_val[0])
             self.spin_y_max.setValue(range_val[1])
             self._updating_range_spins = False
+            self.update_line_overlays()
 
     def toggle_log_scale(self):
         self.plot_widget.setLogMode(x=self.chk_log_x.isChecked(), y=self.chk_log_y.isChecked())
@@ -770,6 +773,8 @@ class DepthPlotDialog(BaseToolDialog):
             else:
                 line_item = pg.InfiniteLine(pos=x_px, angle=90, pen=pen)
                 text_item = pg.TextItem(html=html_text, anchor=(0.0, 0.5))
+                line_item.dataBounds = lambda ax, *args, **kwargs: (None, None)
+                text_item.dataBounds = lambda ax, *args, **kwargs: (None, None)
                 text_item.setAngle(90)
                 text_item.setPos(x_px, y_pos)
 
