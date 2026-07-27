@@ -1,0 +1,2 @@
+recursive-include pyql3/data *.txt *.csv
+include pyql3/icon.png

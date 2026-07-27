@@ -4,7 +4,7 @@ import pathlib
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QDir
 from pyql3.gui.tools.base_tool import BaseToolDialog
 
 
@@ -527,21 +527,32 @@ class DepthPlotDialog(BaseToolDialog):
         super().closeEvent(event)
 
     def get_data_dir(self):
+        import sys
+        import pyql3
+
+        candidates = []
+        if hasattr(sys, '_MEIPASS'):
+            candidates.append(pathlib.Path(sys._MEIPASS) / "pyql3" / "data")
+            candidates.append(pathlib.Path(sys._MEIPASS) / "data")
+
         try:
             from pyql3 import get_resource_path
-            p = pathlib.Path(get_resource_path("pyql3/data"))
-            if p.exists():
-                return p
+            candidates.append(pathlib.Path(get_resource_path("pyql3/data")))
         except Exception:
             pass
 
-        data_dir = pathlib.Path(__file__).resolve().parents[2] / "data"
-        if not data_dir.exists():
-            data_dir = pathlib.Path(__file__).resolve().parents[1] / "data"
-        if not data_dir.exists():
-            import pyql3
-            data_dir = pathlib.Path(pyql3.__file__).resolve().parent / "data"
-        return data_dir
+        pyql3_dir = pathlib.Path(pyql3.__file__).resolve().parent
+        candidates.append(pyql3_dir / "data")
+
+        cur_dir = pathlib.Path(__file__).resolve().parent
+        candidates.append(cur_dir.parents[1] / "data")
+        candidates.append(cur_dir.parents[2] / "data")
+
+        for cand in candidates:
+            if cand.exists() and cand.is_dir():
+                return cand
+
+        return pyql3_dir / "data"
 
     def populate_linelists(self):
         self.combo_linelist.blockSignals(True)
@@ -557,13 +568,22 @@ class DepthPlotDialog(BaseToolDialog):
                     self.combo_linelist.addItem(display_name)
 
         self.combo_linelist.addItem("Load Custom CSV...")
-        self.combo_linelist.blockSignals(False)
+
         if "nir_stellar_lines.txt" in self.linelist_files:
             self.combo_linelist.setCurrentText("nir_stellar_lines.txt")
+            self.loaded_lines = self.parse_line_list(self.linelist_files["nir_stellar_lines.txt"])
         elif "rayner_arcturus_atomic_line_list_reformat.txt" in self.linelist_files:
             self.combo_linelist.setCurrentText("rayner_arcturus_atomic_line_list_reformat.txt")
-        elif self.combo_linelist.count() > 0:
-            self.on_linelist_selection_changed()
+            self.loaded_lines = self.parse_line_list(self.linelist_files["rayner_arcturus_atomic_line_list_reformat.txt"])
+        elif self.linelist_files:
+            first_name = list(self.linelist_files.keys())[0]
+            self.combo_linelist.setCurrentText(first_name)
+            self.loaded_lines = self.parse_line_list(self.linelist_files[first_name])
+        else:
+            self.combo_linelist.setCurrentText("Load Custom CSV...")
+            self.loaded_lines = []
+
+        self.combo_linelist.blockSignals(False)
 
     def parse_line_list(self, filepath):
         lines = []
@@ -589,16 +609,18 @@ class DepthPlotDialog(BaseToolDialog):
 
     def on_linelist_selection_changed(self):
         text = self.combo_linelist.currentText()
-        if text == "Load Custom CSV...":
-            self.browse_custom_linelist()
-        elif text in self.linelist_files:
+        if text in self.linelist_files:
             filepath = self.linelist_files[text]
             self.loaded_lines = self.parse_line_list(filepath)
             self.update_line_overlays()
 
     def browse_custom_linelist(self):
         data_dir = self.get_data_dir()
-        initial_dir = str(data_dir) if data_dir.exists() else ""
+        if data_dir and data_dir.exists():
+            initial_dir = str(data_dir)
+        else:
+            initial_dir = QDir.homePath()
+
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Select Spectral Line List CSV", initial_dir, "CSV / Text Files (*.csv *.txt);;All Files (*)"
         )
