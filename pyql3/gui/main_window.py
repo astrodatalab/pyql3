@@ -480,6 +480,13 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_depth_plot(self, initial_center=None):
+        if self.image_viewer is None or getattr(self.image_viewer, 'transposed_data', None) is None:
+            return
+        if self.image_viewer.transposed_data.ndim != 3:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Depth Plot", "Depth Plot is only available for 3D data cubes.")
+            return
+
         from pyql3.gui.tools.depth_plot import DepthPlotDialog
         if not hasattr(self, '_depth_plot_dialog') or not self._depth_plot_dialog.isVisible():
             self._depth_plot_dialog = DepthPlotDialog(self, self.image_viewer, initial_center=initial_center)

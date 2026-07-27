@@ -10,6 +10,11 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
 
+try:
+    import cmcrameri.cm
+except ImportError:
+    pass
+
 class JumpSlider(QSlider):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1290,16 +1295,42 @@ class ImageViewer(QWidget):
                 
         try:
             import pyqtgraph as pg
+
+            cmap = None
+            # 1. Try pyqtgraph native colormap
             try:
                 cmap = pg.colormap.get(lookup_name)
             except Exception:
+                pass
+
+            # 2. Try matplotlib / cmcrameri colormap
+            if cmap is None:
                 try:
                     import cmcrameri.cm
                 except ImportError:
                     pass
-                cmap = pg.colormap.getFromMatplotlib(lookup_name)
-                
-            self.imv.setColorMap(cmap)
+                try:
+                    cmap = pg.colormap.getFromMatplotlib(lookup_name)
+                except Exception:
+                    pass
+
+            # 3. Try with/without cmc. prefix
+            if cmap is None:
+                alt_name = lookup_name[4:] if lookup_name.startswith('cmc.') else 'cmc.' + lookup_name
+                try:
+                    cmap = pg.colormap.getFromMatplotlib(alt_name)
+                except Exception:
+                    pass
+
+            # 4. Fallback to viridis or grey if requested colormap is unavailable
+            if cmap is None:
+                try:
+                    cmap = pg.colormap.get('viridis')
+                except Exception:
+                    cmap = pg.colormap.get('grey')
+
+            if cmap is not None:
+                self.imv.setColorMap(cmap)
         except Exception as e:
             print(f"Warning: Could not set colormap {lookup_name}: {e}")
 
