@@ -56,9 +56,15 @@ def test_strehl_tool(loaded_viewer):
 
 def test_surface_plot_tool(loaded_viewer):
     """Test 3D surface plot tool initialization and update."""
-    dialog = SurfacePlotDialog(image_viewer=loaded_viewer)
-    dialog.update_plot()
-    dialog.close()
+    try:
+        dialog = SurfacePlotDialog(image_viewer=loaded_viewer)
+        dialog.update_plot()
+        dialog.close()
+    except RuntimeError as e:
+        if "pyqtgraph.opengl" in str(e) or "OpenGL" in str(e):
+            pytest.skip(f"3D OpenGL not supported in headless CI environment: {e}")
+        else:
+            raise
 
 
 def test_arithmetic_tool(loaded_viewer):
