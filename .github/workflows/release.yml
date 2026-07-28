@@ -43,7 +43,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1-mesa-glx libxcb-cursor0 libxkbcommon-x11-0 libdbus-1-3 xvfb
+          sudo apt-get install -y libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri libxcb-cursor0 libxkbcommon-x11-0 libdbus-1-3 xvfb
 
       - name: Install dependencies
         run: |
