@@ -77,7 +77,12 @@ class DepthPlotDialog(BaseToolDialog):
         top_layout = QHBoxLayout()
         self.setup_draw_button(top_layout)
 
-        top_layout.addWidget(QLabel("Plot Type:"))
+        self.btn_export = QPushButton("Export...")
+        self.btn_export.setToolTip("Export plot data (CSV, Image, SVG, Vector)")
+        self.btn_export.clicked.connect(self.open_export_dialog)
+        top_layout.addWidget(self.btn_export)
+
+        top_layout.addWidget(QLabel("Type:"))
         
         self.combo_type = QComboBox()
         self.combo_type.addItems(["Depth Plot", "Horizontal Cut", "Vertical Cut"])
@@ -316,6 +321,18 @@ class DepthPlotDialog(BaseToolDialog):
         self._updating_range_spins = False
         
         self.update_plot()
+
+    def open_export_dialog(self):
+        """Open PyQtGraph native export dialog."""
+        try:
+            from pyqtgraph.GraphicsScene.exportDialog import ExportDialog
+            scene = self.plot_widget.scene()
+            scene.contextMenuItem = self.plot_widget.plotItem
+            if getattr(scene, 'exportDialog', None) is None:
+                scene.exportDialog = ExportDialog(scene)
+            scene.exportDialog.show(self.plot_widget.plotItem)
+        except Exception as e:
+            print(f"Error opening export dialog: {e}")
         
     def mouse_moved(self, evt):
         pos = evt[0]

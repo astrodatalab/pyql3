@@ -111,3 +111,16 @@ def test_depth_plot_wavelength_x_axis_and_csv_export(loaded_viewer):
     # Top axis check
     assert dialog.top_axis.wavelengths is not None, "Top axis wavelengths not set"
     dialog.close()
+
+
+def test_depth_plot_export_button(loaded_viewer):
+    """Verify that Export... button exists on top layout and triggers export dialog."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer)
+    assert hasattr(dialog, "btn_export"), "DepthPlotDialog missing btn_export button"
+    assert dialog.btn_export.text() == "Export...", "Export button text mismatch"
+
+    dialog.btn_export.click()
+    scene = dialog.plot_widget.scene()
+    assert scene.exportDialog is not None, "Export dialog was not created on scene"
+    assert scene.exportDialog.isVisible(), "Export dialog is not visible after clicking Export... button"
+    dialog.close()

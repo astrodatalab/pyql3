@@ -30,7 +30,7 @@ $$S_{\text{subtracted}}(z) = S_{\text{signal}}(z) - S_{\text{bg}}(z)$$
 #### C. Wavelength Primary X-Axis & Dual Axis Display
 When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths $\lambda$ ($\mu\text{m}$). The top X-axis (`PixelIndexAxis`) dynamically renders the corresponding 0-indexed channel slice numbers ($z \in [0, N-1]$). 
 
-This setup allows users to right-click the plot and select **Export... ➔ CSV** to save wavelength-resolved spectra ($xData = \lambda$, $yData = \text{Intensity}$).
+This setup allows users to click the **Export...** button on the top control bar (or right-click the plot and select **Export...**) to save wavelength-resolved spectra ($xData = \lambda$, $yData = \text{Intensity}$) to CSV, vector graphics, or images.
 
 Line list wavelengths $\lambda$ are mapped directly onto the plot in wavelength units. Overlays positioned outside the dataset's visible spectral range are automatically filtered out.
 
@@ -38,6 +38,23 @@ Line list wavelengths $\lambda$ are mapped directly onto the plot in wavelength 
 - Overlaid spectral line labels feature 90° vertical rotation.
 - To prevent overlapping labels when spectral lines are closely spaced, label heights are automatically staggered across 4 discrete vertical offset levels.
 - LaTeX mathematical expressions enclosed in `$$...$$` (e.g. `$$H_\alpha$$`, `$$P_{2f}6.5$$`) are automatically parsed and formatted.
+
+#### E. Exporting Spectra & Figures (CSV, PNG, SVG)
+
+Astronomers can export the extracted 1D spectra and plot graphics by clicking the **Export...** button on the top control bar (or right-clicking anywhere on the plot canvas and selecting **Export...**):
+
+1. **Exporting Wavelength & Intensity Data to CSV**:
+   - In the Export dialog, select **CSV Exporter** under **Item to export**.
+   - Select the target curve (`PlotItem`, `Source`, `Background`, or `Subtracted`).
+   - Click **Export** to save a `.csv` data table. When WCS is present, the first column contains physical wavelengths ($\mu\text{m}$) and subsequent columns contain corresponding flux/intensity values ($DN$ or $DN/s$).
+
+2. **Exporting High-Resolution Images (PNG, JPG)**:
+   - Select **Image Exporter** in the Export dialog.
+   - Specify output image pixel dimensions ($W \times H$).
+   - Click **Export** to save publication-quality plot figures.
+
+3. **Exporting Vector Graphics (SVG)**:
+   - Select **SVG Exporter** for vector graphics suitable for publication figures and vector editing software (e.g., Inkscape, Illustrator).
 
 ---
 
