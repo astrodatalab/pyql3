@@ -90,3 +90,24 @@ def test_depth_plot_no_spurious_file_dialog(qapp, monkeypatch):
 
     assert not file_dialog_opened, "DepthPlotDialog popped up a QFileDialog during initialization!"
     dialog.close()
+
+
+def test_depth_plot_wavelength_x_axis_and_csv_export(loaded_viewer):
+    """Verify that primary X-axis data is set to physical wavelengths for CSV export."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer)
+    dialog.update_plot()
+
+    x_data, y_data = dialog.plot_data.getData()
+    assert x_data is not None and len(x_data) > 0, "No X data returned from plot_data"
+    
+    # Check that x_data matches physical wavelengths rather than 0-indexed integers
+    # For OSIRIS Kn5 cube, wavelengths are around ~2.2 µm
+    assert np.mean(x_data) > 1.0, f"Expected physical wavelength X-axis (> 1.0 µm), got mean: {np.mean(x_data)}"
+    
+    # Bottom label check
+    bottom_label = dialog.plot_widget.getAxis('bottom').labelText
+    assert "Wavelength" in bottom_label, f"Expected 'Wavelength' in bottom axis label, got '{bottom_label}'"
+    
+    # Top axis check
+    assert dialog.top_axis.wavelengths is not None, "Top axis wavelengths not set"
+    dialog.close()

@@ -27,12 +27,12 @@ When **Enable Background Subtraction** is checked, a secondary background ROI is
 
 $$S_{\text{subtracted}}(z) = S_{\text{signal}}(z) - S_{\text{bg}}(z)$$
 
-#### C. WCS Wavelength to Pixel Mapping
-Line list wavelengths $\lambda$ (in $\mu\text{m}$, $\text{nm}$, or $\text{\AA}$) are converted to 0-indexed spectral channel indices $z$ using the FITS World Coordinate System (WCS):
+#### C. Wavelength Primary X-Axis & Dual Axis Display
+When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths $\lambda$ ($\mu\text{m}$). The top X-axis (`PixelIndexAxis`) dynamically renders the corresponding 0-indexed channel slice numbers ($z \in [0, N-1]$). 
 
-$$z = \text{WCS}^{-1}(\lambda)$$
+This setup allows users to right-click the plot and select **Export... ➔ CSV** to save wavelength-resolved spectra ($xData = \lambda$, $yData = \text{Intensity}$).
 
-Line overlays positioned outside the dataset's spectral wavelength range $[z_{\min}, z_{\max}]$ are automatically filtered out.
+Line list wavelengths $\lambda$ are mapped directly onto the plot in wavelength units. Overlays positioned outside the dataset's visible spectral range are automatically filtered out.
 
 #### D. Spectral Line Overlay & Staggering
 - Overlaid spectral line labels feature 90° vertical rotation.

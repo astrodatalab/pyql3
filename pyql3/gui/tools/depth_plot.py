@@ -51,33 +51,22 @@ def latex_to_html(text):
     return s
 
 
-class WorldCoordinateAxis(pg.AxisItem):
+class PixelIndexAxis(pg.AxisItem):
+    """Top axis displaying 0-indexed channel slice numbers when the bottom X-axis displays physical wavelengths."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.wcs = None
-        self.z_idx = None
-        self.fixed_coords = None
-        
+        self.wavelengths = None
+
     def tickStrings(self, values, scale, spacing):
-        if self.wcs is None or self.z_idx is None or self.fixed_coords is None:
+        if self.wavelengths is None or len(self.wavelengths) == 0:
             return super().tickStrings(values, scale, spacing)
-            
-        coords = np.zeros((len(values), self.wcs.naxis))
-        for i in range(self.wcs.naxis):
-            if i == self.z_idx:
-                coords[:, i] = values
-            else:
-                coords[:, i] = self.fixed_coords[i]
-                
+
         try:
-            world = self.wcs.wcs_pix2world(coords, 0)
-            wave = world[:, self.z_idx]
-            unit = self.wcs.wcs.cunit[self.z_idx]
-            if str(unit).strip().lower() == 'm':
-                wave *= 1e6
-            return [f"{w:.4f}" for w in wave]
+            indices = np.interp(values, self.wavelengths, np.arange(len(self.wavelengths)))
+            return [f"{int(round(idx))}" for idx in indices]
         except Exception:
             return super().tickStrings(values, scale, spacing)
+
 
 class DepthPlotDialog(BaseToolDialog):
     def __init__(self, parent=None, image_viewer=None, initial_center=None):
@@ -111,10 +100,10 @@ class DepthPlotDialog(BaseToolDialog):
         self.layout.addLayout(top_layout)
         
         # Plot Widget
-        self.world_axis = WorldCoordinateAxis(orientation='top')
-        self.plot_widget = pg.PlotWidget(background='w', axisItems={'top': self.world_axis})
+        self.top_axis = PixelIndexAxis(orientation='top')
+        self.plot_widget = pg.PlotWidget(background='w', axisItems={'top': self.top_axis})
         
-        self.plot_widget.setLabel('bottom', "Slice Index / X / Y")
+        self.plot_widget.setLabel('bottom', "Wavelength", units="µm")
         unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
         self.plot_widget.setLabel('left', f"Intensity ({unit})")
         
@@ -122,7 +111,7 @@ class DepthPlotDialog(BaseToolDialog):
         self.plot_widget.showAxis('top')
         self.plot_widget.getAxis('top').setPen('k')
         self.plot_widget.getAxis('top').setTextPen('k')
-        self.plot_widget.getAxis('top').setLabel("Wavelength", units="µm")
+        self.plot_widget.getAxis('top').setLabel("Slice Index (pixels)")
         
         self.plot_widget.getAxis('bottom').setPen('k')
         self.plot_widget.getAxis('bottom').setTextPen('k')
@@ -332,7 +321,14 @@ class DepthPlotDialog(BaseToolDialog):
         pos = evt[0]
         if self.plot_widget.sceneBoundingRect().contains(pos):
             mousePoint = self.plot_widget.plotItem.vb.mapSceneToView(pos)
-            self.lbl_cursor.setText(f"X: {mousePoint.x():.4f}   Y: {mousePoint.y():.4f}")
+            x_val = mousePoint.x()
+            y_val = mousePoint.y()
+            if hasattr(self, 'current_wavelengths') and self.current_wavelengths is not None and len(self.current_wavelengths) > 0:
+                pix_idx = int(round(np.interp(x_val, self.current_wavelengths, np.arange(len(self.current_wavelengths)))))
+                unit_str = getattr(self, 'current_wavelength_unit', 'µm')
+                self.lbl_cursor.setText(f"Wavelength: {x_val:.4f} {unit_str}  (Pixel: {pix_idx})   Intensity: {y_val:.4f}")
+            else:
+                self.lbl_cursor.setText(f"Pixel: {x_val:.1f}   Intensity: {y_val:.4f}")
             
     def apply_x_range(self):
         self.plot_widget.setXRange(self.spin_x_min.value(), self.spin_x_max.value(), padding=0)
@@ -729,13 +725,7 @@ class DepthPlotDialog(BaseToolDialog):
                 self.lbl_line_info.setText("Z-axis is not Wavelength.")
                 return
 
-        wls_um = [item[0] for item in self.loaded_lines]
-        pix_coords = self.wavelength_to_pixel(wls_um)
-
-        if pix_coords is None:
-            self.clear_line_overlays()
-            self.lbl_line_info.setText("WCS conversion failed.")
-            return
+        use_wavelength_x = hasattr(self, 'current_wavelengths') and self.current_wavelengths is not None and len(self.current_wavelengths) > 0
 
         view_box = self.plot_widget.getViewBox()
         (view_x_min, view_x_max), (view_y_min, view_y_max) = view_box.viewRange()
@@ -746,9 +736,20 @@ class DepthPlotDialog(BaseToolDialog):
                 view_x_min, view_x_max = float(x_data[0]), float(x_data[-1])
 
         visible_lines = []
-        for (wl_um, name), x_px in zip(self.loaded_lines, pix_coords):
-            if view_x_min <= x_px <= view_x_max:
-                visible_lines.append((x_px, name, wl_um))
+        if use_wavelength_x:
+            for wl_um, name in self.loaded_lines:
+                if view_x_min <= wl_um <= view_x_max:
+                    visible_lines.append((wl_um, name, wl_um))
+        else:
+            wls_um = [item[0] for item in self.loaded_lines]
+            pix_coords = self.wavelength_to_pixel(wls_um)
+            if pix_coords is None:
+                self.clear_line_overlays()
+                self.lbl_line_info.setText("WCS conversion failed.")
+                return
+            for (wl_um, name), x_px in zip(self.loaded_lines, pix_coords):
+                if view_x_min <= x_px <= view_x_max:
+                    visible_lines.append((x_px, name, wl_um))
 
         num_needed = len(visible_lines)
 
@@ -769,13 +770,14 @@ class DepthPlotDialog(BaseToolDialog):
         last_x = -9999.0
         level = 0
         y_span = view_y_max - view_y_min
+        min_spacing = 0.005 * (view_x_max - view_x_min) if use_wavelength_x else 18.0
 
-        for idx, (x_px, name, wl_um) in enumerate(visible_lines):
-            if abs(x_px - last_x) < 18.0:
+        for idx, (x_pos, name, wl_um) in enumerate(visible_lines):
+            if abs(x_pos - last_x) < min_spacing:
                 level = (level + 1) % len(stagger_levels)
             else:
                 level = 0
-            last_x = x_px
+            last_x = x_pos
 
             pos_val = stagger_levels[level]
             y_pos = view_y_min + pos_val * y_span
@@ -785,20 +787,20 @@ class DepthPlotDialog(BaseToolDialog):
 
             if idx < len(self.line_items):
                 line_item, text_item = self.line_items[idx]
-                line_item.setPos(x_px)
+                line_item.setPos(x_pos)
                 line_item.setVisible(True)
 
                 text_item.setHtml(html_text)
                 text_item.setAngle(90)
-                text_item.setPos(x_px, y_pos)
+                text_item.setPos(x_pos, y_pos)
                 text_item.setVisible(True)
             else:
-                line_item = pg.InfiniteLine(pos=x_px, angle=90, pen=pen)
+                line_item = pg.InfiniteLine(pos=x_pos, angle=90, pen=pen)
                 text_item = pg.TextItem(html=html_text, anchor=(0.0, 0.5))
                 line_item.dataBounds = lambda ax, *args, **kwargs: (None, None)
                 text_item.dataBounds = lambda ax, *args, **kwargs: (None, None)
                 text_item.setAngle(90)
-                text_item.setPos(x_px, y_pos)
+                text_item.setPos(x_pos, y_pos)
 
                 self.plot_widget.addItem(line_item)
                 self.plot_widget.addItem(text_item)
@@ -942,6 +944,9 @@ class DepthPlotDialog(BaseToolDialog):
                         subtracted_spectrum = np.nansum(subtracted_region, axis=(1, 2))
                 
             x_axis = np.arange(z_len)
+            wavelengths = None
+            cunit = ""
+            ctype = ""
             
             if self.image_viewer.wcs is not None and self.image_viewer.wcs_z_idx is not None:
                 wcs = self.image_viewer.wcs
@@ -954,13 +959,12 @@ class DepthPlotDialog(BaseToolDialog):
                     if cunit.lower() == 'm':
                         cunit = 'µm'
                 except Exception:
-                    cunit = ""
+                    cunit = "µm"
                 
                 cx, cy = x0 + w/2.0, y0 + h/2.0
                 
                 # Un-flip and un-rotate to get coords in transposed_data space
                 k = self.image_viewer.rot_angle // 90
-                # Reverse rotation
                 for _ in range((4 - k) % 4):
                     cx, cy = cy, x_len - 1 - cx
                 
@@ -972,25 +976,44 @@ class DepthPlotDialog(BaseToolDialog):
                 x_idx = int(current_x_axis.split()[-1]) - 1
                 y_idx = int(current_y_axis.split()[-1]) - 1
                     
-                fixed_coords = np.zeros(wcs.naxis)
+                fixed_coords = np.zeros((z_len, wcs.naxis))
                 if wcs.naxis > max(x_idx, y_idx):
-                    fixed_coords[x_idx] = cx
-                    fixed_coords[y_idx] = cy
-                
-                self.world_axis.wcs = wcs
-                self.world_axis.z_idx = z_idx
-                self.world_axis.fixed_coords = fixed_coords
-                
-                self.plot_widget.showAxis('top')
-                unit_str = f" ({cunit})" if cunit else ""
+                    fixed_coords[:, x_idx] = cx
+                    fixed_coords[:, y_idx] = cy
+                fixed_coords[:, z_idx] = np.arange(z_len)
+
+                try:
+                    world = wcs.wcs_pix2world(fixed_coords, 0)
+                    wavelengths = world[:, z_idx]
+                    try:
+                        orig_cunit = str(wcs.wcs.cunit[z_idx]).strip().lower()
+                        if orig_cunit == 'm':
+                            wavelengths = wavelengths * 1e6
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Warning: WCS pixel_to_world failed in DepthPlotDialog: {e}")
+                    wavelengths = None
+
+            if wavelengths is not None and len(wavelengths) == z_len:
+                x_axis = wavelengths
+                self.current_wavelengths = wavelengths
+                self.current_wavelength_unit = cunit
                 
                 label = "Wavelength" if 'WAVE' in ctype else ctype
+                unit_str = f" ({cunit})" if cunit else ""
+                self.plot_widget.getAxis('bottom').setLabel(f"{label}{unit_str}")
                 
-                self.plot_widget.getAxis('top').setLabel(f"{label}{unit_str}")
+                self.top_axis.wavelengths = wavelengths
+                self.plot_widget.showAxis('top')
+                self.plot_widget.getAxis('top').setLabel("Slice Index (pixels)")
             else:
-                self.world_axis.wcs = None
+                x_axis = np.arange(z_len)
+                self.current_wavelengths = None
+                self.current_wavelength_unit = ""
+                self.plot_widget.setLabel('bottom', "Slice Index (pixels)")
+                self.top_axis.wavelengths = None
                 self.plot_widget.hideAxis('top')
-            self.plot_widget.setLabel('bottom', "Slice Index (pixels)")
             
             mult = self.image_viewer.data_multiplier
             self.plot_data.setData(x_axis, spectrum * mult)
@@ -1015,8 +1038,10 @@ class DepthPlotDialog(BaseToolDialog):
             else:
                 cut = np.nansum(region, axis=1)
                 
-            self.world_axis.wcs = None
+            self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
+            self.current_wavelengths = None
+            self.current_wavelength_unit = ""
                 
             x_axis = np.arange(x0, x1)
             self.plot_widget.setLabel('bottom', "X Pixel")
@@ -1038,8 +1063,10 @@ class DepthPlotDialog(BaseToolDialog):
             else:
                 cut = np.nansum(region, axis=0)
                 
-            self.world_axis.is_wavelength = False
+            self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
+            self.current_wavelengths = None
+            self.current_wavelength_unit = ""
             x_axis = np.arange(y0, y1)
             self.plot_widget.setLabel('bottom', "Y Pixel")
             unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
