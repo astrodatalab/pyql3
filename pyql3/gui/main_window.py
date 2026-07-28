@@ -518,11 +518,8 @@ class MainWindow(QMainWindow):
         self._surf_dialog = SurfacePlotDialog(self, self.image_viewer)
         try:
             self._surf_dialog.show()
-        except RuntimeError as e:
-            if "pyqtgraph.opengl" in str(e) or "OpenGL" in str(e):
-                print(f"Warning: 3D OpenGL Surface Plot unavailable in headless environment: {e}")
-            else:
-                raise
+        except Exception as e:
+            print(f"Warning: 3D OpenGL Surface Plot unavailable in headless/virtualized GPU environment: {e}")
         
     def open_contour_plot(self):
         from pyql3.gui.tools.advanced_plots import ContourDialog

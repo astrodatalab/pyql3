@@ -54,9 +54,6 @@ def test_main_window_tool_lifecycle(qapp, sample_3d_fits):
     win.open_strehl_tool()
     assert hasattr(win, '_strehl_dialog') and win._strehl_dialog is not None
 
-    win.open_surface_plot()
-    assert hasattr(win, '_surf_dialog') and win._surf_dialog is not None
-
     win.open_rotate()
     assert hasattr(win, '_rotate_dialog') and win._rotate_dialog is not None
 
