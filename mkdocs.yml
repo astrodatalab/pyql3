@@ -34,6 +34,9 @@ theme:
 
 nav:
   - Home: index.md
+  - User & Science Guide: tools.md
+  - CLI & Directory Polling: cli.md
+  - Developer & Testing: developer.md
   - API Reference: api.md
 
 plugins:
