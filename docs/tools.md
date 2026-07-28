@@ -8,7 +8,7 @@ QuickLook 3 provides a suite of analytical tools tailored for Integral Field Uni
 
 The **Depth Plot** tool extracts 1D spectra along the wavelength ($Z$) axis of a 3D data cube.
 
-![Depth Plot](images/hero.png)
+![Depth Plot](images/depth_plot_example.png)
 
 ### Algorithms
 
@@ -122,6 +122,45 @@ $$D_{\text{result}}(x, y, z) = D_1(x, y, z) \odot D_2(x, y, z)$$
 
 ---
 
-## 7. FITS Header Editor
+## 7. Catalog Plotting & World Coordinate Overlay
+
+The **Plot Catalog** tool overlays external astronomical source catalogs (CSV, TXT, DAT) directly onto the 2D image plane or collapsed datacube slices.
+
+![Plot Catalog](images/catalog_tool.png)
+
+### Features & Coordinate Modes
+
+Astronomers can select between three coordinate modes:
+
+1. **World Coordinates (RA / DEC)**: Celestial Right Ascension ($\text{RA}$) and Declination ($\text{DEC}$) in degrees or sexagesimal notation.
+2. **FITS Array Pixels**: 0-indexed or 1-indexed raw FITS array pixel coordinates $(x_{\text{fits}}, y_{\text{fits}})$.
+3. **Display Pixels**: Direct display viewport pixel coordinates.
+
+### Algorithms
+
+#### A. WCS Celestial-to-Pixel Transformation
+For catalogs specified in celestial World Coordinates $(\text{RA}, \text{DEC})$, celestial coordinates are converted to raw FITS pixel coordinates $(x_{\text{fits}}, y_{\text{fits}})$ using the dataset's 2D/3D FITS World Coordinate System:
+
+$$(x_{\text{fits}}, y_{\text{fits}}) = \text{WCS}^{-1}(\text{RA}, \text{DEC})$$
+
+#### B. Display Rotation & Flip Mapping
+To ensure source overlays track the image viewport when the astronomer rotates or flips the view, original FITS coordinates $(x_0, y_0)$ are mapped to current display coordinates $(x_{\text{disp}}, y_{\text{disp}})$ via the transformation algorithm:
+
+1. **Horizontal Flip Adjustment**:
+   If horizontal flipping is enabled:
+   $$x_1 = N_x - 1 - x_0, \quad y_1 = y_0$$
+
+2. **90° Rotation Iterations**:
+   For $k = \frac{\theta}{90^\circ}$ orthogonal rotations:
+   $$(x_{i+1}, y_{i+1}) = (N_{y,i} - 1 - y_i, \; x_i)$$
+
+#### C. Interactive Highlighting & Filtering
+- **Interactive Source Selection**: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring.
+- **Search & Filter**: Real-time text search filters the catalog table and dynamically updates plotted markers.
+- **Custom Marker Styling**: Supports customizable marker shapes (Circles, Squares, Triangles, Diamonds, Crosses), sizes, colors, and text labels.
+
+---
+
+## 8. FITS Header Editor
 
 The **Header Editor** allows astronomers to view, search, add, or modify FITS header cards across all HDU extensions in memory. Changes can be saved back to a new FITS file.
