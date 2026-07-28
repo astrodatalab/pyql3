@@ -44,8 +44,30 @@ jobs:
           uv sync
           uv add --dev pyinstaller pillow
 
+      - name: Run Unit Tests
+        run: uv run pytest -v
+
       - name: Build with PyInstaller
-        run: uv run pyinstaller --name "QuickLook3" --windowed --icon "pyql3/icon.png" --add-data "pyql3/icon.png:pyql3" --collect-all photutils --noconfirm main.py
+        run: uv run pyinstaller --noconfirm QuickLook3.spec
+
+      - name: Verify Packaged Assets
+        run: |
+          uv run python -c "
+          import pathlib, sys
+          dist_dir = pathlib.Path('dist')
+          found_lines = list(dist_dir.glob('**/*lines.txt'))
+          print('Found linelist files in dist:', [str(p) for p in found_lines])
+          if not found_lines:
+              print('ERROR: No line list text files found in dist build artifact!')
+              sys.exit(1)
+          
+          found_cmc = list(dist_dir.glob('**/cmcrameri*')) + list(dist_dir.glob('**/cmc*'))
+          print('Found cmcrameri assets in dist:', [str(p) for p in found_cmc])
+          if not found_cmc:
+              print('ERROR: No cmcrameri assets found in dist build artifact!')
+              sys.exit(1)
+          print('ALL PACKAGED ASSETS VERIFIED SUCCESSFULLY IN DIST BUILD!')
+          "
 
       - name: Package Linux
         if: runner.os == 'Linux'

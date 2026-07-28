@@ -42,6 +42,7 @@ required-environments = [
 
 [tool.setuptools_scm]
 write_to = "pyql3/_version.py"
+local_scheme = "node-and-date"
 
 [tool.setuptools]
 packages = ["pyql3"]

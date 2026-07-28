@@ -9,12 +9,13 @@ def _determine_version():
     if os.path.exists(git_dir):
         try:
             from setuptools_scm import get_version
-            return get_version(root=base_dir, relative_to=__file__)
+            return get_version(root=base_dir, relative_to=__file__, local_scheme="node-and-date")
         except Exception:
             pass
 
         try:
             import subprocess
+            import datetime
             res = subprocess.run(
                 ['git', 'describe', '--tags', '--always', '--dirty'],
                 cwd=base_dir,
@@ -24,7 +25,12 @@ def _determine_version():
             )
             if res.returncode == 0 and res.stdout.strip():
                 ver = res.stdout.strip()
-                return ver[1:] if ver.startswith('v') else ver
+                if ver.startswith('v'):
+                    ver = ver[1:]
+                if '-dirty' in ver:
+                    date_str = datetime.date.today().strftime('%Y%m%d')
+                    ver = ver.replace('-dirty', f'.d{date_str}')
+                return ver
         except Exception:
             pass
 
