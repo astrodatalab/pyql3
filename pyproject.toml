@@ -29,6 +29,7 @@ dev = [
     "pyinstaller>=6.21.0",
     "mkdocs-material>=9.5.0",
     "mkdocstrings[python]>=0.24.0",
+    "pytest>=8.0.0",
 ]
 
 [tool.uv]
@@ -47,3 +48,9 @@ packages = ["pyql3"]
 
 [tool.setuptools.package-data]
 "pyql3" = ["data/*", "icon.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

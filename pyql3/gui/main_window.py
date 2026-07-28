@@ -461,15 +461,18 @@ class MainWindow(QMainWindow):
             if self.image_viewer.transposed_data is not None:
                 self.image_viewer.refresh_display()
                 
-            # Update all open tools so they dynamically adjust their labels and values
-            for attr in ['_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog', '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog', '_plot_catalog_dialog']:
-                if hasattr(self, attr):
-                    dialog = getattr(self, attr)
-                    if dialog and dialog.isVisible():
-                        if hasattr(dialog, 'update_plot'):
-                            dialog.update_plot()
-                        if hasattr(dialog, 'update_stats'):
-                            dialog.update_stats()
+            self.update_tools_for_unit()
+
+    def update_tools_for_unit(self):
+        """Update any open tool dialogs when the display unit changes."""
+        for attr in ['_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog', '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog', '_plot_catalog_dialog', '_surf_dialog', '_cont_dialog', '_rotate_dialog', '_arith_dialog']:
+            if hasattr(self, attr):
+                dialog = getattr(self, attr)
+                if dialog and dialog.isVisible():
+                    if hasattr(dialog, 'update_plot'):
+                        dialog.update_plot()
+                    if hasattr(dialog, 'update_stats'):
+                        dialog.update_stats()
 
     def edit_header(self):
         if self.fits_reader.get_header() is None:
@@ -560,15 +563,17 @@ class MainWindow(QMainWindow):
 
     def open_arithmetic_tool(self):
         from .tools.arithmetic import ArithmeticDialog
-        if not hasattr(self, 'arithmetic_dialog') or self.arithmetic_dialog is None:
-            self.arithmetic_dialog = ArithmeticDialog(self, self.image_viewer)
-        self.arithmetic_dialog.show()
-        self.arithmetic_dialog.raise_()
+        if not hasattr(self, '_arith_dialog') or not self._arith_dialog.isVisible():
+            self._arith_dialog = ArithmeticDialog(self, self.image_viewer)
+        self._arith_dialog.show()
+        self._arith_dialog.raise_()
 
     def open_strehl_tool(self):
         from pyql3.gui.tools.strehl import StrehlDialog
-        self.strehl_dialog = StrehlDialog(self, self.image_viewer)
-        self.strehl_dialog.show()
+        if not hasattr(self, '_strehl_dialog') or not self._strehl_dialog.isVisible():
+            self._strehl_dialog = StrehlDialog(self, self.image_viewer)
+        self._strehl_dialog.show()
+        self._strehl_dialog.raise_()
 
     def open_polling_config(self):
         dialog = PollingDialog(self.poller, self)
