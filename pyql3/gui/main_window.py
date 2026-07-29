@@ -304,9 +304,9 @@ class MainWindow(QMainWindow):
         if filepath:
             self.load_fits(filepath)
 
-    def load_fits(self, filepath, ext=None):
+    def load_fits(self, filepath, ext=None, force=False):
         try:
-            self.fits_reader.load(filepath, ext=ext)
+            self.fits_reader.load(filepath, ext=ext, force=force)
             data = self.fits_reader.get_data()
             if data is not None:
                 header = self.fits_reader.get_header()
@@ -434,9 +434,11 @@ class MainWindow(QMainWindow):
             self.load_fits(self.fits_reader.filepath, ext=ext_idx)
 
     def redisplay_image(self):
+        # force=True so this is always a genuine re-read from disk, even for a rewrite that
+        # somehow preserved size and timestamp
         if self.fits_reader.filepath:
             ext_idx = self.fits_reader.current_ext
-            self.load_fits(self.fits_reader.filepath, ext=ext_idx)
+            self.load_fits(self.fits_reader.filepath, ext=ext_idx, force=True)
             
     def set_scaling(self, scale_opt):
         # Find index in combo box

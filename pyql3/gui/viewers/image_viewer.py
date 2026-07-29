@@ -955,9 +955,25 @@ class ImageViewer(QWidget):
             self.combo_y.blockSignals(True)
             self.combo_y.setCurrentText("AXIS 2")
             self.combo_y.blockSignals(False)
-            
+
             self.apply_axis_mapping()
-            
+        else:
+            # Not a displayable image (a table's FITS_rec is 1-D, a 4-D cube is unsupported).
+            # This used to fall through both branches and return silently, leaving the
+            # previous extension's image on screen as if it were this one (B6).
+            self.transposed_data = None
+            self.display_data = None
+            self.wcs = None
+            self.imv.clear()
+            self.lbl_zsize.setText("ZSize: N/A")
+            self.lbl_slice_info.setText(f"Cannot display {data.ndim}-D data")
+            self.combo_ext.setEnabled(True)
+            self.combo_collapse.setEnabled(False)
+            if hasattr(self, 'group_x'): self.group_x.setEnabled(False)
+            if hasattr(self, 'group_y'): self.group_y.setEnabled(False)
+            if hasattr(self, 'group_z'): self.group_z.setEnabled(False)
+
+
     def on_axis_changed(self):
         if self.raw_data is None or self.raw_data.ndim != 3:
             return

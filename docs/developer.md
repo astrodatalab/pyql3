@@ -44,6 +44,28 @@ When loaded via `astropy.io.fits.getdata()`, NumPy reverses the axes into C-cont
 ### Instrument-Agnostic WCS Rule
 Do **not** hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Always dynamically parse the `CTYPE` string using target axis indices (e.g., `wcs.wcs.ctype[z_idx]`).
 
+### Reloading a File (live observing)
+
+`FitsReader.load()` reopens the `HDUList` whenever the bytes on disk differ from the ones it
+holds open — **including when the path is unchanged**. Staleness is keyed on
+`(st_mtime_ns, st_size, st_ino)`, so an instrument or DRP that rewrites a path in place is
+picked up, while a byte-identical reload reuses the handle. That reuse is load-bearing:
+switching extensions goes through `load()`, and reopening every time would silently discard
+Header Editor edits that have not been saved yet. Pass `force=True` for a guaranteed re-read
+(**Display → Redisplay image** does).
+
+!!! warning "`memmap=False` is deliberate"
+    Files are opened with `memmap=False`. Reading through a mapping of a file the DRP is
+    rewriting under us returns undefined data and can `SIGBUS` if the file shrinks, and
+    `writeto()` back to the same path can fail while a mapping is open. The consequence for
+    new code: **never probe `hdu.data` to inspect an extension** — that reads it into
+    memory. Test the header instead, as `FitsReader._is_displayable()` does.
+
+`_is_displayable(hdu)` (`is_image` **and** `NAXIS > 0`) is the single definition of an
+extension the viewer can show, used both by `load()` and by `get_image_extensions()`, which
+populates the Extension combo. `get_all_extensions()` is a different question and still lists
+tables. A `BINTABLE` has `data is not None`, so that is never the right test.
+
 ### Internal Data State vs. Display Data State (CRITICAL)
 - **`self.image_viewer.raw_data`**: Retains the original, un-transposed FITS array shape and orientation. All analytical calculations, data exports, or FITS header writes **must** operate on `raw_data`.
 - **`self.image_viewer.transposed_data`**: Represents the data formatted for `pyqtgraph.ImageView`. Axes are transposed for compatibility with the PyQtGraph plotting engine.

@@ -9,32 +9,50 @@ class FitsReader:
         self.hdul = None
         self.data = None
         self.header = None
-        
+        self.image_extensions = []
+        self._file_signature = None
+
         if filepath:
             self.load(filepath)
 
-    def load(self, filepath, ext=None):
-        """Loads a FITS file and its primary data/header."""
-        # If loading a different file, close the old one
-        if self.filepath != filepath and self.hdul is not None:
-            self.close()
-            
-        self.filepath = filepath
+    @staticmethod
+    def _stat_signature(filepath):
+        """Identity of the bytes on disk. Any change here means we must reopen."""
+        try:
+            st = os.stat(filepath)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+    def load(self, filepath, ext=None, force=False):
+        """Loads a FITS file and its primary data/header.
+
+        The HDUList is reopened whenever the file on disk differs from the one we hold
+        open — *including* when the path is unchanged. An instrument or DRP that rewrites
+        a path in place was previously served the cached copy forever (B5). Reuse is kept
+        for the byte-identical case so that switching extensions stays cheap and does not
+        throw away header edits that have not been saved yet. `force=True` reopens
+        regardless, for an explicit "reload from disk".
+        """
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"FITS file not found: {filepath}")
-        
-        if self.hdul is None:
-            self.hdul = fits.open(filepath)
-        
-        # Look for the first extension with image data
-        self.image_extensions = []
-        for i, hdu in enumerate(self.hdul):
-            if hdu.is_image and hdu.data is not None:
-                name = hdu.name if hdu.name else f"EXT {i}"
-                if name == "PRIMARY" and i != 0:
-                    name = f"EXT {i}"
-                self.image_extensions.append((i, name))
-                
+
+        signature = self._stat_signature(filepath)
+        stale = (self.hdul is None
+                 or self.filepath != filepath
+                 or signature is None
+                 or signature != self._file_signature)
+        if force or stale:
+            self.close()
+            # memmap=False: reading through a mapping of a file the DRP is rewriting under
+            # us yields undefined data (and can SIGBUS if it shrinks), and writeto() back
+            # to the same path can fail while the mapping is open.
+            self.hdul = fits.open(filepath, memmap=False)
+            self._file_signature = signature
+
+        self.filepath = filepath
+        self.image_extensions = self.get_image_extensions()
+
         self.data = None
         self.header = None
         self.current_ext = 0
@@ -58,15 +76,18 @@ class FitsReader:
     def load_from_memory(self, data, header):
         if self.hdul:
             self.hdul.close()
-        
+
         from astropy.io import fits
         hdu = fits.PrimaryHDU(data=data, header=header)
         self.hdul = fits.HDUList([hdu])
         self.filepath = None
+        self._file_signature = None
         self.current_ext = 0
         self.data = data
         self.header = header
-        
+        self.image_extensions = self.get_image_extensions()
+
+
     def get_all_extensions(self):
         extensions = []
         if self.hdul:
@@ -77,13 +98,37 @@ class FitsReader:
             extensions.append((0, "PRIMARY"))
         return extensions
 
+    @staticmethod
+    def _is_displayable(hdu):
+        """Whether an HDU holds an image the viewer can actually show.
+
+        Header-only on purpose: touching `hdu.data` here would pull every extension of a
+        multi-extension file into memory now that `memmap` is off, and `data is not None`
+        is also the wrong question — a `BINTABLE` answers yes (B6).
+        """
+        if not getattr(hdu, 'is_image', False):
+            return False
+        try:
+            return int(hdu.header.get('NAXIS', 0)) > 0
+        except (TypeError, ValueError):
+            return False
+
     def get_image_extensions(self):
+        """The extensions the viewer can display.
+
+        The single definition of "displayable", shared with `load()` — the two used to
+        disagree, so the Extension combo offered table HDUs that silently left the previous
+        image on screen while `data`/`header` switched to the table underneath (B6).
+        """
         extensions = []
         if self.hdul:
             for idx, hdu in enumerate(self.hdul):
-                if hdu.data is not None:
-                    name = hdu.name if hdu.name else f"EXT {idx}"
-                    extensions.append((idx, name))
+                if not self._is_displayable(hdu):
+                    continue
+                name = hdu.name if hdu.name else f"EXT {idx}"
+                if name == "PRIMARY" and idx != 0:
+                    name = f"EXT {idx}"
+                extensions.append((idx, name))
         return extensions
 
     def get_data(self):

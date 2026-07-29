@@ -98,3 +98,79 @@ def test_directory_poller_service(tmp_path):
     assert poller.watch_path == watch_dir
 
     poller.stop_polling()
+
+
+def test_extension_combo_excludes_table_hdus(qapp, tmp_path):
+    """B6: the Extension combo was populated from a looser definition of 'image' than
+    load() used, so a BINTABLE appeared in the dropdown."""
+    import numpy as np
+    from astropy.io import fits
+
+    path = str(tmp_path / "with_table.fits")
+    cols = [fits.Column(name="WAVELENGTH", format="E", array=np.arange(4, dtype=np.float32))]
+    fits.HDUList([
+        fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)),
+        fits.ImageHDU(np.ones((4, 4), dtype=np.float32), name="SCI"),
+        fits.BinTableHDU.from_columns(cols, name="WAVETAB"),
+    ]).writeto(path, overwrite=True)
+
+    win = MainWindow()
+    win.load_fits(path)
+    combo = win.image_viewer.combo_ext
+    labels = [combo.itemText(i) for i in range(combo.count())]
+
+    assert not any("WAVETAB" in label for label in labels), labels
+    assert labels == ["0: PRIMARY", "1: SCI"]
+    win.close()
+
+
+def test_selecting_a_table_extension_clears_the_view(qapp, tmp_path):
+    """B6: set_data fell through both the 2-D and 3-D branches and returned silently, so
+    the previous extension's image stayed on screen as if it were the table."""
+    import numpy as np
+    from astropy.io import fits
+
+    path = str(tmp_path / "with_table.fits")
+    cols = [fits.Column(name="WAVELENGTH", format="E", array=np.arange(4, dtype=np.float32))]
+    fits.HDUList([
+        fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)),
+        fits.BinTableHDU.from_columns(cols, name="WAVETAB"),
+    ]).writeto(path, overwrite=True)
+
+    win = MainWindow()
+    win.load_fits(path)
+    assert win.image_viewer.transposed_data is not None
+
+    win.load_fits(path, ext=1)          # force-select the table, as the old combo could
+
+    v = win.image_viewer
+    assert v.transposed_data is None, "stale image left on screen for a table extension"
+    assert v.display_data is None
+    assert v.imv.getImageItem().image is None
+    assert "Cannot display" in v.lbl_slice_info.text()
+    win.close()
+
+
+def test_reload_and_redisplay_pick_up_a_rewritten_file(qapp, tmp_path):
+    """B5 through the GUI: the poller's auto-load and Display -> Redisplay image both go
+    through load_fits, which served the cached HDUList for an unchanged path."""
+    import numpy as np
+    from astropy.io import fits
+
+    path = str(tmp_path / "live.fits")
+    fits.PrimaryHDU(np.full((8, 8), 10.0, dtype=np.float32)).writeto(path, overwrite=True)
+
+    win = MainWindow()
+    win.load_fits(path)
+    assert win.image_viewer.raw_data.mean() == 10.0
+
+    # the instrument writes a new frame to the same path
+    fits.PrimaryHDU(np.full((8, 8), 1010.0, dtype=np.float32)).writeto(path, overwrite=True)
+
+    win.load_fits(path)                 # what on_file_detected does
+    assert win.image_viewer.raw_data.mean() == 1010.0
+
+    fits.PrimaryHDU(np.full((8, 8), 2020.0, dtype=np.float32)).writeto(path, overwrite=True)
+    win.redisplay_image()
+    assert win.image_viewer.raw_data.mean() == 2020.0
+    win.close()

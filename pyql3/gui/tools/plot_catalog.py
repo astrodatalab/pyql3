@@ -341,14 +341,9 @@ class PlotCatalogDialog(BaseToolDialog):
             self.highlight_item.setZValue(11)
             self.highlight_item.setParentItem(img_item)
         # Clean up old text items
-        view = self.image_viewer.imv.getView()
-        for txt in self.text_items:
-            try:
-                view.removeItem(txt)
-            except Exception:
-                pass
-        self.text_items.clear()
-        
+        self._clear_text_items()
+
+
         if not hasattr(self, 'chk_master_toggle'):
             return
             
@@ -475,6 +470,39 @@ class PlotCatalogDialog(BaseToolDialog):
         self.update_visible_text_labels()
         self.on_table_selection()
 
+    def _remove_scene_item(self, item):
+        """Take a graphics item out of the viewer's scene entirely.
+
+        `setParentItem(None)` is **not** removal: in Qt it makes the item a top-level item
+        in the *same* scene, so it stays painted and simply stops tracking the image item
+        (B7). `ViewBox.removeItem` is the right call — it drops the item from the ViewBox's
+        `addedItems` bookkeeping as well as from the scene — and it tolerates items that
+        were parented to the ImageItem instead of added to the view, which is how the
+        markers get there.
+        """
+        if item is None:
+            return
+        if self.image_viewer is not None and hasattr(self.image_viewer, 'imv'):
+            try:
+                self.image_viewer.imv.getView().removeItem(item)
+                return
+            except Exception:
+                pass
+        # No viewer to ask (or it is already torn down): go straight to the scene
+        try:
+            scene = item.scene()
+            if scene is not None:
+                scene.removeItem(item)
+            else:
+                item.setParentItem(None)
+        except Exception:
+            pass
+
+    def _clear_text_items(self):
+        for txt in self.text_items:
+            self._remove_scene_item(txt)
+        self.text_items.clear()
+
     def _on_view_range_changed(self):
         """Called on every pan/zoom frame. Hides text instantly and debounces re-render."""
         # Hide all text items immediately for smooth panning
@@ -490,14 +518,9 @@ class PlotCatalogDialog(BaseToolDialog):
             return
 
         view = self.image_viewer.imv.getView()
-        
+
         # Remove old visible text items
-        for txt in self.text_items:
-            try:
-                view.removeItem(txt)
-            except Exception:
-                pass
-        self.text_items.clear()
+        self._clear_text_items()
 
         if not hasattr(self, 'chk_show_name') or not self.chk_show_name.isChecked():
             return
@@ -659,26 +682,10 @@ class PlotCatalogDialog(BaseToolDialog):
         if hasattr(self, '_label_timer'):
             self._label_timer.stop()
 
-        if self.scatter_item is not None:
-            try:
-                self.scatter_item.setParentItem(None)
-            except Exception:
-                pass
-            self.scatter_item = None
-            
-        if self.highlight_item is not None:
-            try:
-                self.highlight_item.setParentItem(None)
-            except Exception:
-                pass
-            self.highlight_item = None
-            
-        for txt in self.text_items:
-            if self.image_viewer is not None:
-                try:
-                    self.image_viewer.imv.getView().removeItem(txt)
-                except Exception:
-                    pass
-        self.text_items.clear()
-        
+        for attr in ('scatter_item', 'highlight_item'):
+            self._remove_scene_item(getattr(self, attr, None))
+            setattr(self, attr, None)
+
+        self._clear_text_items()
+
         super().closeEvent(event)
