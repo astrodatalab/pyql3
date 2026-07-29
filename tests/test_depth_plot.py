@@ -22,6 +22,61 @@ def test_depth_plot_region_extraction(loaded_viewer):
     dialog.close()
 
 
+def test_depth_plot_background_toggle_without_initial_center(loaded_viewer):
+    """The background checkbox must work when the dialog is opened from the Plot menu.
+
+    Regression: the chk_enable_bg / combo_bg_calc connections lived at the end of
+    set_center(), which is only reached when an initial_center is supplied, so
+    ticking the box did nothing on the Plot -> Depth Plot path.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer)   # no initial_center
+    assert dialog.bg_roi is None, "Background ROI should not exist before enabling"
+
+    dialog.chk_enable_bg.setChecked(True)   # signal path only, no manual call
+    assert dialog.bg_roi is not None, "Ticking the checkbox did not create the background ROI"
+    assert dialog.spin_bg_x0.isEnabled(), "Background spinboxes were not enabled"
+    assert dialog.combo_bg_calc.isEnabled(), "Background calc combo was not enabled"
+
+    bg_x, _ = dialog.plot_bg.getData()
+    sub_x, _ = dialog.plot_sub.getData()
+    assert bg_x is not None and len(bg_x) > 0, "Background spectrum was not plotted"
+    assert sub_x is not None and len(sub_x) > 0, "Subtracted spectrum was not plotted"
+
+    dialog.chk_enable_bg.setChecked(False)
+    assert dialog.bg_roi is None, "Unticking the checkbox did not remove the background ROI"
+    dialog.close()
+
+
+def test_depth_plot_background_handler_not_duplicated(loaded_viewer):
+    """set_center() must not re-connect the background handlers on every call."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    dialog.set_center((22, 22))
+    dialog.set_center((18, 18))
+
+    calls = []
+    original = dialog.toggle_background
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    dialog.toggle_background = counting
+    dialog.chk_enable_bg.setChecked(True)
+    assert len(calls) == 1, f"toggle_background ran {len(calls)}x for a single click (duplicate connections)"
+    dialog.close()
+
+
+def test_depth_plot_set_center_moves_roi(loaded_viewer):
+    """set_center() must centre the ROI on the requested pixel."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer)
+    dialog.set_center((15, 25))
+
+    pos, size = dialog.roi.pos(), dialog.roi.size()
+    center = (pos.x() + size.x() / 2.0, pos.y() + size.y() / 2.0)
+    assert center == pytest.approx((15.0, 25.0)), f"ROI centre is {center}, expected (15, 25)"
+    dialog.close()
+
+
 def test_depth_plot_latex_conversion():
     """Test conversion of LaTeX strings like $$H_\\alpha$$ and $$P_{2f}$$ to HTML for line labels."""
     test_cases = [

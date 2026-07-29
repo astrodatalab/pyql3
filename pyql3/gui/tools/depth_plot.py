@@ -5,7 +5,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
 from PySide6.QtCore import Qt, QDir
-from pyql3.gui.tools.base_tool import BaseToolDialog
+from pyql3.gui.tools.base_tool import BaseToolDialog, as_center
 
 
 def latex_to_html(text):
@@ -71,6 +71,8 @@ class PixelIndexAxis(pg.AxisItem):
 class DepthPlotDialog(BaseToolDialog):
     def __init__(self, parent=None, image_viewer=None, initial_center=None):
         super().__init__(parent, image_viewer, "Plot Window")
+        # A Qt signal may hand us its `checked` flag instead of a centre
+        initial_center = as_center(initial_center)
         self.resize(700, 800)
         
         # Top Controls
@@ -297,15 +299,25 @@ class DepthPlotDialog(BaseToolDialog):
         else:
             center_x, center_y = 2, 2
             
+        # Must exist before the first update_plot(), which reads it
+        self.bg_roi = None
+
         roi = pg.RectROI([center_x - 2, center_y - 2], [4, 4], pen=pg.mkPen((0, 255, 0), width=3), hoverPen=pg.mkPen((0, 255, 0), width=5))
         roi.addScaleHandle([1, 1], [0, 0])
         roi.addScaleHandle([0, 0], [1, 1])
         self.add_roi_to_viewer(roi)
         self.on_roi_changed()
-        
-        self.bg_roi = None
+
+        # Background-subtraction wiring belongs here, not in set_center(): the
+        # dialog can be opened without an initial center (Plot -> Depth Plot),
+        # and set_center() may be called repeatedly.
+        self.chk_enable_bg.stateChanged.connect(self.toggle_background)
+        self.combo_bg_calc.currentIndexChanged.connect(self.update_plot)
+
+        self.update_plot()
 
     def set_center(self, center):
+        center = as_center(center)
         if center is None or self.roi is None:
             return
         cx, cy = center
@@ -313,14 +325,6 @@ class DepthPlotDialog(BaseToolDialog):
         h = self.roi.size().y()
         self.roi.setPos([cx - w / 2.0, cy - h / 2.0])
         self.on_roi_changed()
-
-        self.chk_enable_bg.stateChanged.connect(self.toggle_background)
-        self.combo_bg_calc.currentIndexChanged.connect(self.update_plot)
-
-        self._updating_spins = False
-        self._updating_range_spins = False
-        
-        self.update_plot()
 
     def open_export_dialog(self):
         """Open PyQtGraph native export dialog."""

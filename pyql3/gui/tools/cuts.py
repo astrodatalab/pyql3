@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from PySide6.QtWidgets import QVBoxLayout, QGridLayout, QLabel, QCheckBox, QSpinBox, QComboBox
 import pyqtgraph as pg
@@ -94,30 +95,60 @@ class CutPlotDialog(BaseToolDialog):
     def toggle_log_scale(self):
         self.plot_widget.setLogMode(x=self.chk_log_x.isChecked(), y=self.chk_log_y.isChecked())
         
+    def set_diagonal_endpoints(self, p0, p1, width=None):
+        """Position the diagonal LineROI so its line runs from p0 to p1 with the
+        given extraction width.
+
+        This is the inverse of pg.LineROI.__init__: the ROI is a rotated
+        rectangle whose size is (length, width) and whose pos is the *corner*,
+        offset half a width perpendicular to the line. Keeping the same math
+        guarantees the spin -> ROI -> spin round trip through
+        sync_spins_and_plot() is stable.
+        """
+        if self.roi is None:
+            return
+
+        if width is None:
+            width = self.spin_w.value()
+        width = max(1.0, float(width))
+
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            # Degenerate line: keep the current angle and just nudge the length
+            length = 1e-3
+            angle_rad = math.radians(self.roi.angle())
+        else:
+            angle_rad = math.atan2(dy, dx)
+
+        self.roi.setSize([length, width])
+        self.roi.setAngle(math.degrees(angle_rad))
+        corner_x = p0[0] + width / 2.0 * math.sin(angle_rad)
+        corner_y = p0[1] - width / 2.0 * math.cos(angle_rad)
+        self.roi.setPos(corner_x, corner_y)
+
     def on_spin_changed(self):
         if self._updating_spins or self.roi is None:
             return
-            
+
         self.roi.blockSignals(True)
-        if self.cut_type == 'horizontal':
-            y0, y1 = self.spin_y0.value(), self.spin_y1.value()
-            self.roi.setRegion([min(y0, y1), max(y0, y1)])
-        elif self.cut_type == 'vertical':
-            x0, x1 = self.spin_x0.value(), self.spin_x1.value()
-            self.roi.setRegion([min(x0, x1), max(x0, x1)])
-        elif self.cut_type == 'diagonal':
-            positions = [
-                [self.spin_x0.value(), self.spin_y0.value()],
-                [self.spin_x1.value(), self.spin_y1.value()]
-            ]
-            handles = self.roi.getHandles()
-            if len(handles) >= 2:
-                handles[0].setPos(positions[0])
-                handles[1].setPos(positions[1])
-            self.roi.pen.setWidth(self.spin_w.value())
-        self.roi.blockSignals(False)
+        try:
+            if self.cut_type == 'horizontal':
+                y0, y1 = self.spin_y0.value(), self.spin_y1.value()
+                self.roi.setRegion([min(y0, y1), max(y0, y1)])
+            elif self.cut_type == 'vertical':
+                x0, x1 = self.spin_x0.value(), self.spin_x1.value()
+                self.roi.setRegion([min(x0, x1), max(x0, x1)])
+            elif self.cut_type == 'diagonal':
+                self.set_diagonal_endpoints(
+                    (self.spin_x0.value(), self.spin_y0.value()),
+                    (self.spin_x1.value(), self.spin_y1.value()),
+                    width=self.spin_w.value(),
+                )
+        finally:
+            self.roi.blockSignals(False)
         self.update_plot()
-            
+
     def setup_roi(self):
         if self.image_viewer is None or self.image_viewer.imv is None:
             return
@@ -180,6 +211,8 @@ class CutPlotDialog(BaseToolDialog):
                 self.spin_y0.setValue(int(round(pos0.y())))
                 self.spin_x1.setValue(int(round(pos1.x())))
                 self.spin_y1.setValue(int(round(pos1.y())))
+            # Keep the Width box in step when the width handle is dragged
+            self.spin_w.setValue(int(round(self.roi.size().y())))
         self._updating_spins = False
         
         self.update_plot()

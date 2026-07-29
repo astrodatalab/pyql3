@@ -2,6 +2,24 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout
 from PySide6.QtCore import Qt
 import pyqtgraph as pg
 
+
+def as_center(value):
+    """Coerce a slot argument into an (x, y) pixel centre, or None.
+
+    QAction.triggered is declared ``triggered(bool checked=False)`` and PySide6
+    selects that overload for any slot accepting one argument, so a menu action
+    hands an ``initial_center`` parameter a bool rather than a centre. Only a
+    real 2-element pair is usable; anything else means "no centre given".
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        x, y = value
+    except (TypeError, ValueError):
+        return None
+    return (x, y)
+
+
 class BaseToolDialog(QDialog):
     def __init__(self, parent=None, image_viewer=None, title="Tool"):
         super().__init__(parent)

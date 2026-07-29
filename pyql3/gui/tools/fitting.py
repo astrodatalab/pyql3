@@ -3,7 +3,7 @@ from scipy.optimize import curve_fit
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QPushButton, QSpinBox, QVBoxLayout, QDialog, QHBoxLayout
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
-from pyql3.gui.tools.base_tool import BaseToolDialog
+from pyql3.gui.tools.base_tool import BaseToolDialog, as_center
 
 def gaussian_2d(xy, amplitude, xo, yo, wx, wy, theta, offset):
     x, y = xy
@@ -109,6 +109,8 @@ class DisplayPeakFitDialog(QDialog):
 class GaussianFitDialog(BaseToolDialog):
     def __init__(self, parent=None, image_viewer=None, initial_center=None):
         super().__init__(parent, image_viewer, "Peak Fit")
+        # A Qt signal may hand us its `checked` flag instead of a centre
+        initial_center = as_center(initial_center)
         self.resize(350, 450)
         
         self.setup_draw_button(self.layout)
@@ -183,6 +185,7 @@ class GaussianFitDialog(BaseToolDialog):
         self.update_fit()
         
     def set_center(self, center):
+        center = as_center(center)
         if center is None or self.roi is None:
             return
         cx, cy = center

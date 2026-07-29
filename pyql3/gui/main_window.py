@@ -6,6 +6,7 @@ from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
+from pyql3.gui.tools.base_tool import as_center
 from pyql3.services.poller import DirectoryPoller
 from pyql3.gui.dialogs.polling import PollingDialog
 from pyql3.services.config import ConfigManager
@@ -171,7 +172,8 @@ class MainWindow(QMainWindow):
         plot_menu = menubar.addMenu("Plot")
         
         depth_plot_action = plot_menu.addAction("Depth Plot")
-        depth_plot_action.triggered.connect(self.open_depth_plot)
+        # Drop QAction.triggered's `checked` flag: no centre is implied from the menu
+        depth_plot_action.triggered.connect(lambda checked=False: self.open_depth_plot())
         
         hcut_action = plot_menu.addAction("Horizontal Cut")
         hcut_action.triggered.connect(self.open_horizontal_cut)
@@ -198,7 +200,7 @@ class MainWindow(QMainWindow):
         phot_action = analysis_menu.addAction("Photometry")
         phot_action.triggered.connect(self.open_photometry)
         gauss_action = analysis_menu.addAction("Gaussian Fit")
-        gauss_action.triggered.connect(self.open_gaussian_fit)
+        gauss_action.triggered.connect(lambda checked=False: self.open_gaussian_fit())
         
         # Strehl Ratio Tool
         action_strehl = QAction("Strehl Ratio", self)
@@ -483,6 +485,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_depth_plot(self, initial_center=None):
+        initial_center = as_center(initial_center)
         if self.image_viewer is None or getattr(self.image_viewer, 'transposed_data', None) is None:
             return
         if self.image_viewer.transposed_data.ndim != 3:
@@ -492,11 +495,13 @@ class MainWindow(QMainWindow):
 
         from pyql3.gui.tools.depth_plot import DepthPlotDialog
         if not hasattr(self, '_depth_plot_dialog') or not self._depth_plot_dialog.isVisible():
+            # The constructor already honours initial_center
             self._depth_plot_dialog = DepthPlotDialog(self, self.image_viewer, initial_center=initial_center)
+        elif initial_center is not None:
+            # Re-target an already-open dialog
+            self._depth_plot_dialog.set_center(initial_center)
         self._depth_plot_dialog.show()
         self._depth_plot_dialog.raise_()
-        if initial_center is not None and hasattr(self._depth_plot_dialog, 'set_center'):
-            self._depth_plot_dialog.set_center(initial_center)
 
     def open_horizontal_cut(self):
         from pyql3.gui.tools.cuts import CutPlotDialog
@@ -555,6 +560,7 @@ class MainWindow(QMainWindow):
         self._phot_dialog.raise_()
 
     def open_gaussian_fit(self, initial_center=None):
+        initial_center = as_center(initial_center)
         from pyql3.gui.tools.fitting import GaussianFitDialog
         if not hasattr(self, '_gauss_dialog') or not self._gauss_dialog.isVisible():
             self._gauss_dialog = GaussianFitDialog(self, self.image_viewer, initial_center=initial_center)
