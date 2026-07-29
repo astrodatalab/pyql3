@@ -51,6 +51,53 @@ Do **not** hardcode axis checks (such as assuming Axis 3 is wavelength). Datacub
 !!! danger "Data State Safety Rule"
     Never use `transposed_data` to perform analytical calculations that save FITS outputs back to memory or disk. Doing so will output cubes with permanently swapped physical axes and broken WCS headers!
 
+### The Current Z Slice
+
+`ImageViewer.slider_slice` is the single source of truth for which plane of a cube is on
+screen. The two directions are kept in sync automatically: `on_slider_changed` drives
+`imv.setCurrentIndex`, and `on_imv_time_changed` mirrors a user drag of the pyqtgraph
+timeline back onto the slider. Both are wrapped in the `_syncing_slice` guard, because
+`imv.setImage()` emits a spurious `sigTimeChanged(0)` that would otherwise reset the
+slider on every redisplay.
+
+!!! warning "Use `current_z()`, not `imv.currentIndex`"
+    Tools that need the displayed z index must call `self.image_viewer.current_z()`. The
+    ImageView's own `currentIndex` is only maintained while a single slice is displayed —
+    the Boxcar and collapse-range paths render through `bypass_imv=True` and never update
+    it, so it goes stale. `current_z()` returns the slider value in slice/boxcar mode and
+    the middle of the range in collapse mode, clamped to the cube.
+
+### Analysing the Displayed Plane
+
+In **Boxcar** or **Z Range** mode the screen shows a *collapsed* plane that exists in no
+single channel of the cube, so no `cube[z]` is the right data. Two accessors cover this:
+
+- **`current_plane()`** — the 2-D plane on screen, oriented like `display_data` but
+  **without** the DN multiplier. Use it when the caller multiplies by `data_multiplier`
+  itself (as the Depth Plot does at plot time); using `display_data` there would apply the
+  multiplier twice.
+- **`display_data`** — the same plane *with* the multiplier already folded in. Tools that
+  plot it directly want this, and because it is 2-D whenever a collapse is displayed, the
+  common `if img.ndim == 3: img = img[...]` idiom is already correct.
+
+The z-collapse arithmetic and range handling live in one place each, and new code should
+reuse them rather than re-deriving the range:
+
+| helper | purpose |
+|---|---|
+| `clamp_z_range(zmin, zmax, write_back=False)` | clamp **both** ends to the cube and order them |
+| `z_range_from_fields(write_back=False)` | the Z Min / Z Max boxes, parsed and clamped; `None` if unparsable |
+| `boxcar_width()` / `boxcar_range(z)` | the Boxcar setting and the window it averages |
+| `collapse_plane(zmin, zmax, method=None)` | Median / Mean / Sum collapse over an inclusive range |
+| `apply_spatial_transforms(arr)` | the flip/rotation half of `apply_transforms`, as a pure function on a 2-D plane or 3-D cube |
+
+!!! note "Empty and dead planes"
+    Clamping both ends matters: a reversed range slices an empty subcube and the
+    nan-reductions then return an all-NaN plane. `update_image_display` detects a plane with
+    no finite pixels, renders an empty frame with fixed `(0, 1)` levels instead of letting
+    pyqtgraph raise `Cannot set range [nan, nan]`, and `update_slice_info` appends
+    *"no valid data"* to the slice label so a dead channel is not mistaken for a display bug.
+
 ---
 
 ## 🧪 Running Unit Tests

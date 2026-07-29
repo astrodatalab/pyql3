@@ -115,7 +115,11 @@ class ImageViewer(QWidget):
         self.flip = False
         self.pa_arrow = None
         self._itime_coadds = 1.0
-        
+        # Guards the slider <-> ImageView timeline sync (see on_imv_time_changed)
+        self._syncing_slice = False
+        # True when the displayed plane has no finite pixels at all (see update_image_display)
+        self._plane_all_invalid = False
+
         self.setup_zoom_contrast_panel()
         self.setup_extension_panel()
         self.setup_axis_panel()
@@ -128,6 +132,11 @@ class ImageViewer(QWidget):
         # Connect mouse movement and zoom scale
         self.proxy = pg.SignalProxy(self.imv.scene.sigMouseMoved, rateLimit=60, slot=self.mouse_moved)
         self.imv.timeLine.sigPositionChanged.connect(self.update_slice_info)
+
+        # slider_slice is the single source of truth for the current z index; dragging the
+        # pyqtgraph timeline has to write back to it or the labels, the pixel readout and
+        # every analysis tool report a different slice than the one on screen.
+        self.imv.sigTimeChanged.connect(self.on_imv_time_changed)
 
     def get_wavelength_for_slice(self, z):
         if getattr(self, 'wcs', None) is None or getattr(self, 'wcs_z_idx', None) is None:
@@ -144,38 +153,224 @@ class ImageViewer(QWidget):
         except Exception:
             return None
 
+    def clamp_z_range(self, zmin, zmax, write_back=False):
+        """Clamp a channel range to the cube and return it in ascending order.
+
+        Returns `(zmin, zmax)`, inclusive, or None if there is no cube. Clamping *both*
+        ends matters: a reversed or past-the-end range slices an empty subcube, and the
+        nan-reductions then return an all-NaN plane (see B12/B16). With `write_back` the
+        corrected values are pushed into the Z Min / Z Max boxes so the UI shows the range
+        that was actually used.
+        """
+        if getattr(self, 'transposed_data', None) is None or self.transposed_data.ndim != 3:
+            return None
+        nz = self.transposed_data.shape[0]
+        zmin = int(np.clip(int(zmin), 0, nz - 1))
+        zmax = int(np.clip(int(zmax), 0, nz - 1))
+        if zmin > zmax:
+            zmin, zmax = zmax, zmin
+
+        if write_back and hasattr(self, 'txt_zmin'):
+            # setText() does not re-emit editingFinished, so this cannot recurse
+            if self.txt_zmin.text() != str(zmin):
+                self.txt_zmin.setText(str(zmin))
+            if self.txt_zmax.text() != str(zmax):
+                self.txt_zmax.setText(str(zmax))
+        return zmin, zmax
+
+    def z_range_from_fields(self, write_back=False):
+        """The clamped collapse range in the Z Min / Z Max boxes, or None if unparsable."""
+        try:
+            zmin = int(self.txt_zmin.text())
+            zmax = int(self.txt_zmax.text())
+        except (ValueError, AttributeError):
+            return None
+        return self.clamp_z_range(zmin, zmax, write_back=write_back)
+
+    def boxcar_width(self):
+        """The Boxcar setting, at least 1."""
+        try:
+            return max(1, int(self.txt_boxcar.text()))
+        except (ValueError, AttributeError):
+            return 1
+
+    def boxcar_range(self, z=None):
+        """The inclusive channel range the Boxcar setting averages around `z`."""
+        if z is None:
+            z = self.slider_slice.value()
+        half = self.boxcar_width() // 2
+        return self.clamp_z_range(z - half, z + half)
+
+    def collapse_plane(self, zmin, zmax, method=None):
+        """Collapse `transposed_data` over the inclusive range `[zmin, zmax]` into a plane.
+
+        The single definition of the collapse arithmetic, shared by `apply_z_range`,
+        `apply_z_slice` (Boxcar) and `current_plane`.
+        """
+        if getattr(self, 'transposed_data', None) is None or self.transposed_data.ndim != 3:
+            return None
+        if method is None:
+            method = self.combo_collapse.currentText()
+
+        subcube = self.transposed_data[zmin:zmax + 1, :, :]
+        if subcube.shape[0] == 0:
+            return None  # clamp_z_range makes this unreachable; kept so callers can't blank
+
+        # An all-NaN region is expected for dead slices and is handled downstream by the
+        # all-invalid guard in update_image_display; don't spam the console about it.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            if method == "Median":
+                return np.nanmedian(subcube, axis=0)
+            if method == "Mean":
+                return np.nanmean(subcube, axis=0)
+            if method == "Sum":
+                return np.nansum(subcube, axis=0)
+        return subcube[0]
+
+    def apply_spatial_transforms(self, arr):
+        """Return `arr` with the display flip and 90° rotations applied.
+
+        Pure: it neither touches `display_data` nor applies the DN multiplier. Accepts a
+        2-D plane (x, y) or a 3-D cube (z, x, y).
+        """
+        if arr is None:
+            return None
+        k = self.rot_angle // 90
+        if arr.ndim == 3:
+            if self.flip:
+                arr = np.flip(arr, axis=1)  # flip X
+            if k != 0:
+                arr = np.rot90(arr, k=k, axes=(1, 2))
+        else:
+            if self.flip:
+                arr = np.flip(arr, axis=0)  # flip X
+            if k != 0:
+                arr = np.rot90(arr, k=k)
+        return arr
+
+    def current_plane(self):
+        """The 2-D plane currently on screen, oriented like `display_data` but *without*
+        the DN multiplier folded in.
+
+        Tools that analyse the displayed pixels of a cube must use this rather than
+        indexing a single channel: in Boxcar or Z Range mode the screen shows a collapsed
+        plane that exists in no single channel of the cube (see B17). Callers that apply
+        `data_multiplier` themselves want this; callers that don't can use `display_data`.
+        """
+        if getattr(self, 'transposed_data', None) is None:
+            return None
+        if self.transposed_data.ndim != 3:
+            return self.apply_spatial_transforms(self.transposed_data)
+
+        if hasattr(self, 'radio_range') and self.radio_range.isChecked():
+            rng = self.z_range_from_fields()
+            plane = self.collapse_plane(*rng) if rng is not None else None
+        elif self.boxcar_width() > 1:
+            rng = self.boxcar_range()
+            plane = self.collapse_plane(*rng, method="Median") if rng is not None else None
+        else:
+            plane = self.transposed_data[self.current_z()]
+
+        return self.apply_spatial_transforms(plane)
+
+    def current_z(self):
+        """Canonical z index of the plane currently on screen.
+
+        Prefer this over `imv.currentIndex` in tools: the ImageView index is only
+        maintained while a single slice is displayed, and goes stale as soon as a boxcar
+        or collapse range is drawn through `bypass_imv`.
+        """
+        if getattr(self, 'transposed_data', None) is None or self.transposed_data.ndim != 3:
+            return 0
+        nz = self.transposed_data.shape[0]
+
+        if hasattr(self, 'radio_range') and self.radio_range.isChecked():
+            # Collapsed plane: report the middle of the range, as the WCS readout does
+            rng = self.z_range_from_fields()
+            if rng is None:
+                return int(np.clip(self.slider_slice.value(), 0, nz - 1))
+            return (rng[0] + rng[1]) // 2
+
+        # Slice mode, boxcar included: the slider is the source of truth
+        return int(np.clip(self.slider_slice.value(), 0, nz - 1))
+
+    def on_imv_time_changed(self, ind, _time=None):
+        """Mirror a user-driven timeline drag back onto the Z Slice slider.
+
+        Only user interaction should reach here: our own calls into the ImageView are
+        wrapped in `_syncing_slice`, because `imv.setImage()` emits a spurious
+        sigTimeChanged(0) that would otherwise yank the slider back to slice 0.
+        """
+        if self._syncing_slice or getattr(self, 'transposed_data', None) is None:
+            return
+        if self.transposed_data.ndim != 3 or not self.radio_slice.isChecked():
+            return
+
+        try:
+            ind = int(ind)
+        except (TypeError, ValueError):
+            return
+
+        self._syncing_slice = True
+        try:
+            if self.slider_slice.value() != ind:
+                # Drives lbl_slice_val, update_slice_info, the readouts and the tools
+                self.slider_slice.setValue(ind)
+            else:
+                self.update_slice_info()
+        finally:
+            self._syncing_slice = False
+
+    def refresh_plane_validity(self):
+        """Recompute whether the plane on screen has any finite pixel at all.
+
+        Cheap (one plane, never the whole cube) and has to be re-run on every slice change:
+        paging onto a dead channel does not redisplay the image, it only moves the
+        ImageView's index.
+        """
+        data = getattr(self, 'display_data', None)
+        if data is None:
+            self._plane_all_invalid = False
+            return self._plane_all_invalid
+        plane = data
+        if plane.ndim == 3:
+            plane = plane[int(np.clip(self.current_z(), 0, plane.shape[0] - 1))]
+        self._plane_all_invalid = not bool(np.isfinite(plane).any())
+        return self._plane_all_invalid
+
     def update_slice_info(self, *args, **kwargs):
+        self._update_slice_info_text()
+        # An all-invalid plane otherwise looks identical to a display bug (see B16)
+        if self.refresh_plane_validity() and hasattr(self, 'lbl_slice_info'):
+            self.lbl_slice_info.setText(self.lbl_slice_info.text() + "  —  no valid data")
+
+    def _update_slice_info_text(self):
         if getattr(self, 'transposed_data', None) is None:
             if hasattr(self, 'lbl_slice_info'):
                 self.lbl_slice_info.setText("Slice: N/A")
             return
-            
+
         if hasattr(self, 'radio_range') and self.radio_range.isChecked():
-            try:
-                zmin = max(0, int(self.txt_zmin.text()))
-                zmax = min(self.transposed_data.shape[0]-1, int(self.txt_zmax.text()))
+            rng = self.z_range_from_fields()
+            if rng is None:
+                self.lbl_slice_info.setText("Collapsed: Invalid Range")
+            else:
+                zmin, zmax = rng
                 text = f"Collapsed: {zmin}-{zmax}"
-                
+
                 wave_min = self.get_wavelength_for_slice(zmin)
                 wave_max = self.get_wavelength_for_slice(zmax)
                 if wave_min is not None and wave_max is not None:
                     text += f", Wavelengths: {wave_min:.4f}-{wave_max:.4f} µm"
-                        
+
                 self.lbl_slice_info.setText(text)
-            except ValueError:
-                self.lbl_slice_info.setText("Collapsed: Invalid Range")
         else:
             if self.transposed_data.ndim == 3:
                 z = self.slider_slice.value()
-                boxcar = 1
-                try:
-                    boxcar = int(self.txt_boxcar.text())
-                except ValueError:
-                    pass
+                boxcar = self.boxcar_width()
                 if boxcar > 1:
-                    half = boxcar // 2
-                    zmin = max(0, z - half)
-                    zmax = min(self.transposed_data.shape[0]-1, z + half)
+                    zmin, zmax = self.boxcar_range(z)
                     text = f"Slice (Boxcar): {zmin}-{zmax}"
                     wave_min = self.get_wavelength_for_slice(zmin)
                     wave_max = self.get_wavelength_for_slice(zmax)
@@ -573,7 +768,12 @@ class ImageViewer(QWidget):
                 if getattr(self, 'z_range_region', None) and self.z_range_region.isVisible():
                     self.apply_z_slice()
                 else:
-                    self.imv.setCurrentIndex(value)
+                    prev_sync = self._syncing_slice
+                    self._syncing_slice = True
+                    try:
+                        self.imv.setCurrentIndex(value)
+                    finally:
+                        self._syncing_slice = prev_sync
                     self.update_slice_info()
             else:
                 self.apply_z_slice()
@@ -583,40 +783,37 @@ class ImageViewer(QWidget):
             return
         if self._updating_region:
             return
-        try:
-            if getattr(self.imv, 'timeLine', None) is not None:
-                self.imv.timeLine.hide()
-                
-            zmin = max(0, int(self.txt_zmin.text()))
-            zmax = min(self.transposed_data.shape[0]-1, int(self.txt_zmax.text()))
-            collapse_method = self.combo_collapse.currentText()
-            
-            subcube = self.transposed_data[zmin:zmax+1, :, :]
-            if collapse_method == "Median":
-                collapsed = np.nanmedian(subcube, axis=0)
-            elif collapse_method == "Mean":
-                collapsed = np.nanmean(subcube, axis=0)
-            elif collapse_method == "Sum":
-                collapsed = np.nansum(subcube, axis=0)
-            else:
-                collapsed = subcube[0]
-                
-            self.display_data = collapsed
-            self.apply_transforms()
-            
-            # Highlight the range on the pyqtgraph slider
-            self._updating_region = True
-            self.z_range_region.setRegion([zmin, zmax])
-            self._updating_region = False
-            self.z_range_region.show()
-            
-            # bypass_imv=True prevents pg.ImageView from realizing the data is now 2D and hiding the 3D timeline
-            self.update_image_display(bypass_imv=True)
-            self.lbl_zmin.setText(f"ZMin: {zmin}")
-            self.lbl_zmax.setText(f"ZMax: {zmax}")
-            self.update_slice_info()
-        except ValueError:
-            pass
+
+        # Clamp both ends and reflect the correction in the UI before collapsing: a
+        # reversed or out-of-range entry used to slice an empty subcube and blank the
+        # display with only a console warning (B12).
+        rng = self.z_range_from_fields(write_back=True)
+        if rng is None:
+            self.lbl_slice_info.setText("Collapsed: Invalid Range")
+            return
+        zmin, zmax = rng
+
+        if getattr(self.imv, 'timeLine', None) is not None:
+            self.imv.timeLine.hide()
+
+        collapsed = self.collapse_plane(zmin, zmax)
+        if collapsed is None:
+            return
+
+        self.display_data = collapsed
+        self.apply_transforms()
+
+        # Highlight the range on the pyqtgraph slider
+        self._updating_region = True
+        self.z_range_region.setRegion([zmin, zmax])
+        self._updating_region = False
+        self.z_range_region.show()
+
+        # bypass_imv=True prevents pg.ImageView from realizing the data is now 2D and hiding the 3D timeline
+        self.update_image_display(bypass_imv=True)
+        self.lbl_zmin.setText(f"ZMin: {zmin}")
+        self.lbl_zmax.setText(f"ZMax: {zmax}")
+        self.update_slice_info()
 
     def on_roi_plot_clicked(self, event):
         if event.button() == Qt.LeftButton:
@@ -664,8 +861,8 @@ class ImageViewer(QWidget):
             return
         try:
             val = self.slider_slice.value()
-            boxcar = max(1, int(self.txt_boxcar.text()))
-            
+            boxcar = self.boxcar_width()
+
             if boxcar == 1:
                 if getattr(self.imv, 'timeLine', None) is not None:
                     self.imv.timeLine.show()
@@ -676,11 +873,10 @@ class ImageViewer(QWidget):
             else:
                 if getattr(self.imv, 'timeLine', None) is not None:
                     self.imv.timeLine.hide()
-                half = boxcar // 2
-                zmin = max(0, val - half)
-                zmax = min(self.transposed_data.shape[0]-1, val + half)
-                subcube = self.transposed_data[zmin:zmax+1, :, :]
-                collapsed = np.nanmedian(subcube, axis=0)
+                zmin, zmax = self.boxcar_range(val)
+                collapsed = self.collapse_plane(zmin, zmax, method="Median")
+                if collapsed is None:
+                    return
                 self.display_data = collapsed
                 self.apply_transforms()
                 
@@ -845,27 +1041,15 @@ class ImageViewer(QWidget):
         """Applies DN scaling, rotation, and flips to display_data"""
         if self.display_data is None:
             return
-            
+
         # 1. Total DN scaling
         if self.disp_as_dn:
             self.display_data = self.display_data * self._itime_coadds
-            
-        # 2. Rotation & Flip
-        if self.display_data.ndim == 3:
-            # 3D: (z, x, y) - rotate spatial dimensions (axes 1 and 2)
-            if self.flip:
-                self.display_data = np.flip(self.display_data, axis=1) # flip X
-            k = self.rot_angle // 90
-            if k != 0:
-                self.display_data = np.rot90(self.display_data, k=k, axes=(1, 2))
-        else:
-            # 2D: (x, y)
-            if self.flip:
-                self.display_data = np.flip(self.display_data, axis=0) # flip X
-            k = self.rot_angle // 90
-            if k != 0:
-                self.display_data = np.rot90(self.display_data, k=k)
-                
+
+        # 2. Rotation & Flip (shared with current_plane via apply_spatial_transforms)
+        self.display_data = self.apply_spatial_transforms(self.display_data)
+
+
     def get_north_angle_base(self):
         """Return (theta_n_base, theta_e_base, is_wcs) representing the base angles
         of North and East (degrees CCW from +X axis) in the un-rotated, un-flipped
@@ -1098,48 +1282,87 @@ class ImageViewer(QWidget):
                     vmax = vmin + 1
         except Exception:
             vmin, vmax = 0, 1
-            
+
+        # float("nan")/float("inf") parse happily from the Min/Max boxes, and a non-finite
+        # level poisons every scale mode into an all-NaN render
+        if not (np.isfinite(vmin) and np.isfinite(vmax)):
+            vmin, vmax = 0.0, 1.0
+
         if not use_manual_levels:
             self.txt_min.setText(f"{vmin:.3f}")
             self.txt_max.setText(f"{vmax:.3f}")
             
+        # Integer FITS data (BITPIX 16/32) must be promoted before scaling: HistEq
+        # normalizes into [0, 1) and Negative wraps for unsigned dtypes.
+        base = self.display_data
+        if not np.issubdtype(base.dtype, np.floating):
+            base = base.astype(np.result_type(base.dtype, np.float32), copy=False)
+
         scale_type = self.combo_scale.currentText()
         if scale_type == "Linear":
-            render_data = self.display_data
+            render_data = base
             render_vmin, render_vmax = vmin, vmax
         elif scale_type == "Negative":
-            render_data = -self.display_data
+            render_data = -base
             render_vmin, render_vmax = -vmax, -vmin
         elif scale_type == "Logarithmic":
-            render_data = np.log10(np.clip(self.display_data - vmin + 1, 1, None))
+            render_data = np.log10(np.clip(base - vmin + 1, 1, None))
             render_vmin, render_vmax = 0.0, np.log10(max(1.0, vmax - vmin + 1))
         elif scale_type == "Sqrt":
-            render_data = np.sqrt(np.clip(self.display_data - vmin, 0, None))
+            render_data = np.sqrt(np.clip(base - vmin, 0, None))
             render_vmin, render_vmax = 0.0, np.sqrt(max(0.0, vmax - vmin))
         elif scale_type == "AsinH":
             noise = (vmax - vmin) / 100.0 if vmax > vmin else 1.0
-            render_data = np.arcsinh((self.display_data - vmin) / noise)
+            render_data = np.arcsinh((base - vmin) / noise)
             render_vmin, render_vmax = 0.0, np.arcsinh((vmax - vmin) / noise)
         elif scale_type == "HistEq":
-            valid_mask = ~np.isnan(self.display_data)
-            valid_data = self.display_data[valid_mask]
-            if valid_data.size > 50000:
-                valid_data = np.random.choice(valid_data, 50000)
-            sorted_flat = np.sort(valid_data)
-            
-            render_data = np.zeros_like(self.display_data)
-            render_data[valid_mask] = np.searchsorted(sorted_flat, self.display_data[valid_mask]) / float(len(sorted_flat))
+            valid_mask = ~np.isnan(base)
+            valid_data = base[valid_mask]
+            sample = valid_data
+            if sample.size > 50000:
+                sample = np.random.choice(sample, 50000)
+            sorted_flat = np.sort(sample)
+
+            render_data = np.zeros(base.shape, dtype=base.dtype)
+            if sorted_flat.size > 0:
+                render_data[valid_mask] = np.searchsorted(sorted_flat, valid_data) / float(sorted_flat.size)
             render_vmin, render_vmax = 0.0, 1.0
-            
+
+        # Is the plane the user is looking at entirely invalid (a dead slice, a fully masked
+        # region)? Probe the data, not render_data — HistEq substitutes zeros of its own,
+        # which would mask the condition.
+        self.refresh_plane_validity()
+
+        # pyqtgraph derives its autorange from nanmin/nanmax and raises
+        # "Cannot set range [nan, nan]" if nothing is finite, so hand it an empty frame with
+        # fixed levels instead of a blank display and a traceback (B16). If the displayed
+        # plane has any finite pixel the cube cannot be all-invalid, so the full scan only
+        # runs in the rare case that matters.
+        if self._plane_all_invalid and not np.isfinite(render_data).any():
+            render_data = np.zeros(render_data.shape, dtype=float)
+            render_vmin, render_vmax = 0.0, 1.0
+
         view = self.imv.getView()
         view_rect = None if is_new else (view.viewRect() if self.imv.image is not None else None)
 
-        if bypass_imv:
-            self.imv.getImageItem().setImage(render_data, autoLevels=False, levels=(render_vmin, render_vmax))
-        else:
-            self.imv.setImage(render_data, autoRange=is_new, autoLevels=False, levels=(render_vmin, render_vmax))
-            if set_index is not None and hasattr(self.imv, 'tVals'):
-                self.imv.setCurrentIndex(set_index)
+        # setImage() resets the ImageView to index 0 and emits sigTimeChanged; re-assert the
+        # slider's slice so a reload (or a poller auto-load) does not silently drop to
+        # slice 0 while the slider, labels and tools still report the old index.
+        if set_index is None and not bypass_imv and render_data.ndim == 3 \
+                and hasattr(self, 'radio_slice') and self.radio_slice.isChecked():
+            set_index = self.slider_slice.value()
+
+        prev_sync = self._syncing_slice
+        self._syncing_slice = True
+        try:
+            if bypass_imv:
+                self.imv.getImageItem().setImage(render_data, autoLevels=False, levels=(render_vmin, render_vmax))
+            else:
+                self.imv.setImage(render_data, autoRange=is_new, autoLevels=False, levels=(render_vmin, render_vmax))
+                if set_index is not None and hasattr(self.imv, 'tVals'):
+                    self.imv.setCurrentIndex(int(set_index))
+        finally:
+            self._syncing_slice = prev_sync
 
         if is_new:
             view.autoRange()

@@ -882,13 +882,8 @@ class DepthPlotDialog(BaseToolDialog):
             self.group_linelist.setEnabled(plot_type == "Depth Plot")
             
         # Transform the 3D cube to match the display coordinates (rotation, flip)
-        cube = self.image_viewer.transposed_data
-        if self.image_viewer.flip:
-            cube = np.flip(cube, axis=1)
-        k = self.image_viewer.rot_angle // 90
-        if k != 0:
-            cube = np.rot90(cube, k=k, axes=(1, 2))
-            
+        cube = self.image_viewer.apply_spatial_transforms(self.image_viewer.transposed_data)
+
         pos = self.roi.pos()
         size = self.roi.size()
         
@@ -1047,9 +1042,12 @@ class DepthPlotDialog(BaseToolDialog):
                 self.plot_sub.setData([], [])
             
         elif plot_type == "Horizontal Cut":
-            # For 2D cuts, we use the currently displayed Z slice
-            z_idx = self.image_viewer.imv.currentIndex
-            region = cube[z_idx, x0:x1, y0:y1]
+            # Cut the plane that is actually on screen: in Boxcar or Z Range mode that is a
+            # collapsed plane which exists in no single channel of the cube (B17).
+            plane = self.image_viewer.current_plane()
+            if plane is None or plane.ndim != 2:
+                return
+            region = plane[x0:x1, y0:y1]
             if region.size == 0:
                 return
             if calc_method == "Average":
@@ -1073,8 +1071,10 @@ class DepthPlotDialog(BaseToolDialog):
             self.plot_sub.setData([], [])
             
         elif plot_type == "Vertical Cut":
-            z_idx = self.image_viewer.imv.currentIndex
-            region = cube[z_idx, x0:x1, y0:y1]
+            plane = self.image_viewer.current_plane()
+            if plane is None or plane.ndim != 2:
+                return
+            region = plane[x0:x1, y0:y1]
             if region.size == 0:
                 return
             if calc_method == "Average":
