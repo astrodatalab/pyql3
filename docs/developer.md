@@ -61,6 +61,25 @@ Header Editor edits that have not been saved yet. Pass `force=True` for a guaran
     new code: **never probe `hdu.data` to inspect an extension** — that reads it into
     memory. Test the header instead, as `FitsReader._is_displayable()` does.
 
+!!! danger "Windows: an open file cannot be unlinked or replaced"
+    Windows opens files without `FILE_SHARE_DELETE`, so while we hold a FITS file open **no
+    one** — not us, not another process — can delete or rename over that path. Writing
+    *into* the existing file is fine. Two consequences:
+
+    * **Never write over an open path with `writeto(..., overwrite=True)`.** astropy
+      implements overwrite as `os.remove()` + create, which is refused. `FitsReader.save()`
+      therefore materialises every HDU, closes the handle, writes a sibling temp file and
+      swaps it in with `os.replace()`. Materialising *before* closing is required — lazy
+      HDUs cannot be read once the handle is gone.
+    * **In tests, never simulate an external rewrite with `writeto(overwrite=True)`** while
+      anything holds the file open. Use the `rewrite_fits_in_place` fixture from
+      `tests/conftest.py`; it writes with `r+b` and bumps the mtime explicitly, because the
+      Windows clock ticks roughly every 15 ms and two writes inside one tick can share an
+      mtime and defeat the staleness check.
+
+    This asymmetry is only tested on Windows CI, so a change here can pass locally on macOS
+    or Linux and fail the release build. See **B18** and **B19** in `BUGS.md`.
+
 `_is_displayable(hdu)` (`is_image` **and** `NAXIS > 0`) is the single definition of an
 extension the viewer can show, used both by `load()` and by `get_image_extensions()`, which
 populates the Extension combo. `get_all_extensions()` is a different question and still lists

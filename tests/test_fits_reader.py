@@ -1,3 +1,4 @@
+import os
 import pytest
 import numpy as np
 from astropy.io import fits
@@ -63,14 +64,16 @@ def test_fits_reader_osiris_axis_mapping(real_osiris_fits):
 
 
 @pytest.fixture
-def rewritable_fits(tmp_path):
+def rewritable_fits(tmp_path, rewrite_fits_in_place):
     """A single-HDU file whose contents can be rewritten in place, as a DRP would."""
     path = tmp_path / "live.fits"
 
-    def write(value, extra_card=None):
-        hdu = fits.PrimaryHDU(np.full((8, 8), value, dtype=np.float32))
+    def write(value, extra_card=None, shape=(8, 8)):
+        hdu = fits.PrimaryHDU(np.full(shape, value, dtype=np.float32))
         if extra_card:
             hdu.header[extra_card[0]] = extra_card[1]
+        if path.exists():
+            return rewrite_fits_in_place(path, hdu)
         hdu.writeto(path, overwrite=True)
         return str(path)
 
@@ -94,14 +97,14 @@ def test_reload_same_path_picks_up_rewritten_data(rewritable_fits):
     reader.close()
 
 
-def test_reload_detects_a_rewrite_that_changes_size(tmp_path):
+def test_reload_detects_a_rewrite_that_changes_size(tmp_path, rewrite_fits_in_place):
     """The staleness check must not rely on mtime alone."""
     path = str(tmp_path / "resize.fits")
     fits.PrimaryHDU(np.zeros((8, 8), dtype=np.float32)).writeto(path, overwrite=True)
     reader = FitsReader(path)
     assert reader.get_data().shape == (8, 8)
 
-    fits.PrimaryHDU(np.ones((32, 32), dtype=np.float32)).writeto(path, overwrite=True)
+    rewrite_fits_in_place(path, fits.PrimaryHDU(np.ones((32, 32), dtype=np.float32)))
     reader.load(path)
 
     assert reader.get_data().shape == (32, 32)
@@ -167,16 +170,84 @@ def test_rewritten_file_wins_over_pending_header_edits(rewritable_fits):
 
 
 def test_save_to_the_same_path_succeeds_while_open(rewritable_fits):
-    """memmap=False also matters here: writeto() over a path with a live mapping can fail."""
+    """The Header Editor's "save directly to file" writes over the path we hold open.
+
+    Windows refuses to unlink a file with an open handle and astropy implements
+    `overwrite=True` as `os.remove()` + create, so this raised
+    `PermissionError: [WinError 32]` on Windows only (caught by the Windows CI job).
+    `save()` now releases the handle and swaps a temp file in with `os.replace()`.
+    """
     path, _ = rewritable_fits
     reader = FitsReader(path)
+    data_before = reader.get_data().copy()
     reader.update_header_card("OBSERVER", "Tuan")
 
     reader.save()                      # same path, file still open
 
-    reader.load(path)
+    # save() reopens, so the reader is already consistent with disk
     assert reader.get_header().get("OBSERVER") == "Tuan"
+    assert np.array_equal(reader.get_data(), data_before), "save() must not alter the pixels"
+
+    fresh = FitsReader(path)
+    assert fresh.get_header().get("OBSERVER") == "Tuan"
+    assert np.array_equal(fresh.get_data(), data_before)
+    fresh.close()
     reader.close()
+
+
+def test_save_leaves_no_temp_files_behind(rewritable_fits):
+    """The temp file is a sibling of the target, so a leak would litter the data directory."""
+    path, _ = rewritable_fits
+    directory = os.path.dirname(path)
+    before = set(os.listdir(directory))
+
+    reader = FitsReader(path)
+    reader.update_header_card("OBSERVER", "Tuan")
+    reader.save()
+    reader.close()
+
+    assert set(os.listdir(directory)) == before
+
+
+def test_save_as_a_new_path_keeps_the_original_open(rewritable_fits, tmp_path):
+    """Save-As must not silently switch which file the reader is pointing at."""
+    path, _ = rewritable_fits
+    other = str(tmp_path / "copy.fits")
+
+    reader = FitsReader(path)
+    reader.update_header_card("OBSERVER", "Tuan")
+    reader.save(other)
+
+    assert reader.filepath == path, "reader should still be on the original file"
+    assert os.path.exists(other)
+
+    written = FitsReader(other)
+    assert written.get_header().get("OBSERVER") == "Tuan"
+    written.close()
+    reader.close()
+
+
+def test_save_preserves_every_extension(tmp_path):
+    """Materialising HDUs before releasing the handle must not drop or empty any of them."""
+    path = str(tmp_path / "multi.fits")
+    fits.HDUList([
+        fits.PrimaryHDU(np.full((4, 4), 1.0, dtype=np.float32)),
+        fits.ImageHDU(np.full((4, 4), 2.0, dtype=np.float32), name="SCI"),
+        fits.ImageHDU(np.full((3, 4, 4), 3.0, dtype=np.float32), name="CUBE"),
+    ]).writeto(path, overwrite=True)
+
+    reader = FitsReader(path)
+    reader.update_header_card("OBSERVER", "Tuan", ext=1)
+    reader.save()
+    reader.close()
+
+    with fits.open(path) as hdul:
+        assert len(hdul) == 3
+        assert hdul[0].data.mean() == 1.0
+        assert hdul[1].data.mean() == 2.0
+        assert hdul[2].data.shape == (3, 4, 4)
+        assert hdul[2].data.mean() == 3.0
+        assert hdul[1].header.get("OBSERVER") == "Tuan"
 
 
 # --- B6: non-image extensions in the dropdown -------------------------------------

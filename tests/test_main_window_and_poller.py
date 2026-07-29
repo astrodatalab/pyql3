@@ -151,7 +151,7 @@ def test_selecting_a_table_extension_clears_the_view(qapp, tmp_path):
     win.close()
 
 
-def test_reload_and_redisplay_pick_up_a_rewritten_file(qapp, tmp_path):
+def test_reload_and_redisplay_pick_up_a_rewritten_file(qapp, tmp_path, rewrite_fits_in_place):
     """B5 through the GUI: the poller's auto-load and Display -> Redisplay image both go
     through load_fits, which served the cached HDUList for an unchanged path."""
     import numpy as np
@@ -165,12 +165,12 @@ def test_reload_and_redisplay_pick_up_a_rewritten_file(qapp, tmp_path):
     assert win.image_viewer.raw_data.mean() == 10.0
 
     # the instrument writes a new frame to the same path
-    fits.PrimaryHDU(np.full((8, 8), 1010.0, dtype=np.float32)).writeto(path, overwrite=True)
+    rewrite_fits_in_place(path, fits.PrimaryHDU(np.full((8, 8), 1010.0, dtype=np.float32)))
 
     win.load_fits(path)                 # what on_file_detected does
     assert win.image_viewer.raw_data.mean() == 1010.0
 
-    fits.PrimaryHDU(np.full((8, 8), 2020.0, dtype=np.float32)).writeto(path, overwrite=True)
+    rewrite_fits_in_place(path, fits.PrimaryHDU(np.full((8, 8), 2020.0, dtype=np.float32)))
     win.redisplay_image()
     assert win.image_viewer.raw_data.mean() == 2020.0
     win.close()

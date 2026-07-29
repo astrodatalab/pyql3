@@ -1,4 +1,5 @@
 import os
+import tempfile
 from astropy.io import fits
 import numpy as np
 
@@ -149,13 +150,59 @@ class FitsReader:
                 hdr[keyword] = value
 
     def save(self, output_filepath=None):
-        """Saves the modified FITS file."""
+        """Write the in-memory HDUList out, overwriting the target if it exists.
+
+        Saving over the file we currently have open needs care on Windows: a file with an
+        open handle cannot be deleted or replaced, and astropy implements `overwrite=True`
+        as `os.remove()` followed by a fresh create. That made the Header Editor's
+        "save directly to file" fail with `PermissionError: [WinError 32]`.
+
+        So: pull every HDU into memory, release the OS handle, write to a sibling temp file
+        and swap it in with `os.replace()` (atomic on both platforms, and it never leaves a
+        half-written file where the original was). Then reopen so our state matches disk.
+        """
         if self.hdul is None:
             raise ValueError("No FITS file loaded.")
-        
+
         save_path = output_filepath or self.filepath
-        self.hdul.writeto(save_path, overwrite=True)
-        
+        if not save_path:
+            raise ValueError("No output path given and no current file path is known.")
+
+        hdul = self.hdul
+
+        # Materialise before dropping the handle: with memmap off these become real arrays
+        # that stay valid after close(), which lazily-loaded HDUs would not.
+        for hdu in hdul:
+            _ = hdu.data
+
+        try:
+            hdul.close()
+        except Exception:
+            pass
+
+        directory = os.path.dirname(os.path.abspath(save_path)) or '.'
+        fd, tmp_path = tempfile.mkstemp(prefix='.pyql3_save_', suffix='.fits', dir=directory)
+        os.close(fd)
+        try:
+            hdul.writeto(tmp_path, overwrite=True)
+            os.replace(tmp_path, save_path)
+        except BaseException:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        # Our handle is gone and the bytes on disk have changed, so reopen from scratch.
+        reopen_path = save_path if self.filepath in (None, save_path) else self.filepath
+        ext = self.current_ext
+        self.hdul = None
+        self._file_signature = None
+        if os.path.exists(reopen_path):
+            self.load(reopen_path, ext=ext, force=True)
+
+
     def close(self):
         """Closes the FITS file handle."""
         if self.hdul is not None:

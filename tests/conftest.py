@@ -71,3 +71,43 @@ def real_osiris_fits():
     if p.exists():
         return str(p)
     return None
+
+
+def _rewrite_fits_in_place(path, hdu):
+    """Overwrite a FITS file's bytes without unlinking it, then guarantee a new mtime.
+
+    Two portability constraints, both learned from a Windows CI failure:
+
+    * `hdu.writeto(path, overwrite=True)` cannot be used while something still holds the
+      file open. Windows refuses to delete or replace such a file, and astropy implements
+      overwrite as `os.remove()` + create, so it raises `PermissionError: [WinError 32]`.
+      Writing *into* the existing file (`r+b`) is permitted on every platform.
+    * File timestamp granularity is coarser than a test: the Windows clock ticks roughly
+      every 15 ms, so a rewrite microseconds after the original can land on an identical
+      mtime. Bumping the mtime explicitly makes staleness detection deterministic instead
+      of dependent on how fast the test ran.
+    """
+    import io
+    import os
+
+    buf = io.BytesIO()
+    hdu.writeto(buf)
+    payload = buf.getvalue()
+
+    with open(path, 'r+b') as fh:
+        fh.write(payload)
+        fh.truncate(len(payload))
+
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    return str(path)
+
+
+@pytest.fixture
+def rewrite_fits_in_place():
+    """Rewrite a FITS file in place, as an instrument or DRP overwriting a frame would.
+
+    Use this instead of `writeto(..., overwrite=True)` in any test where something still
+    has the file open -- see `_rewrite_fits_in_place` for why that fails on Windows.
+    """
+    return _rewrite_fits_in_place
