@@ -199,3 +199,7 @@ agent_tests/
 #  - they include other PIs' observations (e.g. JWST program 01266), which are not
 #    ours to redistribute. Fetch from MAST / KOA by program ID instead.
 example/
+
+# Working notes for the in-progress security review. Deliberately NOT versioned:
+# it enumerates unfixed weaknesses, and this repository is public.
+/security_review_plan.md
