@@ -9,25 +9,39 @@ This document outlines key technical details, architectural decisions, and testi
 ```
 pyql3/
 ├── core/
-│   └── fits_reader.py       # FITS loading, WCS extraction, and multi-HDU management
+│   └── fits_reader.py        # FITS loading, WCS extraction, and multi-HDU management
+├── analysis/
+│   └── strehl.py             # Pupil mask / diffraction-limited PSF / Strehl computation
+├── data/                     # Bundled spectral line lists (*.txt), see Packaging
 ├── gui/
-│   ├── main_window.py       # Main PySide6 application window & menu dispatch
+│   ├── main_window.py        # Main PySide6 application window & menu dispatch
 │   ├── viewers/
-│   │   ├── image_viewer.py  # 2D/3D image display, WCS, scaling, & colormaps
-│   │   └── plot_viewer.py   # 1D line plot viewer
+│   │   ├── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
+│   │   └── plot_viewer.py    # UNUSED — see note below
 │   ├── tools/
-│   │   ├── depth_plot.py    # Spectral extraction & line list overlays
-│   │   ├── cuts.py          # Spatial profile cuts
-│   │   ├── fitting.py       # 2D Gaussian/Lorentzian/Moffat fitting
-│   │   ├── photometry.py    # Aperture photometry
-│   │   ├── strehl.py        # Strehl ratio calculation
-│   │   └── base_tool.py     # Base class for modeless tool dialogs
+│   │   ├── base_tool.py      # Base class for modeless tool dialogs
+│   │   ├── depth_plot.py     # Spectral extraction & line list overlays
+│   │   ├── cuts.py           # Spatial profile cuts
+│   │   ├── fitting.py        # 2D Gaussian/Lorentzian/Moffat fitting
+│   │   ├── photometry.py     # Aperture photometry
+│   │   ├── statistics.py     # Region statistics
+│   │   ├── strehl.py         # Strehl dialog (numerics live in analysis/strehl.py)
+│   │   ├── arithmetic.py     # Image arithmetic between cubes/constants
+│   │   ├── advanced_plots.py # 3D surface plot
+│   │   ├── plot_catalog.py   # Source catalog overlay
+│   │   └── rotate.py         # View rotation controls
 │   └── dialogs/
-│       ├── header_editor.py # FITS header card editor
-│       └── polling.py       # Directory polling setup dialog
+│       ├── header_editor.py  # FITS header card editor
+│       └── polling.py        # Directory polling setup dialog
 └── services/
-    └── poller.py            # Watchdog filesystem monitoring service
+    ├── poller.py             # Watchdog filesystem monitoring service
+    └── config.py             # ~/.pyql3/config.json, recent-files list
 ```
+
+!!! note "`viewers/plot_viewer.py` is dead code"
+    `PlotViewer` has no references anywhere in the package or the test suite. It is listed
+    above only because the file exists; do not build on it. Tool dialogs embed their own
+    `pyqtgraph.PlotWidget` instead.
 
 ---
 
@@ -158,11 +172,29 @@ uv run pytest -v
 ```
 
 ### Test Organization (`tests/`)
-- `tests/test_fits_reader.py`: FITS loading, WCS extraction, multi-extension headers, and OSIRIS axis mapping.
-- `tests/test_image_viewer.py`: `raw_data` vs `transposed_data` separation, view rotations, display scaling, and colormaps.
+- `tests/test_fits_reader.py`: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.
+- `tests/test_image_viewer.py`: `raw_data` / `transposed_data` / `display_data` separation, view rotations, display scaling, colormaps, and z-slice plane accessors.
 - `tests/test_depth_plot.py`: Spectrum extraction, background subtraction, line list parsing, LaTeX label formatting, and Y-auto scaling.
-- `tests/test_analysis_tools.py`: Profile cuts, 2D peak fitting, statistics, photometry, Strehl ratio, and surface plots.
+- `tests/test_analysis_tools.py`: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.
+- `tests/test_cuts.py`: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.
+- `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close.
+- `tests/test_menu_actions.py`: The `QAction.triggered` bool-vs-coordinate slot hazard and `as_center()` coercion (see the Qt slot gotcha in `AGENTS.md`).
 - `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, and `DirectoryPoller` service.
+- `tests/test_packaging_assets.py`: Bundled line lists and `cmcrameri` colormaps are present, and `QuickLook3.spec` registers every asset.
+
+### Tests that need real instrument data
+
+A few tests exercise a genuine OSIRIS cube, because the synthetic fixtures are built to the
+same axis convention the code assumes and so cannot catch an axis regression. They **skip**
+unless `PYQL3_TEST_CUBE` points at one:
+
+```bash
+export PYQL3_TEST_CUBE="$HOME/path/to/s150531_a025002_Kn5_035.fits"
+uv run pytest -v
+```
+
+They always skip in CI, where no such cube exists. A path that is set but unreadable warns
+rather than skipping silently, so a typo cannot masquerade as "not configured".
 
 ---
 
