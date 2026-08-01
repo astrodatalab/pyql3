@@ -16,8 +16,7 @@ pyql3/
 ├── gui/
 │   ├── main_window.py        # Main PySide6 application window & menu dispatch
 │   ├── viewers/
-│   │   ├── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
-│   │   └── plot_viewer.py    # UNUSED — see note below
+│   │   └── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
 │   ├── tools/
 │   │   ├── base_tool.py      # Base class for modeless tool dialogs
 │   │   ├── depth_plot.py     # Spectral extraction & line list overlays
@@ -38,10 +37,7 @@ pyql3/
     └── config.py             # ~/.pyql3/config.json, recent-files list
 ```
 
-!!! note "`viewers/plot_viewer.py` is dead code"
-    `PlotViewer` has no references anywhere in the package or the test suite. It is listed
-    above only because the file exists; do not build on it. Tool dialogs embed their own
-    `pyqtgraph.PlotWidget` instead.
+Tool dialogs embed their own `pyqtgraph.PlotWidget` rather than sharing a plot viewer class.
 
 ---
 
