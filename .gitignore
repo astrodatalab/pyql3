@@ -31,6 +31,9 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# ...but QuickLook3.spec is the hand-maintained single source of truth for PyInstaller
+# across macOS/Linux/Windows (see AGENTS.md "Packaging"). It must stay versioned.
+!QuickLook3.spec
 
 # Installer logs
 pip-log.txt
@@ -171,3 +174,28 @@ Thumbs.db
 
 # setuptools_scm
 pyql3/_version.py
+
+# ---------------------------------------------------------------------------
+# pyql3-specific
+# ---------------------------------------------------------------------------
+
+# Exploratory agent scripts: local scratch only, never part of the repo.
+# See agent_tests/README.md — oneoff_scripts/ contains source-rewriting scripts.
+agent_tests/
+
+# Temporary scratch artifacts dropped in the repo root by probe scripts.
+# Root-anchored (leading /) so tracked assets under docs/images/ are unaffected.
+/*.png
+/*.bak
+/test.fits
+/catalog.csv
+/test_slice_output.txt
+
+# Built docs site
+/site/
+
+# Sample/science data used for manual testing. Never commit these:
+#  - they are large (a 170 MB cube exceeds GitHub's 100 MiB per-file hard limit)
+#  - they include other PIs' observations (e.g. JWST program 01266), which are not
+#    ours to redistribute. Fetch from MAST / KOA by program ID instead.
+example/

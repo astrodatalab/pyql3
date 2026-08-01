@@ -68,3 +68,11 @@ extra_javascript:
 
 hooks:
   - docs/hooks.py
+
+# `hooks.py` lives inside docs_dir, so importing it leaves a docs/__pycache__/*.pyc behind.
+# Everything in docs_dir is copied verbatim into the built site, and a .pyc embeds the
+# absolute path of the machine that compiled it — which then gets published by gh-deploy,
+# bypassing the root .gitignore. Exclude it from the build.
+exclude_docs: |
+  __pycache__/
+  *.pyc
