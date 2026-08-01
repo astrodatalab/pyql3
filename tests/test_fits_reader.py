@@ -49,18 +49,68 @@ def test_fits_reader_multi_extension(tmp_path):
     reader.close()
 
 
+def _find_axis(ctypes, *tokens):
+    """FITS axis index (0-based) whose CTYPE starts with any of ``tokens``, else None."""
+    for idx, ctype in enumerate(ctypes):
+        if any(ctype.startswith(tok) for tok in tokens):
+            return idx
+    return None
+
+
 def test_fits_reader_osiris_axis_mapping(real_osiris_fits):
-    """Verify OSIRIS cube axis ordering rules (Axis 1=WAVE, Axis 2=DEC, Axis 3=RA)."""
+    """Guard the FITS-vs-numpy axis reversal against real OSIRIS data.
+
+    The synthetic fixtures are built to the very convention the code assumes, so
+    they cannot catch an axis regression — they would move in lockstep with it.
+    This test is the only place the reversal is checked against a file produced by
+    the real instrument, which is why it is worth keeping despite needing external
+    data (set PYQL3_TEST_CUBE).
+
+    Nothing here is hardcoded to one cube: the expected numpy shape is derived from
+    the file's own NAXISn cards, so any OSIRIS-ordered cube exercises it.
+    """
     if real_osiris_fits is None:
-        pytest.skip("Real OSIRIS FITS file not found on disk")
+        pytest.skip("Set PYQL3_TEST_CUBE to a real OSIRIS cube to run this test")
 
     reader = FitsReader(real_osiris_fits)
-    wcs = WCS(reader.header)
-    
-    # OSIRIS spectral cubes map Axis 1 to Wavelength (CTYPE1='WAVE')
-    ctype1 = str(wcs.wcs.ctype[0]).upper()
-    assert 'WAVE' in ctype1 or 'AWAV' in ctype1, f"Expected OSIRIS Axis 1 CTYPE WAVE, got {ctype1}"
-    reader.close()
+    try:
+        header = reader.header
+        ctypes = [str(c).upper() for c in WCS(header).wcs.ctype]
+
+        # Axes are located by CTYPE, never by a hardcoded index (AGENTS.md).
+        wave_ax = _find_axis(ctypes, 'WAVE', 'AWAV')
+        dec_ax = _find_axis(ctypes, 'DEC')
+        ra_ax = _find_axis(ctypes, 'RA')
+        assert None not in (wave_ax, dec_ax, ra_ax), f"Could not identify all axes in {ctypes}"
+
+        # OSIRIS convention: wavelength on FITS axis 1, Dec on 2, RA on 3.
+        assert (wave_ax, dec_ax, ra_ax) == (0, 1, 2), (
+            f"Expected OSIRIS order (WAVE, DEC, RA) on FITS axes 1/2/3, got {ctypes}"
+        )
+
+        # astropy reverses FITS axis order into C-contiguous numpy order, so
+        # numpy_index = NAXIS - 1 - fits_index and data.shape is (RA, DEC, WAVE).
+        naxis = header['NAXIS']
+        assert naxis == 3, f"Expected a 3D cube, got NAXIS={naxis}"
+        assert reader.data.ndim == 3
+
+        expected_shape = tuple(header[f'NAXIS{i}'] for i in range(naxis, 0, -1))
+        assert reader.data.shape == expected_shape, (
+            f"Expected reversed shape {expected_shape} from NAXIS cards, "
+            f"got {reader.data.shape}"
+        )
+
+        # The load-bearing consequence: wavelength is FITS axis 1 but the LAST
+        # numpy axis. Getting this backwards silently transposes every cube.
+        wave_np_ax = naxis - 1 - wave_ax
+        assert wave_np_ax == 2
+        assert reader.data.shape[wave_np_ax] == header['NAXIS1'], (
+            "Wavelength channel count is not on the last numpy axis"
+        )
+        assert reader.data.shape[naxis - 1 - ra_ax] == header['NAXIS3']
+        assert reader.data.shape[naxis - 1 - dec_ax] == header['NAXIS2']
+    finally:
+        reader.close()
 
 
 @pytest.fixture

@@ -1,5 +1,7 @@
+import os
 import pytest
 import pathlib
+import warnings
 import numpy as np
 from PySide6.QtWidgets import QApplication
 from astropy.io import fits
@@ -66,11 +68,31 @@ def loaded_viewer(qapp, sample_3d_fits):
 
 @pytest.fixture
 def real_osiris_fits():
-    """Locate the real OSIRIS reference FITS file if present on disk."""
-    p = pathlib.Path("~/drp_me/ql2/s150531_a025002_Kn5_035.fits")
-    if p.exists():
-        return str(p)
-    return None
+    """Path to a real OSIRIS cube, or None if one is not configured.
+
+    Set ``PYQL3_TEST_CUBE`` to exercise the real-data tests; they skip otherwise.
+    The path is deliberately not hardcoded — it differs per machine, and this
+    repository is public (see AGENTS.md, "Reference data").
+
+    A *misconfigured* variable warns rather than skipping silently. Returning None
+    for both "not configured" and "configured wrongly" is how the previous version
+    of this fixture hid a bug for months: it used ``pathlib.Path("~/...")``, which
+    does not expand ``~``, so it always returned None and every dependent test
+    skipped while looking perfectly healthy.
+    """
+    raw = os.environ.get("PYQL3_TEST_CUBE")
+    if not raw:
+        return None
+
+    path = pathlib.Path(raw).expanduser()
+    if not path.is_file():
+        warnings.warn(
+            f"PYQL3_TEST_CUBE is set to {path!s}, which is not a readable file; "
+            "real-data tests will skip.",
+            stacklevel=2,
+        )
+        return None
+    return str(path)
 
 
 def _rewrite_fits_in_place(path, hdu):

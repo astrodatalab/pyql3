@@ -544,3 +544,46 @@ def test_current_plane_orientation_matches_display(channel_cube, rot, flip):
     v.slider_slice.setValue(5)
 
     assert np.allclose(v.current_plane(), v.display_data[v.current_z()])
+
+
+def test_osiris_default_axis_selection_on_real_data(qapp, real_osiris_fits):
+    """ImageViewer must default an OSIRIS cube to RA/Dec on screen, wavelength on Z.
+
+    set_data() sniffs CTYPE1 to choose the default X axis: instruments that put RA
+    first get AXIS 1, OSIRIS (wavelength first) must fall through to AXIS 3. The
+    synthetic fixtures encode that same assumption, so this real-data check is the
+    only guard against the sniffing regressing for actual instrument headers.
+
+    Shapes are derived from the file's NAXIS cards; no cube-specific constants.
+    """
+    if real_osiris_fits is None:
+        pytest.skip("Set PYQL3_TEST_CUBE to a real OSIRIS cube to run this test")
+
+    reader = FitsReader(real_osiris_fits)
+    try:
+        header = reader.header
+        if 'WAVE' not in str(header.get('CTYPE1', '')).upper():
+            pytest.skip("PYQL3_TEST_CUBE is not an OSIRIS-ordered cube (CTYPE1 != WAVE)")
+
+        nwave, ndec, nra = header['NAXIS1'], header['NAXIS2'], header['NAXIS3']
+
+        viewer = ImageViewer()
+        viewer.set_data(reader.data, header)
+
+        # Wavelength is FITS axis 1, so it must land on Z, leaving RA/Dec on screen.
+        assert viewer.combo_x.currentText() == "AXIS 3", "RA (FITS axis 3) should be X"
+        assert viewer.combo_y.currentText() == "AXIS 2", "Dec (FITS axis 2) should be Y"
+        assert viewer.current_z_axis == "AXIS 1", "Wavelength (FITS axis 1) should be Z"
+
+        # Wavelength was recognised as the spectral axis (drives the top ROI axis).
+        assert viewer.wcs_z_idx == 0
+
+        # raw_data is the untouched FITS array; transposed_data is (Z, X, Y).
+        assert viewer.raw_data.shape == (nra, ndec, nwave)
+        assert viewer.transposed_data.shape == (nwave, nra, ndec)
+        assert viewer.slider_slice.maximum() == nwave - 1, "Z slider must span all channels"
+
+        # The CRITICAL rule: reordering for display must not disturb raw_data.
+        assert np.array_equal(viewer.raw_data, reader.data)
+    finally:
+        reader.close()
