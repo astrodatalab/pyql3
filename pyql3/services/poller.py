@@ -47,8 +47,16 @@ def is_fits_path(path):
 
     `os.path.splitext` is deliberately not used: it returns ``.gz`` for
     ``frame.fits.gz`` and would drop compressed cubes on the floor.
+
+    Hidden files are excluded. `FitsReader.save()` writes `.pyql3_save_*.fits` into
+    the same directory as the file being saved, so saving into a watched directory
+    would otherwise offer our own half-written temp file to the poller as if it were
+    a new frame. No legitimate instrument product is a dotfile.
     """
-    return os.path.basename(path).lower().endswith(FITS_SUFFIXES)
+    name = os.path.basename(path)
+    if name.startswith('.'):
+        return False
+    return name.lower().endswith(FITS_SUFFIXES)
 
 
 class FITSFileHandler(FileSystemEventHandler):
@@ -150,7 +158,14 @@ class DirectoryPoller(QObject):
     # ------------------------------------------------------------------ innards
 
     def _add_candidate(self, path):
-        """Register a path to watch for stability. GUI thread only."""
+        """Register a path to watch for stability. GUI thread only.
+
+        The filter is repeated here rather than trusted from the event handler, so
+        that "the poller never touches a non-FITS file or one of our own temp files"
+        holds at the single point where candidates enter, whatever calls it.
+        """
+        if not is_fits_path(path):
+            return
         self._pending.setdefault(path, [None, 0])
 
     @staticmethod

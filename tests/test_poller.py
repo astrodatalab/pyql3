@@ -287,3 +287,49 @@ def test_interval_is_configurable(qapp, tmp_path):
     poller.interval = 3.0
     assert poller.interval == 3.0
     poller.stop_polling()
+
+
+def test_hidden_files_are_ignored(qapp, tmp_path):
+    """FitsReader.save() writes .pyql3_save_*.fits beside the file being saved.
+
+    Saving into a watched directory would otherwise hand our own half-written temp
+    file to the poller as if it were a new frame, racing the save.
+    """
+    assert is_fits_path("/data/.pyql3_save_ab12.fits") is False
+    assert is_fits_path("/data/.hidden.fits") is False
+    assert is_fits_path("/data/normal.fits") is True
+
+    poller = DirectoryPoller()
+    seen = []
+    poller.file_detected.connect(seen.append)
+
+    temp_like = str(tmp_path / ".pyql3_save_xy99.fits")
+    _write_cube(temp_like)
+    poller._add_candidate(temp_like)
+    _settle(poller)
+    assert seen == [], "a dotfile must never be announced"
+
+
+def test_save_into_a_watched_directory_is_not_picked_up(qapp, tmp_path, sample_3d_fits):
+    """End to end: the temp file FitsReader creates mid-save is invisible to the poller."""
+    from pyql3.core.fits_reader import FitsReader
+
+    poller = DirectoryPoller()
+    seen = []
+    poller.file_detected.connect(seen.append)
+
+    target = str(tmp_path / "saved.fits")
+    reader = FitsReader(sample_3d_fits)
+    try:
+        reader.save(target)
+    finally:
+        reader.close()
+
+    # Whatever the save left behind, offer every one of them to the poller.
+    for name in os.listdir(tmp_path):
+        poller._add_candidate(str(tmp_path / name))
+    _settle(poller)
+
+    assert all(not os.path.basename(p).startswith(".") for p in seen), (
+        f"a save temp file was announced: {seen}"
+    )
