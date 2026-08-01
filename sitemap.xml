@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://astrodatalab.github.io/pyql3/</loc>
+         <lastmod>2026-08-01</lastmod>
+    </url>
+    <url>
+         <loc>https://astrodatalab.github.io/pyql3/api/</loc>
+         <lastmod>2026-08-01</lastmod>
+    </url>
+    <url>
+         <loc>https://astrodatalab.github.io/pyql3/cli/</loc>
+         <lastmod>2026-08-01</lastmod>
+    </url>
+    <url>
+         <loc>https://astrodatalab.github.io/pyql3/developer/</loc>
+         <lastmod>2026-08-01</lastmod>
+    </url>
+    <url>
+         <loc>https://astrodatalab.github.io/pyql3/tools/</loc>
+         <lastmod>2026-08-01</lastmod>
+    </url>
+</urlset>
