@@ -1,7 +1,6 @@
 import os
 import tempfile
 from astropy.io import fits
-import numpy as np
 
 class FitsReader:
     """Wrapper class for handling FITS file reading and header management."""
@@ -69,10 +68,19 @@ class FitsReader:
                 self.current_ext = i
                 break
                 
-        # Fallback if no valid image data found
-        if self.data is None:
-            self.data = np.zeros((10, 10))
-            self.header = fits.Header()
+        # No displayable image extension. `data` deliberately stays None so callers
+        # can tell "nothing to show" from "here is your image".
+        #
+        # This used to substitute np.zeros((10, 10)) with an empty Header. That made
+        # `data` never None, which silently disabled every `if data is None` guard in
+        # the application: a FITS carrying no image HDU was displayed as a black 10x10
+        # square, titled with the filename and added to Recent Files, indistinguishable
+        # from a real observation of an empty field.
+        #
+        # The primary header is still published, so a file worth inspecting but not
+        # displaying can be opened in the Header Editor.
+        if self.data is None and self.hdul:
+            self.header = self.hdul[0].header
             
     def load_from_memory(self, data, header):
         if self.hdul:

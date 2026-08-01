@@ -174,3 +174,37 @@ def test_reload_and_redisplay_pick_up_a_rewritten_file(qapp, tmp_path, rewrite_f
     win.redisplay_image()
     assert win.image_viewer.raw_data.mean() == 2020.0
     win.close()
+
+
+def test_data_less_file_warns_and_leaves_the_current_image_alone(qapp, tmp_path,
+                                                                 sample_3d_fits,
+                                                                 monkeypatch):
+    """Loading a FITS with no image HDU must warn and not disturb what is displayed.
+
+    Previously FitsReader substituted a 10x10 zero array, so `data is not None` held,
+    the "No valid data found" branch was unreachable, and the good cube on screen was
+    replaced by a black square.
+    """
+    from astropy.io import fits
+
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+    good_shape = win.image_viewer.raw_data.shape
+    good_title = win.windowTitle()
+
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a))
+    )
+
+    empty = str(tmp_path / "no_image.fits")
+    fits.PrimaryHDU(header=fits.Header()).writeto(empty)
+
+    assert win.load_fits(empty) is False, "load_fits must report failure"
+    assert len(warnings) == 1, "the user must be told there is no image data"
+    assert "No valid data" in warnings[0][2]
+
+    # The previously displayed cube is untouched.
+    assert win.image_viewer.raw_data.shape == good_shape
+    assert win.windowTitle() == good_title
+    win.close()

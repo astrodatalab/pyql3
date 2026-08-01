@@ -382,3 +382,44 @@ def test_extension_discovery_does_not_read_pixel_data(table_ext_fits):
     assert loaded == [reader.current_ext], \
         f"discovery materialised data for extensions {loaded}, expected only {reader.current_ext}"
     reader.close()
+
+
+def test_file_without_image_data_reports_no_data_rather_than_inventing_it(tmp_path):
+    """A FITS with no displayable image HDU must yield data=None.
+
+    load() used to substitute np.zeros((10, 10)) with an empty Header. Because that
+    made `data` never None, it silently disabled every `if data is None` guard in the
+    application, and such a file was displayed as a black 10x10 square as if it were a
+    real observation of an empty field.
+    """
+    path = str(tmp_path / "header_only.fits")
+    header = fits.Header()
+    header['OBJECT'] = 'GC'
+    header['ITIME'] = 10.0
+    fits.PrimaryHDU(header=header).writeto(path)
+
+    reader = FitsReader(path)
+    try:
+        assert reader.get_image_extensions() == []
+        assert reader.get_data() is None, "must not fabricate an array"
+        # The header is still published so the file can be inspected, just not shown.
+        assert reader.get_header() is not None
+        assert reader.get_header()['OBJECT'] == 'GC'
+    finally:
+        reader.close()
+
+
+def test_table_only_file_reports_no_image_data(tmp_path):
+    """A BINTABLE has `data is not None`, so it must be excluded by _is_displayable."""
+    path = str(tmp_path / "table_only.fits")
+    cols = [fits.Column(name="WAVE", format="E", array=np.arange(4, dtype=np.float32))]
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.BinTableHDU.from_columns(cols, name="WAVETAB"),
+    ]).writeto(path)
+
+    reader = FitsReader(path)
+    try:
+        assert reader.get_data() is None
+    finally:
+        reader.close()
