@@ -7,6 +7,13 @@ repository. `CLAUDE.md` and `.agents/AGENTS.md` are symlinks to this file.
 data, replacing the legacy IDL `ql2` GUI. It is tuned for Keck/OSIRIS cubes but must work for
 other IFUs (JWST NIRSpec IFU, Gemini NIFS).
 
+> **If this file contradicts the code, the code wins — fix this file in the same change.**
+> These notes are maintained by hand and drift silently. Verify a claim before relying on
+> it, and correct it when it is wrong rather than coding around it. This is not theoretical:
+> the `real_osiris_fits` fixture was documented here as skipping when the reference cube is
+> absent, when in fact a `pathlib` bug meant it *never* found the cube and the test had never
+> run once.
+
 ## Commands
 
 Dependencies are managed with `uv` — nothing is installed globally, so every Python
@@ -71,8 +78,8 @@ Entry point `main.py` builds the `QApplication` and a single `MainWindow`
 `MainWindow` caches each tool as a `self._<name>_dialog` attribute and reopens it only if
 not already visible. When the display unit changes (DN/s vs Total DN), `update_tools_for_unit()`
 walks that hard-coded list of dialog attributes and calls each dialog's `update_plot()`, so
-labels and graphs refresh instantly. **A new tool must be added to that list**
-(`main_window.py:470`) or it will silently go stale.
+labels and graphs refresh instantly. **A new tool must be added to the list inside
+`update_tools_for_unit()`** or it will silently go stale.
 
 ### Data state: `raw_data` vs `transposed_data` vs `display_data` (CRITICAL)
 
@@ -138,8 +145,13 @@ Windows. Always build with `uv run pyinstaller --noconfirm QuickLook3.spec` — 
 
 ## Repo conventions
 
-- `docs/developer.md` restates the architecture and data-state rules for human readers; keep
-  it in sync when those rules change.
+- **Commit messages carry no AI attribution.** Do not append `Co-Authored-By: Claude ...`,
+  "Generated with ...", or any similar trailer to commits or PR bodies.
+- **This file is the canonical statement of the architecture, data-state, and WCS rules.**
+  `docs/developer.md` is the human-facing guide on the published site; it links here for
+  those invariants instead of restating them, and covers what this file does not (FitsReader
+  reload semantics, the Windows file-locking asymmetry, z-slice and collapse helpers). Put a
+  rule in exactly one of the two, never both.
 - `BUGS.md` is a running code-review log with reproduction steps and fix status; `TODO.md`
   holds the feature backlog with a `# DONE` section appended to.
 - `agent_tests/` is a scratch area of one-off exploratory scripts, not part of the suite —

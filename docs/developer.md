@@ -33,13 +33,17 @@ pyql3/
 
 ## ⚡ FITS Data Cubes and WCS Rules (CRITICAL)
 
-### OSIRIS Datacube Axis Order
-OSIRIS spectral datacubes map FITS Axis 1 to Wavelength (`WAVE` or `AWAV`), Axis 2 to Declination (`DEC--TAN`), and Axis 3 to Right Ascension (`RA---TAN`).
+!!! info "Canonical statement lives in `AGENTS.md`"
+    The axis-order and data-state invariants are written down once, in
+    [`AGENTS.md`](https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md) — the file
+    coding agents load automatically. They are summarised below for orientation only. **If
+    the two ever disagree, `AGENTS.md` is authoritative** and this page needs updating.
 
-When loaded via `astropy.io.fits.getdata()`, NumPy reverses the axes into C-contiguous order:
-- `data.shape[0]`: FITS Axis 3 (`RA`)
-- `data.shape[1]`: FITS Axis 2 (`DEC`)
-- `data.shape[2]`: FITS Axis 1 (`WAVE`)
+### OSIRIS Datacube Axis Order
+OSIRIS spectral datacubes map FITS Axis 1 to Wavelength (`WAVE` or `AWAV`), Axis 2 to
+Declination (`DEC--TAN`), and Axis 3 to Right Ascension (`RA---TAN`). `astropy` reverses
+that ordering into C-contiguous NumPy order, so `data.shape` is `(RA, DEC, WAVE)` —
+wavelength is FITS axis 1 but the **last** NumPy axis.
 
 ### Instrument-Agnostic WCS Rule
 Do **not** hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Always dynamically parse the `CTYPE` string using target axis indices (e.g., `wcs.wcs.ctype[z_idx]`).
@@ -86,11 +90,15 @@ populates the Extension combo. `get_all_extensions()` is a different question an
 tables. A `BINTABLE` has `data is not None`, so that is never the right test.
 
 ### Internal Data State vs. Display Data State (CRITICAL)
-- **`self.image_viewer.raw_data`**: Retains the original, un-transposed FITS array shape and orientation. All analytical calculations, data exports, or FITS header writes **must** operate on `raw_data`.
-- **`self.image_viewer.transposed_data`**: Represents the data formatted for `pyqtgraph.ImageView`. Axes are transposed for compatibility with the PyQtGraph plotting engine.
+
+`ImageViewer` keeps **three** arrays, not two — `raw_data`, `transposed_data`, and
+`display_data`. Confusing them corrupts output files. The definitions are stated once, in
+[`AGENTS.md`](https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md#data-state-raw_data-vs-transposed_data-vs-display_data-critical).
 
 !!! danger "Data State Safety Rule"
-    Never use `transposed_data` to perform analytical calculations that save FITS outputs back to memory or disk. Doing so will output cubes with permanently swapped physical axes and broken WCS headers!
+    All analytical calculations, data exports, and FITS header writes **must** operate on
+    `raw_data`. Using `transposed_data` or `display_data` instead outputs cubes with
+    permanently swapped physical axes and broken WCS headers!
 
 ### The Current Z Slice
 
