@@ -33,7 +33,7 @@ pyql3/
 │       ├── header_editor.py  # FITS header card editor
 │       └── polling.py        # Directory polling setup dialog
 └── services/
-    ├── poller.py             # Watchdog filesystem monitoring service
+    ├── poller.py             # Directory scanning for new FITS files (NFS-safe)
     └── config.py             # ~/.pyql3/config.json, recent-files list
 ```
 
@@ -176,6 +176,7 @@ uv run pytest -v
 - `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close.
 - `tests/test_menu_actions.py`: The `QAction.triggered` bool-vs-coordinate slot hazard and `as_center()` coercion (see the Qt slot gotcha in `AGENTS.md`).
 - `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, and `DirectoryPoller` service.
+- `tests/test_poller.py`: Settle detection for files still being written, burst coalescing, and the auto-load retry/backoff path.
 - `tests/test_packaging_assets.py`: Bundled line lists and `cmcrameri` colormaps are present, and `QuickLook3.spec` registers every asset.
 
 ### Tests that need real instrument data

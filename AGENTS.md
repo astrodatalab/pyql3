@@ -71,9 +71,20 @@ Entry point `main.py` builds the `QApplication` and a single `MainWindow`
   ROI it adds to / removes from the viewer's scene.
 - **`FitsReader`** (`pyql3/core/fits_reader.py`) — HDU list ownership, multi-extension
   image discovery, header edits, save.
-- **`DirectoryPoller`** (`pyql3/services/poller.py`) — watchdog observer that auto-loads new
-  FITS files; **`ConfigManager`** (`services/config.py`) persists recent files to
+- **`DirectoryPoller`** (`pyql3/services/poller.py`) — auto-loads new FITS files;
+  **`ConfigManager`** (`services/config.py`) persists recent files to
   `~/.pyql3/config.json`.
+
+**The poller scans; it does not use filesystem events (CRITICAL).** `watchdog`'s default
+`Observer` is a kernel backend (FSEvents/inotify) that only sees changes made through the
+*local* kernel. The OSIRIS DRP frequently writes from another host onto an NFS share, which
+generates no local events at all, so `poller.py` uses `PollingObserver` deliberately. Do not
+"optimise" it back to `Observer` — that silently breaks auto-load in the deployment it
+exists for. A file is announced only once `(st_size, st_mtime_ns)` holds steady across
+consecutive scans, and when several land at once only the newest is displayed. Because NFS
+attribute caches can report a stale size, a failed parse means *retry later*, never
+*corrupt*: `MainWindow._attempt_auto_load()` backs off and only warns once retries are
+exhausted.
 
 `MainWindow` caches each tool as a `self._<name>_dialog` attribute and reopens it only if
 not already visible. When the display unit changes (DN/s vs Total DN), `update_tools_for_unit()`

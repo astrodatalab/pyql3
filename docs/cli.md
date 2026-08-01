@@ -31,6 +31,25 @@ uv run python main.py [OPTIONS] [FILEPATH]
 
 During observing runs at the telescope, raw data cubes or reduced frames are written continuously to disk. QuickLook 3 features a background directory polling service built on `watchdog`.
 
+The directory is **scanned** on an interval rather than watched for filesystem
+notifications. Kernel notification APIs (FSEvents, inotify) only report changes made on the
+local machine, so a DRP writing from another host onto an NFS share would go completely
+unnoticed. Scanning costs more but is the only approach that sees remote writes.
+
+Three consequences worth knowing:
+
+- **A new file is displayed a few seconds after it lands**, not instantly. The poller waits
+  for the file's size to stop changing, so a cube that is still being written is never
+  loaded half-complete.
+- **When many files arrive at once** — dragging in a night's frames, or a DRP flushing a
+  backlog — only the **newest** is displayed, instead of flashing each one on screen in
+  turn. A status bar message reports how many were skipped.
+- **Scan cost grows with the number of files in the directory**, and is markedly higher over
+  NFS. Raise the scan interval for a directory holding a whole run, and prefer watching a
+  per-night directory over an accumulating archive.
+
+The interval defaults to 2 seconds and is configurable in **File ➔ Directory Polling...**.
+
 ### Enabling Directory Polling
 
 #### Option A: Via Command Line

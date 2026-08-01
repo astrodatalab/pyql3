@@ -31,10 +31,14 @@ class MainWindow(QMainWindow):
         # Setup Poller
         self.poller = DirectoryPoller(self)
         self.poller.file_detected.connect(self.on_file_detected)
-        
+        self.poller.batch_coalesced.connect(self.on_batch_coalesced)
+
         saved_poll_dir = self.config.get("polling_dir")
         if saved_poll_dir:
             self.poller.watch_path = saved_poll_dir
+        saved_interval = self.config.get("polling_interval")
+        if saved_interval:
+            self.poller.interval = saved_interval
         
         # Set up central widget
         self.central_widget = QWidget()
@@ -304,7 +308,14 @@ class MainWindow(QMainWindow):
         if filepath:
             self.load_fits(filepath)
 
-    def load_fits(self, filepath, ext=None, force=False):
+    def load_fits(self, filepath, ext=None, force=False, show_errors=True):
+        """Load and display a FITS file.
+
+        Returns True on success. `show_errors=False` suppresses the error dialog and
+        reports failure through the return value instead, which the polling auto-load
+        uses so it can retry a file that is still arriving rather than interrupting
+        the observer with a dialog on the first attempt.
+        """
         try:
             self.fits_reader.load(filepath, ext=ext, force=force)
             data = self.fits_reader.get_data()
@@ -331,10 +342,16 @@ class MainWindow(QMainWindow):
                 # Add to recent files and update menu
                 self.config.add_recent_file(filepath)
                 self.update_recent_files_menu()
+                return True
             else:
-                QMessageBox.warning(self, "Warning", "No valid data found in FITS file.")
+                if show_errors:
+                    QMessageBox.warning(self, "Warning", "No valid data found in FITS file.")
+                return False
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{str(e)}")
+            if show_errors:
+                QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{str(e)}")
+            self._last_load_error = str(e)
+            return False
 
     def update_recent_files_menu(self):
         if not hasattr(self, 'recent_menu'):
@@ -587,13 +604,54 @@ class MainWindow(QMainWindow):
         self._strehl_dialog.raise_()
 
     def open_polling_config(self):
-        dialog = PollingDialog(self.poller, self)
+        dialog = PollingDialog(self.poller, self, config=self.config)
         if dialog.exec():
             # Save the active polling dir to config if started
             if self.poller.watch_path:
                 self.config.set("polling_dir", self.poller.watch_path)
         
+    #: Auto-load retry schedule, in seconds. The poller only announces a file whose
+    #: size has held steady, but on NFS the client's attribute cache can report a
+    #: stale size for a file still growing on the server, so a settled-looking file
+    #: can still fail to parse. A failed parse therefore means "not ready yet", not
+    #: "corrupt" — we back off and try again before bothering the observer.
+    AUTO_LOAD_RETRY_DELAYS = (0.0, 1.0, 2.0, 4.0, 8.0)
+
     def on_file_detected(self, filepath):
-        # We add a small delay to ensure the file is completely written by the instrument
-        QTimer.singleShot(500, lambda: self.load_fits(filepath))
+        self._attempt_auto_load(filepath, 0)
+
+    def _attempt_auto_load(self, filepath, attempt):
+        if self.load_fits(filepath, show_errors=False):
+            return
+
+        next_attempt = attempt + 1
+        if next_attempt < len(self.AUTO_LOAD_RETRY_DELAYS):
+            delay_ms = int(self.AUTO_LOAD_RETRY_DELAYS[next_attempt] * 1000)
+            QTimer.singleShot(
+                delay_ms, lambda: self._attempt_auto_load(filepath, next_attempt)
+            )
+            return
+
+        waited = sum(self.AUTO_LOAD_RETRY_DELAYS)
+        detail = getattr(self, "_last_load_error", "") or "unknown error"
+        QMessageBox.warning(
+            self,
+            "Could not display new file",
+            f"{os.path.basename(filepath)} could not be read after {waited:.0f} seconds "
+            f"of retrying.\n\nIt may still be transferring, or it may be incomplete. "
+            f"Use Display → Redisplay image to try again.\n\nLast error: {detail}",
+        )
+
+    def on_batch_coalesced(self, suppressed, filepath):
+        """A burst of files landed at once; only the newest of them was displayed.
+
+        Surfaced so the skipped frames are visible as a deliberate choice rather than
+        looking like the poller missed them.
+        """
+        plural = "s" if suppressed != 1 else ""
+        self.statusBar().showMessage(
+            f"{suppressed + 1} files arrived — showing the newest "
+            f"({os.path.basename(filepath)}); {suppressed} older file{plural} skipped.",
+            8000,
+        )
 
