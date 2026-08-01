@@ -102,10 +102,11 @@ class HeaderEditorDialog(QDialog):
             self.table.setRowHidden(row, not match)
 
     def apply_table_edits(self, ext=None):
+        self._skipped_keywords = []
         header = self.fits_reader.get_header(ext=ext)
         if header is None:
             return
-            
+
         for row in range(self.table.rowCount()):
             keyword_item = self.table.item(row, 0)
             value_item = self.table.item(row, 1)
@@ -132,14 +133,31 @@ class HeaderEditorDialog(QDialog):
                 # Skip special keywords
                 if keyword in ('', 'COMMENT', 'HISTORY'):
                     continue
-                    
-                self.fits_reader.update_header_card(keyword, value, comment, ext=ext)
+
+                # Structural keywords are refused by the reader. Only report one when
+                # its value actually differs from the header: the table lists every
+                # card, including SIMPLE/BITPIX/NAXISn, so reporting unconditionally
+                # would nag on every single save.
+                if not self.fits_reader.update_header_card(keyword, value, comment, ext=ext):
+                    if header.get(keyword) != value:
+                        self._skipped_keywords.append(keyword)
 
     def save_header(self):
         try:
             # Apply current table edits to currently selected extension
             self.apply_table_edits(ext=self.current_ext)
-            
+
+            if self._skipped_keywords:
+                QMessageBox.information(
+                    self,
+                    "Some keywords were not changed",
+                    "These keywords describe the file's structure and are managed by the "
+                    "FITS writer, so they were left alone:\n\n    "
+                    + ", ".join(sorted(set(self._skipped_keywords)))
+                    + "\n\nEditing them would either be discarded on write or make the "
+                    "file unreadable. All other changes were applied.",
+                )
+
             if not self.fits_reader.filepath:
                 # In-memory data: prompt user via main window save_file_as if available
                 if self.parent() and hasattr(self.parent(), 'save_file_as'):

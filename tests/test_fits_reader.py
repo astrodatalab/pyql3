@@ -1,4 +1,5 @@
 import os
+import stat
 import pytest
 import numpy as np
 from astropy.io import fits
@@ -421,5 +422,114 @@ def test_table_only_file_reports_no_image_data(tmp_path):
     reader = FitsReader(path)
     try:
         assert reader.get_data() is None
+    finally:
+        reader.close()
+
+
+# --------------------------------------------------------- save: permissions
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o664, 0o644, 0o600, 0o666])
+def test_save_preserves_the_target_file_permissions(tmp_path, mode):
+    """mkstemp creates 0600 and os.replace carries that onto the destination, so
+    saving a group-shared file used to silently lock collaborators out."""
+    path = str(tmp_path / "shared.fits")
+    fits.PrimaryHDU(np.zeros((8, 8), dtype=np.float32)).writeto(path)
+    os.chmod(path, mode)
+
+    reader = FitsReader(path)
+    try:
+        reader.update_header_card("OBJECT", "GC")
+        reader.save()
+    finally:
+        reader.close()
+
+    assert stat.S_IMODE(os.stat(path).st_mode) == mode
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_save_as_to_a_new_path_uses_the_umask_default(tmp_path):
+    """A new file should look like any other file the user creates, not mkstemp's 0600."""
+    src = str(tmp_path / "src.fits")
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(src)
+
+    reader = FitsReader(src)
+    target = str(tmp_path / "new.fits")
+    try:
+        reader.save(target)
+    finally:
+        reader.close()
+
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o666 & ~current_umask
+
+
+# ------------------------------------------------ structural keyword guarding
+
+
+@pytest.mark.parametrize("keyword", [
+    "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS3", "EXTEND", "END", "naxis2",
+])
+def test_structural_keywords_are_refused(tmp_path, keyword):
+    """SIMPLE=F in particular made the primary HDU stop being recognised as an image,
+    and save() overwrites in place -- one edit could render a science file unreadable."""
+    path = str(tmp_path / "f.fits")
+    fits.PrimaryHDU(np.arange(64, dtype=np.float32).reshape(8, 8)).writeto(path)
+
+    reader = FitsReader(path)
+    try:
+        assert reader.update_header_card(keyword, 7) is False
+        reader.save()
+    finally:
+        reader.close()
+
+    check = FitsReader(path)
+    try:
+        assert check.get_data() is not None, f"editing {keyword} corrupted the file"
+        assert check.get_data().shape == (8, 8)
+    finally:
+        check.close()
+
+
+def test_ordinary_keywords_are_still_editable(tmp_path):
+    path = str(tmp_path / "f.fits")
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(path)
+    reader = FitsReader(path)
+    try:
+        assert reader.update_header_card("OBJECT", "GC", comment="target") is True
+        reader.save()
+    finally:
+        reader.close()
+
+    check = FitsReader(path)
+    try:
+        assert check.get_header()["OBJECT"] == "GC"
+    finally:
+        check.close()
+
+
+def test_header_editor_only_reports_structural_keywords_the_user_changed(qapp, tmp_path):
+    """The editor's table lists every card, including SIMPLE/BITPIX/NAXISn, so an
+    untouched save must stay silent rather than nagging about cards nobody edited."""
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+
+    path = str(tmp_path / "f.fits")
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(path)
+
+    reader = FitsReader(path)
+    try:
+        dialog = HeaderEditorDialog(reader)
+
+        dialog.apply_table_edits(ext=0)
+        assert dialog._skipped_keywords == [], "an untouched header must report nothing"
+
+        for row in range(dialog.table.rowCount()):
+            cell = dialog.table.item(row, 0)
+            if cell and cell.text() == "SIMPLE":
+                dialog.table.item(row, 1).setText("False")
+        dialog.apply_table_edits(ext=0)
+        assert dialog._skipped_keywords == ["SIMPLE"]
     finally:
         reader.close()
