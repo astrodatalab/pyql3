@@ -1,9 +1,8 @@
 import pytest
 import numpy as np
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QFileDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.depth_plot import DepthPlotDialog, latex_to_html
-from pyql3.core.fits_reader import FitsReader
 
 
 def test_depth_plot_region_extraction(loaded_viewer):

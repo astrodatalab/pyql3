@@ -55,3 +55,27 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[tool.ruff]
+# Build output and the scratch script area are not ours to lint.
+extend-exclude = ["dist", "build", "agent_tests", "site", "pyql3/_version.py"]
+line-length = 100
+
+[tool.ruff.lint]
+# A deliberately narrow set, chosen because each rule has already caught a real
+# defect in this repository rather than because it was available:
+#
+#   F811  a duplicate closeEvent in photometry.py silently shadowed the defensive
+#         one for months, and a duplicated test name shadowed an existing test
+#   F841  swallowed exception variables that discarded the error entirely
+#   F401  ~35 unused imports accumulated across the GUI modules
+#   E9    syntax and IO errors
+#   B     flake8-bugbear; B905 in particular catches unzipped-length mismatches
+#
+# Widen this over time, but keep every rule justifiable -- a linter that reports
+# things nobody intends to fix trains people to ignore it.
+select = ["E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately import a module purely to assert it is packaged.
+"tests/test_packaging_assets.py" = ["F401"]

@@ -1,7 +1,7 @@
 import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
-                               QHBoxLayout, QMenuBar, QMenu, QFileDialog, 
-                               QMessageBox, QLabel, QApplication)
+                               QMenu, QFileDialog, 
+                               QMessageBox, QApplication)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
             ("Diverging", ["RdBu", "coolwarm", "bwr", "seismic", "Spectral"])
         ]
         
-        for i, (group_name, cmaps) in enumerate(colormap_groups):
+        for i, (_group_name, cmaps) in enumerate(colormap_groups):
             if i > 0:
                 colormap_menu.addSeparator()
             for cmap in cmaps:

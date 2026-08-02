@@ -41,7 +41,7 @@ class DisplayPeakFitDialog(QDialog):
         self.resize(800, 400)
         
         from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout
+        from PySide6.QtWidgets import QLabel
         layout = QHBoxLayout(self)
         
         try:

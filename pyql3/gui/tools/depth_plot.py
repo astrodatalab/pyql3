@@ -3,7 +3,7 @@ import re
 import pathlib
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QWidget, QVBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
+from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
 from PySide6.QtCore import Qt, QDir
 from pyql3.gui.tools.base_tool import BaseToolDialog, as_center
 
@@ -768,7 +768,9 @@ class DepthPlotDialog(BaseToolDialog):
                 self.clear_line_overlays()
                 self.lbl_line_info.setText("WCS conversion failed.")
                 return
-            for (wl_um, name), x_px in zip(self.loaded_lines, pix_coords):
+            # strict=: pix_coords is derived one-for-one from loaded_lines, so a
+            # length mismatch is a bug, not something to silently truncate.
+            for (wl_um, name), x_px in zip(self.loaded_lines, pix_coords, strict=True):
                 if view_x_min <= x_px <= view_x_max:
                     visible_lines.append((x_px, name, wl_um))
 
@@ -793,7 +795,7 @@ class DepthPlotDialog(BaseToolDialog):
         y_span = view_y_max - view_y_min
         min_spacing = 0.005 * (view_x_max - view_x_min) if use_wavelength_x else 18.0
 
-        for idx, (x_pos, name, wl_um) in enumerate(visible_lines):
+        for idx, (x_pos, name, _wl_um) in enumerate(visible_lines):
             if abs(x_pos - last_x) < min_spacing:
                 level = (level + 1) % len(stagger_levels)
             else:

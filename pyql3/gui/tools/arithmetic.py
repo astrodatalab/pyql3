@@ -1,9 +1,7 @@
 import numpy as np
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, 
-                               QLabel, QPushButton, QComboBox, QRadioButton, 
-                               QButtonGroup, QWidget, QLineEdit, QFileDialog, 
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QRadioButton, 
+                               QButtonGroup, QLineEdit, QFileDialog, 
                                QDoubleSpinBox, QMessageBox, QGroupBox)
-from PySide6.QtCore import Qt
 from astropy.io import fits
 
 class ArithmeticDialog(QDialog):

@@ -1,12 +1,12 @@
 import numpy as np
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
+    QHBoxLayout, QPushButton, QLabel, 
     QComboBox, QSpinBox, QCheckBox, QTableWidget, QTableWidgetItem,
-    QFileDialog, QHeaderView, QWidget, QAbstractItemView, QColorDialog, QLineEdit,
-    QGroupBox, QFormLayout, QMenu, QApplication
+    QFileDialog, QHeaderView, QAbstractItemView, QColorDialog, QLineEdit,
+    QGroupBox, QMenu, QApplication
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor
 import pyqtgraph as pg
 import astropy.io.ascii as ascii
 from astropy.coordinates import SkyCoord
@@ -395,7 +395,7 @@ class PlotCatalogDialog(BaseToolDialog):
                     val_x = float(crd.ra.deg) if hasattr(crd, 'ra') else float(crd[0])
                     val_y = float(crd.dec.deg) if hasattr(crd, 'dec') else float(crd[1])
                     orig_x, orig_y = val_x, val_y
-                except Exception as e:
+                except Exception:
                     continue
             else:
                 try:

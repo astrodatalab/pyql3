@@ -1,5 +1,4 @@
-import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 from pyql3.gui.main_window import MainWindow
 from pyql3.services.poller import DirectoryPoller
 

@@ -79,7 +79,7 @@ class FitsReader:
             self.header = self.hdul[ext].header
             self.current_ext = ext
         else:
-            for i, name in self.image_extensions:
+            for i, _name in self.image_extensions:
                 self.data = self.hdul[i].data
                 self.header = self.hdul[i].header
                 self.current_ext = i

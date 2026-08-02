@@ -1,13 +1,8 @@
-import pytest
-import numpy as np
-from pyql3.gui.viewers.image_viewer import ImageViewer
-from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.tools.cuts import CutPlotDialog
 from pyql3.gui.tools.fitting import GaussianFitDialog
 from pyql3.gui.tools.statistics import StatisticsDialog
 from pyql3.gui.tools.photometry import PhotometryDialog
 from pyql3.gui.tools.strehl import StrehlDialog
-from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
 from pyql3.gui.tools.arithmetic import ArithmeticDialog
 
 

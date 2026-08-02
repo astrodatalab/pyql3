@@ -1216,3 +1216,252 @@ the Windows exposure.
 - [x] B17 Depth Plot cuts sample one channel while a collapse is displayed
 - [x] B18 Header save over the open file fails on Windows (Windows CI)
 - [ ] B19 Open file handle can block an external writer on Windows — needs a decision
+
+---
+
+# Security & Data-Integrity Review — 2026-08-01
+
+A structured review of `pyql3/`, `main.py`, `QuickLook3.spec`, `pyproject.toml` and
+`.github/workflows/release.yml`, run in six phases against the threat model for what this
+application actually is: a local desktop viewer with no server, no auth and no network
+client. `S`-numbered to distinguish these from the `B` series above. Every finding below was
+reproduced before being written up, and every fix is covered by a test.
+
+**Baseline (Phase 0).** `pip-audit`: no known vulnerabilities. `bandit`: 0 HIGH, 0 MEDIUM.
+`ruff`: 47 findings, all style/dead-code, now cleared.
+
+**Two hypotheses were disproved and are recorded so nobody re-investigates them:**
+
+- *A partial read of a file still being written could be displayed as science.* It cannot.
+  Truncation always raises — `OSError` mid-header, `ValueError: cannot reshape` mid-data —
+  because `memmap=False` forces an eager read that fails rather than serving padded garbage.
+- *A header declaring enormous `NAXIS*` could exhaust memory.* It cannot. A 2,880-byte file
+  claiming a 5000³ float32 cube (~500 GB) fails in 0.01 s with no allocation attempted.
+
+## S0. Directory polling delivered no events at all over NFS
+
+- **Status:** ✅ FIXED — `services/poller.py` (rewritten), `main_window.py`, `dialogs/polling.py`,
+  covered by `tests/test_poller.py`
+- **Severity:** high (the feature silently did nothing in the deployment it exists for)
+- **Files:** `pyql3/services/poller.py`, `pyql3/gui/main_window.py:on_file_detected`
+
+### Symptom
+`watchdog.observers.Observer` resolves to a kernel backend — `FSEventsObserver` on macOS,
+`InotifyObserver` on Linux. Both report only changes made through the *local* kernel. The
+OSIRIS DRP frequently writes **from another host onto an NFS share**, which generates no
+local event, so `on_created` never fired. The feature appeared to work in testing purely
+because test files are created locally.
+
+A second, independent defect: when events *did* arrive, `on_file_detected` scheduled exactly
+one load attempt 500 ms later and there was no `on_modified` handler. A file still being
+written at that moment failed to parse, showed a raw astropy error dialog, and was **never
+retried** — the frame was lost even though it completed a second later.
+
+### Reproduction
+Header written at t+0, write completed at t+2.0 s; at t+4.8 s the application displayed
+nothing and had raised one `Error: cannot reshape array of size 0` dialog.
+
+### Fix
+`PollingObserver` (scans directory snapshots, so remote writes are seen), configurable
+interval defaulting to 2 s and persisted to config. A file is announced only once
+`(st_size, st_mtime_ns)` holds steady across consecutive scans; `on_modified` is handled so a
+late-completing file is revisited. Because NFS attribute caches can report a stale size, a
+failed parse is treated as "not ready yet" and retried with backoff (0/1/2/4/8 s), warning
+only once retries are exhausted. Bursts are coalesced — a 12-file bulk copy now produces one
+load, of the newest file, instead of flashing each frame in turn. `.fits.gz` was also being
+silently ignored, because `os.path.splitext` returns `.gz`.
+
+## S1. A corrupt config file stopped the application from starting
+
+- **Status:** ✅ FIXED — `services/config.py`, covered by `tests/test_config.py`
+- **Severity:** medium (unrecoverable from the GUI, trivially reachable)
+- **File:** `pyql3/services/config.py` — `load()`
+
+### Symptom
+`load()` caught only `json.JSONDecodeError`. Anything else propagated out of `__init__`,
+which `MainWindow` calls at line 29 — so the window never opened, with nothing on screen to
+explain why. The only fix available to a user was deleting the file from a terminal.
+
+### Reproduction
+```
+~/.pyql3/config.json containing non-UTF-8 bytes -> UnicodeDecodeError
+~/.pyql3/config.json existing as a directory     -> IsADirectoryError
+~/.pyql3/config.json containing "[1, 2, 3]"      -> parses, then AttributeError on .get()
+```
+The third was found while fixing the first two: valid JSON of the wrong shape loaded cleanly
+and broke every later config read.
+
+### Fix
+Broadened to `(OSError, ValueError, UnicodeDecodeError)` plus a `dict` type check. A damaged
+file is moved to `config.json.corrupt` — preserved, not deleted, since it may be the only
+record of a recent-files list worth recovering — the reason is logged, and defaults are used.
+`save()` is now atomic (temp file, `fsync`, `os.replace`) so an interrupted write cannot
+truncate a good config into the state `load()` then has to quarantine.
+
+## S2. The poller matched `FitsReader`'s own save temp file
+
+- **Status:** ✅ FIXED — `services/poller.py`, covered by `tests/test_poller.py`
+- **Severity:** low (timing-dependent, no corruption observed)
+- **File:** `pyql3/services/poller.py` — `is_fits_path()`
+
+### Symptom
+`save()` creates `.pyql3_save_*.fits` in the same directory as its target, so saving into a
+watched directory offered our own half-written temp file to the poller as a new frame.
+Benign in most timings — `os.replace` is quick and settling needs two stable scans — but a
+slow save over NFS could leave it visible long enough to settle, racing the save. Newly
+reachable as a consequence of the S0 rewrite.
+
+### Fix
+`is_fits_path()` rejects dotfiles; no legitimate instrument product is hidden. The check also
+moved into `_add_candidate()`, so the invariant holds at the single point candidates enter
+rather than depending on every caller.
+
+## S3. Saving a file stripped its group and world permissions
+
+- **Status:** ✅ FIXED — `core/fits_reader.py`, covered by `tests/test_fits_reader.py`
+- **Severity:** medium (silent, delayed, affects collaborators rather than the user)
+- **File:** `pyql3/core/fits_reader.py` — `save()`
+
+### Symptom
+```
+mode before save : 0664   (group-writable, as on a shared reduction directory)
+mode after  save : 0600
+```
+`tempfile.mkstemp` creates 0600 by design, and `os.replace` carries the temp file's mode onto
+the destination. Editing a header and saving therefore locked collaborators out of a shared
+Keck reduction directory — with no warning, and only discovered later when someone hit
+permission denied.
+
+### Fix
+The target's mode is captured before the replace and restored after. A path that does not yet
+exist (Save As) gets the umask default instead, since inheriting 0600 would make a newly
+exported file unreadable to the group for no reason.
+
+**Not fixed:** if the file is owned by another user, `os.replace` makes the saved copy ours.
+Restoring ownership requires privileges the application does not have.
+
+## S4. The Header Editor could make a science file unreadable
+
+- **Status:** ✅ FIXED — `core/fits_reader.py`, `dialogs/header_editor.py`, covered by
+  `tests/test_fits_reader.py`
+- **Severity:** medium (one edit, permanent, on a file being overwritten in place)
+- **Files:** `pyql3/core/fits_reader.py` — `update_header_card()`;
+  `pyql3/gui/dialogs/header_editor.py`
+
+### Symptom
+Setting `SIMPLE = F` and saving left the primary HDU unrecognised as an image
+(`get_data()` → `None`), and `save()` overwrites in place. `NAXIS`/`NAXISn`/`BITPIX` turned
+out to be harmless because astropy regenerates them from the data array on write — but that
+means editing them silently reverts, which merely confuses.
+
+### Fix
+`FitsReader.PROTECTED_KEYWORDS` and `is_protected_keyword()`; `update_header_card()` now
+returns a bool. The editor reports refusals, but only for keywords whose value actually
+differs from the header — its table lists every card including the structural ones, so
+reporting unconditionally would have nagged on every save.
+
+## S5. Every cut profile was wrong in Total DN mode
+
+- **Status:** ✅ FIXED — `gui/tools/cuts.py`, covered by `tests/test_cuts.py`
+- **Severity:** **high (wrong science numbers presented as correct)**
+- **File:** `pyql3/gui/tools/cuts.py` — `update_plot()`
+
+### Symptom
+A flat 7.0 image with `ITIME*COADDS = 10` plotted **700 instead of 70**. `update_plot()` took
+its pixels from `display_data`, which `apply_transforms()` has already multiplied, then
+multiplied by `data_multiplier` again — squaring the DN/s to Total DN conversion. Horizontal,
+vertical and diagonal cuts were all affected. This is exactly the double-application hazard
+`docs/developer.md` warns about; `depth_plot.py` pairs `current_plane()` with an explicit
+multiply and was already correct.
+
+The same two lines carried a second documented violation: indexing `display_data` by
+`imv.currentIndex`, which goes stale in Boxcar and Z Range modes where the screen shows a
+collapsed plane belonging to no single channel (see B17).
+
+### Fix
+Both resolved by reading `current_plane()`, which returns the displayed plane without the
+multiplier folded in.
+
+## S6. Release binaries were not built from the committed lockfile
+
+- **Status:** ✅ FIXED — `.github/workflows/release.yml`
+- **Severity:** medium (supply chain; unreviewed code reaching users)
+- **File:** `.github/workflows/release.yml`
+
+### Symptom
+The workflow ran `uv add --dev pyinstaller pillow` after `uv sync`. That was redundant —
+both are already in the locked `dev` group, which plain `uv sync` installs — and harmful:
+`uv add` re-resolves and rewrites `uv.lock`, so published binaries could be built against
+dependency versions nobody had reviewed.
+
+### Fix
+`uv sync --frozen`, which builds from `uv.lock` exactly and fails if the lock is stale.
+Hardened alongside it: all six Actions pinned to commit SHAs (a floating `@v4` is mutable by
+whoever owns the action repository and runs in a job holding a token); a top-level
+`permissions: contents: read` with only the `release` job escalating to `contents: write`;
+and `SHA256SUMS.txt` published with every release, since the bundles are unsigned and
+un-notarized and users had nothing to verify a download against.
+
+## S7. A file with no image data was displayed as a black square
+
+- **Status:** ✅ FIXED — `core/fits_reader.py`, covered by `tests/test_fits_reader.py` and
+  `tests/test_main_window_and_poller.py`
+- **Severity:** **high (fabricated data indistinguishable from a real observation)**
+- **File:** `pyql3/core/fits_reader.py` — `load()`
+
+### Symptom
+`load()` ended by substituting `np.zeros((10, 10))` and an empty `Header` whenever no
+displayable image extension was found. Because that made `data` never `None`, it silently
+disabled every `if data is None` guard in the application — including the one in
+`load_fits()`, whose "No valid data found in FITS file." branch was unreachable dead code.
+
+A structurally valid FITS carrying no image HDU (header-only, or table-only) was therefore
+**displayed as a black 10×10 square**, with the window title set to the filename and the file
+added to Recent Files. Nothing distinguished it from a real observation of an empty field.
+Reachable both from File → Open and from the polling auto-load.
+
+### Fix
+The fallback is removed; `data` stays `None` and the existing guards do what they were
+written to do. All three consumers already handled `None` correctly, which is why this was a
+deletion rather than a rewrite. The primary header is still published, so a file worth
+inspecting but not displaying can still be opened in the Header Editor. Loading a data-less
+file now also leaves the currently displayed cube untouched.
+
+## S8. Developer paths disclosed in a public repository
+
+- **Status:** ✅ FIXED — `AGENTS.md`, `mkdocs.yml`, `gh-pages` history purged
+- **Severity:** low (username and directory layout only; no credentials)
+
+### Symptom
+Two absolute home-directory paths in `AGENTS.md` and one in `implementation_plan_strehl.md`.
+Separately, `docs/hooks.py` lives inside `docs_dir`, so importing it left a
+`docs/__pycache__/*.pyc` that mkdocs copied verbatim into the built site — and a `.pyc`
+embeds the absolute path of the machine that compiled it. `gh-deploy` published it, bypassing
+the root `.gitignore`. It was live at
+`https://astrodatalab.github.io/pyql3/__pycache__/hooks.cpython-312.pyc` (HTTP 200).
+
+### Fix
+Paths replaced with the `PYQL3_QL2_REF` / `PYQL3_TEST_CUBE` environment variables. `mkdocs.yml`
+gained `exclude_docs` for `__pycache__/` and `*.pyc`, and the `gh-pages` branch history was
+purged and redeployed. No absolute path had ever been committed to `main`, so no rewrite of
+the main branch was needed.
+
+## Working checklist — security review
+
+- [x] S0 Directory polling delivered no events over NFS (+ lost frames, no coalescing)
+- [x] S1 Corrupt config stopped the application from starting
+- [x] S2 Poller matched `FitsReader`'s own save temp file
+- [x] S3 Saving stripped group/world permissions
+- [x] S4 Header Editor could make a file unreadable via `SIMPLE = F`
+- [x] S5 Cut profiles double-applied the DN multiplier
+- [x] S6 Release binaries not built from the committed lockfile
+- [x] S7 Data-less FITS displayed as a fabricated black square
+- [x] S8 Developer paths disclosed in a public repository
+- [x] Data-integrity round-trip guard added (`tests/test_data_integrity.py`)
+- [x] `ruff` configured and the 47-finding backlog cleared
+- [ ] Phase 1 residue (low): hostile header strings in the UI, duplicated/contradictory
+      `CTYPE`, NaN/Inf through every tool, `output_verify` policy on load and save
+- [ ] `on_moved` trusts `event.dest_path`; a FIFO named `*.fits` would block `fits.open`
+      on the GUI thread. Reasoned, not tested — testing it hangs the harness.
+- [ ] Remote-write detection unverified on real hardware. `PollingObserver` is confirmed
+      active, but nobody has yet watched an actual NFS share while another host writes.

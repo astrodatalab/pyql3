@@ -68,7 +68,7 @@ def test_diagonal_cut_spin_roi_round_trip_is_stable(ridge_viewer):
     dialog.sync_spins_and_plot()   # what a drag triggers
     first = (dialog.spin_x0.value(), dialog.spin_y0.value(),
              dialog.spin_x1.value(), dialog.spin_y1.value())
-    for got, want in zip(first, expected):
+    for got, want in zip(first, expected, strict=True):
         assert abs(got - want) <= 1, f"Endpoint round trip drifted: {first} vs {expected}"
 
     dialog.sync_spins_and_plot()   # and it must be idempotent, not drift further

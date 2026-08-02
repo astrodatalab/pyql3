@@ -89,12 +89,6 @@ class PhotometryDialog(BaseToolDialog):
         self.spin_aperture.blockSignals(False)
         self.update_photometry()
         
-    def closeEvent(self, event):
-        if self.image_viewer and self.image_viewer.imv:
-            self.image_viewer.imv.getView().removeItem(self.roi_inner)
-            self.image_viewer.imv.getView().removeItem(self.roi_outer)
-        super().closeEvent(event)
-        
     def update_stats(self):
         self.update_photometry()
 
@@ -155,7 +149,7 @@ class PhotometryDialog(BaseToolDialog):
             self.lbl_flux.setText(f"{raw_flux:.4f}")
             self.lbl_sky.setText(f"{bkg_sum:.4f}")
             self.lbl_total.setText(f"{final_flux:.4f}")
-        except Exception as e:
+        except Exception:
             self.lbl_flux.setText("Error")
             self.lbl_sky.setText("Error")
             self.lbl_total.setText("Error")

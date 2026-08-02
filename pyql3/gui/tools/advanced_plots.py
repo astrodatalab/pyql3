@@ -144,8 +144,6 @@ class ContourDialog(BaseToolDialog):
         if img_data.ndim == 3:
             img_data = img_data[self.image_viewer.imv.currentIndex]
             
-        view = self.image_viewer.imv.getView()
-        
         # Calculate levels
         min_val = np.nanmin(img_data)
         max_val = np.nanmax(img_data)

@@ -1,6 +1,5 @@
 from PySide6.QtWidgets import QDialog, QVBoxLayout
 from PySide6.QtCore import Qt
-import pyqtgraph as pg
 
 
 def as_center(value):
@@ -111,7 +110,6 @@ class BaseToolDialog(QDialog):
             ev.ignore()
             return
             
-        import pyqtgraph as pg
         from PySide6.QtCore import Qt
         
         # Only draw on left click

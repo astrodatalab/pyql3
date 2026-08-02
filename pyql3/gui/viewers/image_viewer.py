@@ -1,7 +1,6 @@
 import pyqtgraph as pg
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, 
-                               QLabel, QPushButton, QLineEdit, QComboBox, 
-                               QCheckBox, QRadioButton, QGroupBox, QSlider, QFrame,
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox, 
+                               QRadioButton, QGroupBox, QSlider, QFrame,
                                QButtonGroup, QTabWidget, QStyle, QStyleOptionSlider)
 from PySide6.QtCore import Qt, Signal
 import numpy as np
@@ -11,7 +10,9 @@ import astropy.units as u
 import warnings
 
 try:
-    import cmcrameri.cm
+    # Imported for its side effect: this registers the Crameri colormaps with
+    # matplotlib, which pg.colormap.getFromMatplotlib() then looks up by name.
+    import cmcrameri.cm  # noqa: F401
 except ImportError:
     pass
 
@@ -1545,7 +1546,8 @@ class ImageViewer(QWidget):
             # 2. Try matplotlib / cmcrameri colormap
             if cmap is None:
                 try:
-                    import cmcrameri.cm
+                    # Side-effect import; see the note at the top of this module.
+                    import cmcrameri.cm  # noqa: F401
                 except ImportError:
                     pass
                 try:

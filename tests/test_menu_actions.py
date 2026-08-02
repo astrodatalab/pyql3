@@ -6,10 +6,8 @@ open_depth_plot(initial_center=None) therefore receive False, not None, when
 invoked from the menu bar -- constructing the dialogs directly in a test does
 not cover this path.
 """
-import numpy as np
 import pytest
 from PySide6.QtGui import QAction
-from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.main_window import MainWindow
 from pyql3.gui.tools.base_tool import as_center
 
