@@ -220,11 +220,20 @@ class CutPlotDialog(BaseToolDialog):
     def update_plot(self):
         if self.image_viewer is None or self.image_viewer.display_data is None or self.roi is None:
             return
-            
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
-            
+
+        # current_plane() rather than display_data, for two reasons:
+        #
+        #  - display_data already has the DN multiplier folded in by apply_transforms(),
+        #    and every branch below multiplies by data_multiplier again. In Total DN mode
+        #    that squared the conversion and every cut profile read itime*coadds too high.
+        #  - indexing display_data by imv.currentIndex is wrong in Boxcar and Z Range
+        #    modes, where the screen shows a collapsed plane belonging to no single
+        #    channel and currentIndex goes stale (see the z-slice notes in
+        #    docs/developer.md). current_plane() returns whatever is actually displayed.
+        img_data = self.image_viewer.current_plane()
+        if img_data is None:
+            return
+
         # For pyqtgraph cuts, image_viewer.imv image item is (nx, ny)
         # So X-axis is axis 0, Y-axis is axis 1
         

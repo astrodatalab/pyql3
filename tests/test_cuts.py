@@ -158,3 +158,66 @@ def test_diagonal_cut_on_cube(loaded_viewer):
     profile = _profile(dialog)
     assert profile is not None and len(profile) > 0, "Diagonal cut on a cube produced no profile"
     dialog.close()
+
+
+def _dn_viewer(shape=(40, 40), value=7.0, itime_coadds=10.0):
+    img = np.full(shape, value, dtype=np.float32)
+    viewer = ImageViewer()
+    viewer.set_data(img)
+    viewer._itime_coadds = itime_coadds
+    return viewer
+
+
+@pytest.mark.parametrize("cut_type", ["horizontal", "vertical"])
+def test_dn_multiplier_is_applied_exactly_once(qapp, cut_type):
+    """Cut profiles read itime*coadds too high in Total DN mode.
+
+    update_plot() took its pixels from display_data, which apply_transforms() has
+    already multiplied, and then multiplied by data_multiplier again -- squaring the
+    DN/s to Total DN conversion. With itime*coadds = 10 a flat 7.0 image plotted 700.
+    """
+    viewer = _dn_viewer()
+
+    viewer.disp_as_dn = False
+    viewer.refresh_display()
+    dialog = CutPlotDialog(cut_type, None, viewer)
+    dialog.combo_calc.setCurrentText("Average")
+    dialog.update_plot()
+    assert np.allclose(_profile(dialog)[20], 7.0)
+
+    viewer.disp_as_dn = True
+    viewer.refresh_display()
+    dialog.update_plot()
+    assert np.allclose(_profile(dialog)[20], 70.0), "multiplier applied twice"
+
+
+def test_cut_uses_the_displayed_plane_in_collapse_mode(qapp):
+    """In Z Range mode the screen shows a collapsed plane belonging to no single
+    channel, and imv.currentIndex goes stale. The profile must follow what is
+    displayed, which is what current_plane() returns."""
+    cube = np.random.default_rng(0).normal(100, 10, (20, 30, 30)).astype(np.float32)
+    viewer = ImageViewer()
+    viewer.set_data(cube)
+    viewer._itime_coadds = 4.0
+    viewer.disp_as_dn = True
+    viewer.txt_zmin.setText("4")
+    viewer.txt_zmax.setText("6")
+    viewer.radio_range.setChecked(True)
+
+    dialog = CutPlotDialog("horizontal", None, viewer)
+    dialog.combo_calc.setCurrentText("Average")
+    dialog.update_plot()
+    got = _profile(dialog)
+
+    plane = viewer.current_plane()
+    region = dialog.roi.getRegion()
+    y0, y1 = int(round(min(region))), int(round(max(region)))
+    expected = np.nanmean(plane[:, y0:y1], axis=1) * viewer.data_multiplier
+    assert np.allclose(got, expected)
+
+    # And it must track the range rather than a frozen channel.
+    viewer.txt_zmin.setText("10")
+    viewer.txt_zmax.setText("18")
+    viewer.radio_range.setChecked(True)
+    dialog.update_plot()
+    assert not np.allclose(got, _profile(dialog))
