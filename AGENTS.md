@@ -154,6 +154,23 @@ Windows. Always build with `uv run pyinstaller --noconfirm QuickLook3.spec` — 
   `libxcb-cursor0`, `libxkbcommon-x11-0`, `libdbus-1-3`, `xvfb`) and runs pytest under
   `xvfb-run --auto-servernum` with `QT_QPA_PLATFORM=offscreen`.
 
+### Release workflow invariants
+
+Three properties of `.github/workflows/release.yml` are deliberate. Preserve them:
+
+- **Actions are pinned to commit SHAs**, with the version in a trailing comment. A floating
+  `@v4` is mutable by whoever owns the action repository, and it runs in a job holding a
+  token. Bump pins deliberately; do not "tidy" them back to tags.
+- **`uv sync --frozen`**, never `uv add` — the build must come from the committed `uv.lock`.
+  The workflow used to run `uv add --dev pyinstaller pillow`, which re-resolved and rewrote
+  the lock, so published binaries could be built from unreviewed versions. Both packages are
+  already in the locked `dev` group.
+- **Least privilege**: top-level `permissions: contents: read`; only the `release` job
+  escalates to `contents: write`.
+
+Bundles are unsigned and un-notarized, so each release publishes `SHA256SUMS.txt` as the
+only integrity check a user has. Keep that step.
+
 ## Repo conventions
 
 - **Commit messages carry no AI attribution.** Do not append `Co-Authored-By: Claude ...`,

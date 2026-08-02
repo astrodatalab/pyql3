@@ -24,6 +24,28 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 
 Binaries of the applications are available for Linux, MacOS, and Windows. Download the latest release at [https://github.com/astrodatalab/pyql3/releases/latest](https://github.com/astrodatalab/pyql3/releases/latest)
 
+### Verifying your download
+
+The bundles are **not code-signed or notarized**, so your operating system cannot vouch for
+them and you will have to bypass Gatekeeper or SmartScreen to run them. Every release
+therefore publishes a `SHA256SUMS.txt` generated during the build. Download it alongside
+the binary and check that the hash matches:
+
+```bash
+# macOS
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+
+# Linux
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+```powershell
+# Windows PowerShell — compare against the matching line in SHA256SUMS.txt
+Get-FileHash .\QuickLook3-*-Windows.zip -Algorithm SHA256
+```
+
+A mismatch means the file was corrupted in transit or tampered with; do not run it.
+
 ## Installation
 
 PyQL3 manages its dependencies seamlessly using `uv`, an extremely fast Python package and project manager. `uv` will automatically download the correct Python version and all required libraries (`PySide6`, `pyqtgraph`, `astropy`, `scipy`, etc.) so you don't have to worry about complex virtual environments.
