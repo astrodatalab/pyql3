@@ -14,7 +14,7 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 - **Z-Axis Collapsing**: Collapse 3D spectral ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
 - **Astronomical Coordinates & WCS**: Integrates WCS pixel-to-world (RA/Dec) coordinate translations dynamically at your mouse pointer.
-- **Interactive Catalog Overlay**: Overlay astronomical catalogs (CSV, TXT, DAT) using Display Pixels, FITS Pixels, or WCS RA/Dec coordinates. Features viewport label culling for fast performance, custom marker styling, search filtering, and row selection highlighting.
+- **Interactive Catalog Overlay**: Overlay astronomical catalogs (CSV, TXT, DAT, or FITS binary tables) using Display Pixels, FITS Pixels, or WCS RA/Dec coordinates. Features viewport label culling for fast performance, custom marker styling, search filtering, and row selection highlighting.
 - **Analysis Tools**: Built-in 1D profile cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and 3D OpenGL Surface Rendering.
 - **FITS Datacube Arithmetic**: Execute image and cube math (addition, subtraction, division, scalar scaling) between open datasets.
 - **Live File Polling**: Monitor a directory for incoming FITS files and automatically load them in real time as observations complete.
@@ -110,6 +110,9 @@ uv run python main.py /path/to/data.fits
 # Open image and automatically load a target source catalog
 uv run python main.py /path/to/data.fits --catalog /path/to/catalog.csv
 
+# ... or a FITS table, optionally naming the extension to read
+uv run python main.py /path/to/data.fits --catalog /path/to/catalog.fits --catalog-hdu SOURCES
+
 # Auto-poll a directory for new incoming FITS files
 uv run python main.py --poll-dir /path/to/raw_data/
 
@@ -132,11 +135,12 @@ uv run python main.py datacube.fits --collapse-range 100 200
 
 ### Analysis & Catalog Tools
 Found under the **Plot** and **Analysis** menu bars:
-* **Catalog Plot Tool (`Plot -> Plot Catalog...`)**: Load astronomical catalog files (`.csv`, `.txt`, `.dat`) and overlay sources onto the FITS display.
+* **Catalog Plot Tool (`Plot -> Plot Catalog...`)**: Load astronomical catalog files (`.csv`, `.txt`, `.dat`) or FITS tables (`.fits`, `.fit`, `.fts`, gzipped) and overlay sources onto the FITS display.
   - **Coordinates**: Supports Display Pixels, FITS Pixels, or WCS RA/Dec (HMS/DMS or decimal degrees).
+  - **FITS Tables**: Reads binary and ASCII table extensions; you are asked which extension to use when a file holds more than one. Common photutils / SExtractor column names (`xcentroid`, `X_IMAGE`, `ALPHA_J2000`, ...) are auto-detected, masked and undefined coordinates are skipped rather than plotted at the origin, and per-row vector columns (e.g. spectra) are omitted from the table.
   - **High Performance**: Features debounced hide-on-pan text label rendering for smooth 60 FPS panning even with thousands of catalog sources.
   - **Interactivity**: Filter table rows in real time with the built-in search bar, click rows to center sources on the image with a red highlight, or right-click rows to copy coordinates.
-  - **CLI Auto-Load**: Pass `--catalog <file>` on launch to auto-open the tool and load the catalog.
+  - **CLI Auto-Load**: Pass `--catalog <file>` on launch to auto-open the tool and load the catalog, with `--catalog-hdu <index|EXTNAME>` to pick a FITS table extension.
 * **1D Profile Cuts**: `Plot -> Horizontal / Vertical / Any Cut` to generate 1D profile cuts with adjustable boxcar averaging.
 * **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis.
 * **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise.

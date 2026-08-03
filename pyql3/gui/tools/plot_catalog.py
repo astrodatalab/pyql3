@@ -1,19 +1,132 @@
+import os
+from collections import namedtuple
+
 import numpy as np
 from PySide6.QtWidgets import (
-    QHBoxLayout, QPushButton, QLabel, 
+    QHBoxLayout, QPushButton, QLabel,
     QComboBox, QSpinBox, QCheckBox, QTableWidget, QTableWidgetItem,
     QFileDialog, QHeaderView, QAbstractItemView, QColorDialog, QLineEdit,
-    QGroupBox, QMenu, QApplication
+    QGroupBox, QMenu, QApplication, QInputDialog
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 import pyqtgraph as pg
 import astropy.io.ascii as ascii
+from astropy.io import fits
+from astropy.table import Table
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
 
 from pyql3.gui.tools.base_tool import BaseToolDialog
+
+# Suffixes that make a file worth trying as a FITS table before handing it to
+# astropy's ASCII reader. Compressed variants are included because astropy opens
+# them transparently.
+FITS_SUFFIXES = (
+    '.fits', '.fit', '.fts', '.fz',
+    '.fits.gz', '.fit.gz', '.fts.gz', '.fits.bz2', '.fits.zip',
+)
+
+
+# Column names recognised when guessing which columns hold coordinates. FITS source
+# tables rarely use the bare names a hand-written CSV does, so the photutils
+# (`xcentroid`) and SExtractor (`X_IMAGE`, `ALPHA_J2000`) spellings are included.
+# Comparison is done in lower case.
+RA_COLUMN_NAMES = ('ra', 'right ascension', 'alpha', 'raj2000', 'ra_j2000',
+                   'alpha_j2000', 'ra_deg', 'radeg')
+DEC_COLUMN_NAMES = ('dec', 'declination', 'delta', 'decj2000', 'dec_j2000',
+                    'delta_j2000', 'dec_deg', 'decdeg')
+X_COLUMN_NAMES = ('x', 'xcenter', 'xc', 'x_c', 'xcentroid', 'x_image', 'xpix',
+                  'x_pix', 'xpos', 'x_pos')
+Y_COLUMN_NAMES = ('y', 'ycenter', 'yc', 'y_c', 'ycentroid', 'y_image', 'ypix',
+                  'y_pix', 'ypos', 'y_pos')
+
+
+def looks_like_fits(filepath):
+    return str(filepath).lower().endswith(FITS_SUFFIXES)
+
+
+FitsTableExt = namedtuple('FitsTableExt', 'index name label')
+
+
+def fits_table_extensions(filepath):
+    """List the table extensions of a FITS file as `FitsTableExt` records.
+
+    `CompImageHDU` subclasses `BinTableHDU` in astropy — a tile-compressed *image* would
+    otherwise be offered as a catalog — so it is excluded explicitly.
+    """
+    exts = []
+    with fits.open(filepath, memmap=False) as hdul:
+        for idx, hdu in enumerate(hdul):
+            if not isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+                continue
+            if isinstance(hdu, fits.CompImageHDU):
+                continue
+            name = hdu.name or 'TABLE'
+            nrows = hdu.header.get('NAXIS2', 0)
+            ncols = hdu.header.get('TFIELDS', 0)
+            exts.append(FitsTableExt(
+                idx, name, f"[{idx}] {name} — {nrows} rows x {ncols} cols"))
+    return exts
+
+
+def read_fits_table(filepath, hdu=None):
+    """Read one table extension of a FITS file into an `astropy.table.Table`.
+
+    Returns ``(table, label)``, where `label` names the extension that was used and notes
+    any columns that had to be dropped. `hdu` may be an index, an EXTNAME, or None to take
+    the first table extension in the file.
+
+    Vector (multi-element) columns are removed: a catalog overlay needs one scalar value
+    per row, and an OSIRIS-sized spectrum column would put 465 numbers in a table cell.
+    """
+    exts = fits_table_extensions(filepath)
+    if not exts:
+        raise ValueError("this FITS file contains no table extension")
+
+    if hdu is None:
+        chosen = exts[0]
+    elif isinstance(hdu, str):
+        matches = [e for e in exts if e.name.upper() == hdu.upper()]
+        if not matches:
+            raise ValueError(f"no table extension named {hdu!r} in this file")
+        chosen = matches[0]
+    else:
+        matches = [e for e in exts if e.index == hdu]
+        if not matches:
+            raise ValueError(f"HDU {hdu} is not a table extension of this file")
+        chosen = matches[0]
+
+    table = Table.read(filepath, hdu=chosen.index)
+    label = chosen.name
+
+    vector_cols = [name for name in table.colnames if table[name].ndim > 1]
+    if vector_cols:
+        table.remove_columns(vector_cols)
+        label += f" (skipped {len(vector_cols)} vector column"
+        label += "s)" if len(vector_cols) > 1 else ")"
+    if not table.colnames:
+        raise ValueError("no scalar columns in this table extension")
+
+    return table, label
+
+
+def to_float(val):
+    """Coerce one catalog cell to a plottable float, or None if it is not one.
+
+    FITS tables bring in cases the ASCII reader never produced: masked cells (TNULL /
+    undefined values) and NaNs. `float(np.ma.masked)` yields NaN with a warning rather
+    than raising, so masking has to be tested for rather than caught.
+    """
+    if val is None or val is np.ma.masked or np.ma.is_masked(val):
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
 
 def map_to_display(image_viewer, orig_x, orig_y):
     if image_viewer.display_data is None:
@@ -60,7 +173,7 @@ class PlotCatalogDialog(BaseToolDialog):
         src_group = QGroupBox("Data Source")
         src_layout = QHBoxLayout()
         
-        self.btn_load = QPushButton("Load Catalog (CSV/TXT)...")
+        self.btn_load = QPushButton("Load Catalog (CSV/TXT/FITS)...")
         self.btn_load.clicked.connect(self.load_catalog)
         self.lbl_file = QLabel("No file loaded")
         
@@ -157,26 +270,81 @@ class PlotCatalogDialog(BaseToolDialog):
         self.layout.addWidget(self.lbl_status)
         
     def load_catalog(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Open Catalog", "", "Catalog Files (*.csv *.txt *.dat);;All Files (*)")
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Open Catalog", "",
+            "Catalog Files (*.csv *.txt *.dat *.tbl *.ecsv *.fits *.fit *.fts *.fits.gz);;"
+            "FITS Tables (*.fits *.fit *.fts *.fz *.fits.gz);;"
+            "Text Catalogs (*.csv *.txt *.dat *.tbl *.ecsv);;"
+            "All Files (*)")
         if not filepath:
             return
-        self.load_catalog_file(filepath)
 
-    def load_catalog_file(self, filepath):
-        """Load a catalog from a file path. Can be called programmatically."""
+        hdu = None
+        if looks_like_fits(filepath):
+            proceed, hdu = self._choose_fits_hdu(filepath)
+            if not proceed:
+                return
+        self.load_catalog_file(filepath, hdu=hdu)
+
+    def _choose_fits_hdu(self, filepath):
+        """Ask which table extension to read, when the file holds more than one.
+
+        Returns ``(proceed, hdu)``. `hdu` is None when there is nothing to choose between,
+        which leaves `read_fits_table` to take the first table extension (or to raise the
+        real error, if the file cannot be opened at all).
+        """
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                self.catalog_data = ascii.read(filepath, guess=True)
-                
-            import os
-            self.lbl_file.setText(os.path.basename(filepath))
+            exts = fits_table_extensions(filepath)
+        except Exception:
+            return True, None
+        if len(exts) <= 1:
+            return True, exts[0].index if exts else None
+
+        labels = [ext.label for ext in exts]
+        choice, ok = QInputDialog.getItem(
+            self, "Select FITS Table",
+            f"{os.path.basename(filepath)} contains several tables:",
+            labels, 0, False)
+        if not ok:
+            return False, None
+        return True, exts[labels.index(choice)].index
+
+    def load_catalog_file(self, filepath, hdu=None):
+        """Load a catalog from a file path. Can be called programmatically.
+
+        Reads a FITS table when the file is one, and an ASCII table otherwise. `hdu`
+        selects the FITS table extension (index or EXTNAME); the first table extension is
+        used when it is None.
+        """
+        try:
+            if looks_like_fits(filepath):
+                self.catalog_data, ext_label = read_fits_table(filepath, hdu)
+                name = f"{os.path.basename(filepath)}  {ext_label}"
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        self.catalog_data = ascii.read(filepath, guess=True)
+                    name = os.path.basename(filepath)
+                except Exception as ascii_error:
+                    # A FITS table under an unfamiliar name still has to load; if it is
+                    # not one either, the ASCII failure is the message worth reporting.
+                    try:
+                        self.catalog_data, ext_label = read_fits_table(filepath, hdu)
+                    except Exception:
+                        raise ascii_error from None
+                    name = f"{os.path.basename(filepath)}  {ext_label}"
+
+            self.lbl_file.setText(name)
             self.populate_table()
             self.auto_assign_columns()
             self.update_plot()
         except Exception as e:
-            self.lbl_file.setText(f"Error loading file: {e}")
-            
+            # astropy's failed format guess is dozens of lines long; a QLabel gets one
+            lines = [line for line in str(e).strip().splitlines() if line.strip()]
+            msg = lines[0][:120] if lines else type(e).__name__
+            self.lbl_file.setText(f"Error loading file: {msg}")
+
     def populate_table(self):
         if self.catalog_data is None:
             return
@@ -192,6 +360,9 @@ class PlotCatalogDialog(BaseToolDialog):
                 # Format floats nicely, otherwise just string
                 if isinstance(val, (float, np.floating)):
                     text = f"{val:.5g}"
+                elif isinstance(val, bytes):
+                    # FITS character columns can come through as bytes
+                    text = val.decode('utf-8', 'replace').strip()
                 else:
                     text = str(val)
                 item = QTableWidgetItem(text)
@@ -234,10 +405,10 @@ class PlotCatalogDialog(BaseToolDialog):
         cols = [c.lower() for c in self.catalog_data.colnames]
         
         # Auto detect RA/DEC vs X/Y
-        has_ra = any(c in ['ra', 'right ascension', 'alpha'] for c in cols)
-        has_dec = any(c in ['dec', 'declination', 'delta'] for c in cols)
-        has_x = any(c in ['x', 'xcenter', 'xc', 'x_c'] for c in cols)
-        has_y = any(c in ['y', 'ycenter', 'yc', 'y_c'] for c in cols)
+        has_ra = any(c in RA_COLUMN_NAMES for c in cols)
+        has_dec = any(c in DEC_COLUMN_NAMES for c in cols)
+        has_x = any(c in X_COLUMN_NAMES for c in cols)
+        has_y = any(c in Y_COLUMN_NAMES for c in cols)
         
         self.combo_coord_type.blockSignals(True)
         if has_x and has_y:
@@ -267,24 +438,16 @@ class PlotCatalogDialog(BaseToolDialog):
         found_x = False
         found_y = False
         
-        if is_world:
-            # Try to find RA/DEC
-            for i, c in enumerate(cols):
-                if not found_x and c in ['ra', 'right ascension', 'alpha']:
-                    self.combo_x.setCurrentIndex(i)
-                    found_x = True
-                elif not found_y and c in ['dec', 'declination', 'delta']:
-                    self.combo_y.setCurrentIndex(i)
-                    found_y = True
-        else:
-            # Try to find X/Y
-            for i, c in enumerate(cols):
-                if not found_x and c in ['x', 'xcenter', 'xc', 'x_c']:
-                    self.combo_x.setCurrentIndex(i)
-                    found_x = True
-                elif not found_y and c in ['y', 'ycenter', 'yc', 'y_c']:
-                    self.combo_y.setCurrentIndex(i)
-                    found_y = True
+        x_names = RA_COLUMN_NAMES if is_world else X_COLUMN_NAMES
+        y_names = DEC_COLUMN_NAMES if is_world else Y_COLUMN_NAMES
+
+        for i, c in enumerate(cols):
+            if not found_x and c in x_names:
+                self.combo_x.setCurrentIndex(i)
+                found_x = True
+            elif not found_y and c in y_names:
+                self.combo_y.setCurrentIndex(i)
+                found_y = True
                     
         # Fallback to numeric columns if explicit names were not found
         if not found_x or not found_y:
@@ -326,6 +489,79 @@ class PlotCatalogDialog(BaseToolDialog):
         if shape_str.startswith("x"): return "x"
         return "o"
         
+    def _row_to_display(self, row):
+        """Resolve one catalog row to display pixel coordinates, or None if it cannot be.
+
+        Shared by the marker pass and by the table-selection highlight so the two cannot
+        drift apart. The returned pair is *not* half-pixel centred — callers add the 0.5
+        themselves.
+        """
+        if self.catalog_data is None or self.image_viewer is None:
+            return None
+
+        x_col = self.combo_x.currentText()
+        y_col = self.combo_y.currentText()
+        if x_col not in self.catalog_data.colnames or y_col not in self.catalog_data.colnames:
+            return None
+
+        val_x = row[x_col]
+        val_y = row[y_col]
+        coord_idx = self.combo_coord_type.currentIndex()
+
+        if coord_idx == 2:
+            # Decimal degrees when both cells are numbers, sexagesimal otherwise
+            f_x, f_y = to_float(val_x), to_float(val_y)
+            try:
+                if f_x is not None and f_y is not None:
+                    crd = SkyCoord(f_x, f_y, unit=(u.deg, u.deg))
+                else:
+                    crd = SkyCoord(val_x, val_y, unit=(u.hourangle, u.deg))
+                val_x = float(crd.ra.deg)
+                val_y = float(crd.dec.deg)
+            except Exception:
+                return None
+        else:
+            val_x, val_y = to_float(val_x), to_float(val_y)
+            if val_x is None or val_y is None:
+                return None
+
+        if coord_idx == 0:
+            return val_x, val_y
+
+        orig_x, orig_y = val_x, val_y
+
+        if coord_idx == 2:
+            if getattr(self.image_viewer, 'wcs', None) is None:
+                return None
+            try:
+                wcs = self.image_viewer.wcs
+                if wcs.naxis == 2:
+                    orig_x, orig_y = wcs.world_to_pixel_values(val_x, val_y)
+                else:
+                    # Never index the celestial axes by position: OSIRIS puts RA on
+                    # FITS axis 3, other IFUs do not. Identify them from the WCS.
+                    phys = wcs.world_axis_physical_types
+                    coords_in = [0.0] * wcs.naxis
+                    for ax_idx, p in enumerate(phys):
+                        if p == 'pos.eq.ra':
+                            coords_in[ax_idx] = val_x
+                        elif p == 'pos.eq.dec':
+                            coords_in[ax_idx] = val_y
+                        else:
+                            coords_in[ax_idx] = wcs.wcs.crval[ax_idx]
+
+                    pixel_coords = wcs.world_to_pixel_values(*coords_in)
+
+                    ax1_idx = int(getattr(self.image_viewer, 'current_x_axis', 'AXIS 1').split()[-1]) - 1
+                    ax2_idx = int(getattr(self.image_viewer, 'current_y_axis', 'AXIS 2').split()[-1]) - 1
+
+                    orig_x = float(pixel_coords[ax1_idx])
+                    orig_y = float(pixel_coords[ax2_idx])
+            except Exception:
+                return None
+
+        return map_to_display(self.image_viewer, orig_x, orig_y)
+
     def update_plot(self):
         if self.image_viewer is None or self.catalog_data is None:
             return
@@ -361,13 +597,12 @@ class PlotCatalogDialog(BaseToolDialog):
             self.scatter_item.clear()
             return
             
-        coord_idx = self.combo_coord_type.currentIndex()
-        
         pts_x = []
         pts_y = []
-        
+
         oob_count = 0
-        
+        bad_count = 0
+
         if self.image_viewer.display_data is not None:
             shape = self.image_viewer.display_data.shape
             is_3d = (self.image_viewer.display_data.ndim == 3)
@@ -381,63 +616,13 @@ class PlotCatalogDialog(BaseToolDialog):
         self.all_label_points = []
 
         for row in self.catalog_data:
-            val_x = row[x_col]
-            val_y = row[y_col]
-            
-            if coord_idx == 2:
-                try:
-                    try:
-                        f_x = float(val_x)
-                        f_y = float(val_y)
-                        crd = SkyCoord(f_x, f_y, unit=(u.deg, u.deg))
-                    except ValueError:
-                        crd = SkyCoord(val_x, val_y, unit=(u.hourangle, u.deg))
-                    val_x = float(crd.ra.deg) if hasattr(crd, 'ra') else float(crd[0])
-                    val_y = float(crd.dec.deg) if hasattr(crd, 'dec') else float(crd[1])
-                    orig_x, orig_y = val_x, val_y
-                except Exception:
-                    continue
-            else:
-                try:
-                    val_x = float(val_x)
-                    val_y = float(val_y)
-                except ValueError:
-                    continue
-                orig_x, orig_y = val_x, val_y
-            
-            if coord_idx == 0:
-                disp_x, disp_y = val_x, val_y
-            else:
-                if coord_idx == 2:
-                    if getattr(self.image_viewer, 'wcs', None) is None:
-                        continue
-                    try:
-                        if self.image_viewer.wcs.naxis == 2:
-                            orig_x, orig_y = self.image_viewer.wcs.world_to_pixel_values(val_x, val_y)
-                        else:
-                            phys = self.image_viewer.wcs.world_axis_physical_types
-                            coords_in = [0.0] * self.image_viewer.wcs.naxis
-                            for ax_idx, p in enumerate(phys):
-                                if p == 'pos.eq.ra':
-                                    coords_in[ax_idx] = val_x
-                                elif p == 'pos.eq.dec':
-                                    coords_in[ax_idx] = val_y
-                                else:
-                                    coords_in[ax_idx] = self.image_viewer.wcs.wcs.crval[ax_idx]
-                                    
-                            pixel_coords = self.image_viewer.wcs.world_to_pixel_values(*coords_in)
-                            
-                            ax1_idx = int(getattr(self.image_viewer, 'current_x_axis', 'AXIS 1').split()[-1]) - 1
-                            ax2_idx = int(getattr(self.image_viewer, 'current_y_axis', 'AXIS 2').split()[-1]) - 1
-                            
-                            orig_x = float(pixel_coords[ax1_idx])
-                            orig_y = float(pixel_coords[ax2_idx])
-                            
-                    except Exception:
-                        continue
-                        
-                disp_x, disp_y = map_to_display(self.image_viewer, orig_x, orig_y)
-                
+            resolved = self._row_to_display(row)
+            if resolved is None:
+                # Unparseable, masked, or not convertible through the WCS
+                bad_count += 1
+                continue
+            disp_x, disp_y = resolved
+
             if 0 <= disp_x < max_x and 0 <= disp_y < max_y:
                 pts_x.append(disp_x + 0.5)
                 pts_y.append(disp_y + 0.5)
@@ -455,7 +640,10 @@ class PlotCatalogDialog(BaseToolDialog):
         brush = pg.mkBrush(color=(0, 0, 0, 0))
         
         self.scatter_item.setData(x=pts_x, y=pts_y, symbol=symbol, size=size, pen=pen, brush=brush)
-        self.lbl_status.setText(f"Loaded: {len(self.catalog_data)} sources | {len(pts_x)} plotted | {oob_count} out of bounds")
+        status = f"Loaded: {len(self.catalog_data)} sources | {len(pts_x)} plotted | {oob_count} out of bounds"
+        if bad_count:
+            status += f" | {bad_count} unusable coordinates"
+        self.lbl_status.setText(status)
 
         # Connect view range changes for debounced hide-on-pan / show-on-stop
         view = self.image_viewer.imv.getView()
@@ -552,67 +740,13 @@ class PlotCatalogDialog(BaseToolDialog):
             
         row_idx = selected_rows[0].row()
         row = self.catalog_data[row_idx]
-        
-        x_col = self.combo_x.currentText()
-        y_col = self.combo_y.currentText()
-        
-        if x_col not in self.catalog_data.colnames or y_col not in self.catalog_data.colnames:
+
+        resolved = self._row_to_display(row)
+        if resolved is None:
+            self.highlight_item.clear()
             return
-            
-        val_x = row[x_col]
-        val_y = row[y_col]
-        
-        coord_idx = self.combo_coord_type.currentIndex()
-        
-        if coord_idx == 2:
-            try:
-                try:
-                    f_x = float(val_x)
-                    f_y = float(val_y)
-                    crd = SkyCoord(f_x, f_y, unit=(u.deg, u.deg))
-                except ValueError:
-                    crd = SkyCoord(val_x, val_y, unit=(u.hourangle, u.deg))
-                val_x = crd.ra.deg
-                val_y = crd.dec.deg
-                orig_x, orig_y = val_x, val_y
-            except Exception:
-                self.highlight_item.clear()
-                return
-        else:
-            try:
-                val_x = float(val_x)
-                val_y = float(val_y)
-            except ValueError:
-                self.highlight_item.clear()
-                return
-            orig_x, orig_y = val_x, val_y
-        
-        if coord_idx == 0:
-            disp_x, disp_y = val_x, val_y
-        else:
-            if coord_idx == 2:
-                if getattr(self.image_viewer, 'wcs', None) is None:
-                    return
-                try:
-                    if self.image_viewer.wcs.naxis == 2:
-                        orig_x, orig_y = self.image_viewer.wcs.world_to_pixel_values(val_x, val_y)
-                    else:
-                        phys = self.image_viewer.wcs.world_axis_physical_types
-                        coords_in = [0.0] * self.image_viewer.wcs.naxis
-                        for ax_idx, p in enumerate(phys):
-                            if p == 'pos.eq.ra': coords_in[ax_idx] = val_x
-                            elif p == 'pos.eq.dec': coords_in[ax_idx] = val_y
-                            else: coords_in[ax_idx] = self.image_viewer.wcs.wcs.crval[ax_idx]
-                        pixel_coords = self.image_viewer.wcs.world_to_pixel_values(*coords_in)
-                        ax1_idx = int(getattr(self.image_viewer, 'current_x_axis', 'AXIS 1').split()[-1]) - 1
-                        ax2_idx = int(getattr(self.image_viewer, 'current_y_axis', 'AXIS 2').split()[-1]) - 1
-                        orig_x = pixel_coords[ax1_idx]
-                        orig_y = pixel_coords[ax2_idx]
-                except Exception:
-                    return
-                    
-            disp_x, disp_y = map_to_display(self.image_viewer, orig_x, orig_y)
-        
+        disp_x, disp_y = resolved
+
         # Draw red highlight marker centered on pixel (disp_x + 0.5, disp_y + 0.5)
         pen = pg.mkPen(color=QColor(255, 0, 0), width=3)
         brush = pg.mkBrush(color=(0, 0, 0, 0))

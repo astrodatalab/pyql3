@@ -14,7 +14,8 @@ def main():
     parser.add_argument("--collapsed", action="store_true", help="Start the app with collapsed view activated (defaults to full cube)")
     parser.add_argument("--collapse-range", nargs=2, type=int, metavar=('ZMIN', 'ZMAX'), help="Start collapsed over the specified range of channels (implies --collapsed)")
     parser.add_argument("--poll-dir", help="Directory to poll for new FITS files (initializes with the most recent one)")
-    parser.add_argument("--catalog", help="Catalog file (.csv, .txt, .dat) to load into the Plot Catalog tool on startup")
+    parser.add_argument("--catalog", help="Catalog file (.csv, .txt, .dat, or a FITS table) to load into the Plot Catalog tool on startup")
+    parser.add_argument("--catalog-hdu", help="Table extension of a FITS catalog, as an index or EXTNAME (default: the first table extension)")
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
@@ -59,8 +60,11 @@ def main():
                 window.image_viewer.radio_range.setChecked(True)
 
     if args.catalog and os.path.isfile(args.catalog):
+        hdu = args.catalog_hdu
+        if hdu is not None and hdu.lstrip('-').isdigit():
+            hdu = int(hdu)
         window.open_plot_catalog()
-        window._plot_catalog_dialog.load_catalog_file(args.catalog)
+        window._plot_catalog_dialog.load_catalog_file(args.catalog, hdu=hdu)
         
     if splash:
         splash.finish(window)

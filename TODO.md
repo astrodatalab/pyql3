@@ -8,6 +8,7 @@
 - Ability to draw arrows, circles, squares, and custom regions on images like ds9
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
 # DONE
+- Load FITS tables (binary or ASCII) in the Plot Catalog tool, with an extension chooser for multi-table files, `--catalog-hdu` on the command line, vector columns dropped, masked/undefined coordinates skipped, and photutils/SExtractor column names auto-detected.
 - Add the ability to overplot a spectral line list on the Depth Plot tool. Loaded from the data directory with default linelists and custom CSV support. Drawn as vertical dotted lines with line names anchored at the bottom, dynamically filtered by visible x-axis region.
 - Enabled Extension Selector (`Extension:`) under "Advanced Data Cube Controls" for 2D images while disabling 3D-only slice/collapse controls.
 - Added Extension Selector dropdown (`Extension: 0: PRIMARY`, `1: SCI`, etc.) to the Edit FITS Header dialog for inspecting and editing headers across all HDU extensions.

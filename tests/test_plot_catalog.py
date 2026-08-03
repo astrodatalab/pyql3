@@ -1,8 +1,15 @@
 import numpy as np
 import pyqtgraph as pg
 import pytest
+from astropy.io import fits
 
-from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
+from pyql3.gui.tools.plot_catalog import (
+    PlotCatalogDialog,
+    fits_table_extensions,
+    looks_like_fits,
+    read_fits_table,
+    to_float,
+)
 from pyql3.gui.viewers.image_viewer import ImageViewer
 
 
@@ -157,3 +164,254 @@ def test_removal_does_not_depend_on_garbage_collection(viewer, catalog_file):
     # the objects are still alive, they are simply no longer in the scene
     assert all(item is not None for item in alive)
     assert all(item.scene() is None for item in alive)
+
+
+# --------------------------------------------------------------------------------------
+# FITS table catalogs
+# --------------------------------------------------------------------------------------
+
+
+def _write_fits_catalog(path):
+    """A FITS catalog exercising what an ASCII catalog never produces.
+
+    * a primary image HDU and a tile-compressed image HDU, neither of which is a catalog
+      (`CompImageHDU` subclasses `BinTableHDU`, so it has to be excluded deliberately)
+    * two table extensions, so the extension has to be chosen
+    * a character column, a vector column, and a NaN coordinate
+    """
+    names = np.array([f"Src{i}" for i in range(6)])
+    xs = np.array([10.0, 13.0, 16.0, 19.0, 22.0, np.nan])
+    ys = np.array([12.0, 14.0, 16.0, 18.0, 20.0, 20.0])
+    flux = np.arange(6, dtype=np.float32)
+    spec = np.arange(24, dtype=np.float32).reshape(6, 4)
+
+    sources = fits.BinTableHDU.from_columns([
+        fits.Column(name='NAME', format='10A', array=names),
+        fits.Column(name='X', format='D', array=xs),
+        fits.Column(name='Y', format='D', array=ys),
+        fits.Column(name='FLUX', format='E', array=flux),
+        fits.Column(name='SPEC', format='4E', array=spec),
+    ], name='SOURCES')
+
+    backup = fits.BinTableHDU.from_columns([
+        fits.Column(name='X', format='D', array=np.array([5.0, 6.0])),
+        fits.Column(name='Y', format='D', array=np.array([7.0, 8.0])),
+    ], name='BACKUP')
+
+    # Integer columns with TNULL come back masked, not as NaN
+    masked = fits.BinTableHDU.from_columns([
+        fits.Column(name='X', format='J', array=np.array([11, -99, 13]), null=-99),
+        fits.Column(name='Y', format='J', array=np.array([11, 12, 13]), null=-99),
+    ], name='MASKED')
+
+    hdul = fits.HDUList([
+        fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)),
+        sources,
+        backup,
+        fits.CompImageHDU(np.zeros((4, 4), dtype=np.float32), name='COMPRESSED'),
+        masked,
+    ])
+    hdul.writeto(path, overwrite=True)
+    return str(path)
+
+
+@pytest.fixture
+def fits_catalog_file(tmp_path):
+    return _write_fits_catalog(tmp_path / "catalog.fits")
+
+
+def test_looks_like_fits_recognises_the_usual_spellings():
+    for name in ("a.fits", "A.FIT", "b.fts", "c.fits.gz", "d.fz"):
+        assert looks_like_fits(name), name
+    for name in ("a.csv", "b.txt", "c.dat", "fits.csv"):
+        assert not looks_like_fits(name), name
+
+
+def test_fits_table_extensions_lists_tables_only(fits_catalog_file):
+    """The primary image and the tile-compressed image must not be offered as catalogs."""
+    exts = fits_table_extensions(fits_catalog_file)
+    assert [ext.index for ext in exts] == [1, 2, 4]
+    assert [ext.name for ext in exts] == ['SOURCES', 'BACKUP', 'MASKED']
+    assert '6 rows' in exts[0].label
+
+
+def test_read_fits_table_defaults_to_the_first_table_and_drops_vector_columns(fits_catalog_file):
+    table, label = read_fits_table(fits_catalog_file)
+    assert table.colnames == ['NAME', 'X', 'Y', 'FLUX'], "vector column was not dropped"
+    assert len(table) == 6
+    assert 'SOURCES' in label and 'vector' in label
+
+
+def test_read_fits_table_accepts_an_index_or_an_extname(fits_catalog_file):
+    by_index, label_index = read_fits_table(fits_catalog_file, 2)
+    by_name, label_name = read_fits_table(fits_catalog_file, 'BACKUP')
+    assert by_index.colnames == by_name.colnames == ['X', 'Y']
+    assert len(by_index) == len(by_name) == 2
+    assert 'BACKUP' in label_index and 'BACKUP' in label_name
+
+
+def test_read_fits_table_rejects_a_file_with_no_table(tmp_path):
+    path = tmp_path / "image_only.fits"
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(path)
+    with pytest.raises(ValueError, match="no table extension"):
+        read_fits_table(str(path))
+
+
+def test_fits_catalog_plots_its_sources(viewer, fits_catalog_file):
+    dlg = _open_dialog(viewer, fits_catalog_file)
+
+    assert dlg.catalog_data is not None
+    assert len(dlg.scatter_item.getData()[0]) == 5, "the five valid rows should plot"
+    # X/Y found by name, so FITS Pixels is the coordinate mode
+    assert dlg.combo_coord_type.currentIndex() == 1
+    assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('X', 'Y')
+    assert 'SOURCES' in dlg.lbl_file.text()
+    assert 'unusable' in dlg.lbl_status.text(), "the NaN row should be reported"
+    dlg.close()
+
+
+def test_fits_catalog_labels_are_text_not_byte_reprs(viewer, fits_catalog_file):
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    assert dlg.combo_name.currentText() == 'NAME'
+    assert dlg.table.item(0, 0).text() == 'Src0'
+    assert [txt.toPlainText() for txt in dlg.text_items][:1] == ['Src0']
+    dlg.close()
+
+
+def test_masked_coordinates_are_skipped_not_plotted_at_zero(viewer, fits_catalog_file):
+    """`float(np.ma.masked)` is NaN, not an exception -- masking has to be tested for."""
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.load_catalog_file(fits_catalog_file, hdu='MASKED')
+    assert len(dlg.catalog_data) == 3
+    assert len(dlg.scatter_item.getData()[0]) == 2
+    assert '1 unusable' in dlg.lbl_status.text()
+    dlg.close()
+
+
+def test_hdu_argument_selects_the_extension(viewer, fits_catalog_file):
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.load_catalog_file(fits_catalog_file, hdu=2)
+    assert dlg.catalog_data.colnames == ['X', 'Y']
+    assert len(dlg.scatter_item.getData()[0]) == 2
+    dlg.close()
+
+
+def test_a_single_table_file_needs_no_extension_prompt(qapp, tmp_path):
+    """_choose_fits_hdu must not open a modal dialog when there is nothing to choose."""
+    path = tmp_path / "one_table.fits"
+    hdu = fits.BinTableHDU.from_columns([
+        fits.Column(name='X', format='D', array=np.array([1.0])),
+        fits.Column(name='Y', format='D', array=np.array([2.0])),
+    ], name='ONLY')
+    fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(path)
+
+    dlg = PlotCatalogDialog(None, None)
+    assert dlg._choose_fits_hdu(str(path)) == (True, 1)
+    # An unreadable file defers to load_catalog_file, which reports the real error
+    assert dlg._choose_fits_hdu(str(tmp_path / "missing.fits")) == (True, None)
+    dlg.close()
+
+
+def test_a_fits_table_under_an_unfamiliar_name_still_loads(viewer, tmp_path):
+    path = _write_fits_catalog(tmp_path / "catalog.cat")
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.load_catalog_file(path)
+    assert dlg.catalog_data is not None and dlg.catalog_data.colnames[:2] == ['NAME', 'X']
+    assert len(dlg.scatter_item.getData()[0]) == 5
+    dlg.close()
+
+
+def test_a_broken_text_catalog_reports_the_text_error(viewer, tmp_path):
+    """The FITS fallback must not mask the real failure of a genuine text catalog."""
+    empty = tmp_path / "broken.csv"
+    empty.write_text("")
+    missing = tmp_path / "absent.csv"
+
+    for path in (empty, missing):
+        dlg = PlotCatalogDialog(None, viewer)
+        dlg.load_catalog_file(str(path))
+        text = dlg.lbl_file.text()
+        assert text.startswith("Error loading file"), text
+        assert 'table extension' not in text, "reported the FITS fallback's error instead"
+        assert '\n' not in text and len(text) < 200, "astropy's guess dump leaked into the UI"
+        dlg.close()
+
+
+def test_to_float_rejects_what_cannot_be_plotted():
+    assert to_float(3) == 3.0
+    assert to_float("2.5") == 2.5
+    assert to_float(np.float32(1.5)) == 1.5
+    for bad in (None, np.ma.masked, np.nan, np.inf, "abc", np.arange(3)):
+        assert to_float(bad) is None, bad
+
+
+def test_world_coordinate_fits_table_maps_through_the_cube_wcs(loaded_viewer, tmp_path):
+    """RA/DEC columns in a FITS table have to round-trip through the 3D WCS.
+
+    OSIRIS puts RA on FITS axis 3, so this also checks that the celestial axes are found
+    from the WCS rather than assumed to be the first two.
+    """
+    wcs = loaded_viewer.wcs
+    pixels = [(10.0, 12.0), (20.0, 20.0), (30.0, 28.0)]
+
+    ras, decs = [], []
+    for px, py in pixels:
+        # world_to_pixel_values takes/returns FITS axis order: (WAVE, DEC, RA)
+        world = wcs.pixel_to_world_values(0.0, py, px)
+        ras.append(float(world[2]))
+        decs.append(float(world[1]))
+
+    hdu = fits.BinTableHDU.from_columns([
+        fits.Column(name='NAME', format='6A', array=np.array(['a', 'b', 'c'])),
+        fits.Column(name='RA', format='D', array=np.array(ras)),
+        fits.Column(name='DEC', format='D', array=np.array(decs)),
+    ], name='WORLDCAT')
+    path = tmp_path / "world.fits"
+    fits.HDUList([fits.PrimaryHDU(), hdu]).writeto(path)
+
+    dlg = PlotCatalogDialog(None, loaded_viewer)
+    dlg.load_catalog_file(str(path))
+
+    assert dlg.combo_coord_type.currentIndex() == 2, "should have chosen World (RA/DEC)"
+    assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('RA', 'DEC')
+
+    got_x, got_y = dlg.scatter_item.getData()
+    assert len(got_x) == 3
+    for (px, py), gx, gy in zip(pixels, got_x, got_y, strict=True):
+        assert abs(gx - (px + 0.5)) < 0.01, (gx, px)
+        assert abs(gy - (py + 0.5)) < 0.01, (gy, py)
+    dlg.close()
+
+
+def test_sexagesimal_world_coordinates_still_parse(loaded_viewer, tmp_path):
+    """The string branch of the coordinate resolver, now shared with the highlight path."""
+    wcs = loaded_viewer.wcs
+    world = wcs.pixel_to_world_values(0.0, 20.0, 20.0)
+    from astropy.coordinates import SkyCoord
+
+    crd = SkyCoord(float(world[2]), float(world[1]), unit='deg')
+    hms, dms = crd.to_string('hmsdms').split()
+
+    path = tmp_path / "sexagesimal.csv"
+    path.write_text(f"NAME,RA,DEC\ncenter,{hms},{dms}\n")
+
+    dlg = PlotCatalogDialog(None, loaded_viewer)
+    dlg.load_catalog_file(str(path))
+    got_x, got_y = dlg.scatter_item.getData()
+    assert len(got_x) == 1
+    assert abs(got_x[0] - 20.5) < 0.05 and abs(got_y[0] - 20.5) < 0.05
+
+    # the table-selection highlight must resolve the same row the same way
+    dlg.table.selectRow(0)
+    hx, hy = dlg.highlight_item.getData()
+    assert abs(hx[0] - got_x[0]) < 1e-9 and abs(hy[0] - got_y[0]) < 1e-9
+    dlg.close()
+
+
+def test_read_fits_table_rejects_an_extension_that_is_not_a_table(fits_catalog_file):
+    """HDU 0 is the primary image and HDU 3 is a compressed image, not catalogs."""
+    for bad_hdu in (0, 3, 99):
+        with pytest.raises(ValueError, match="not a table extension"):
+            read_fits_table(fits_catalog_file, bad_hdu)
+    with pytest.raises(ValueError, match="no table extension named"):
+        read_fits_table(fits_catalog_file, 'NOSUCHNAME')

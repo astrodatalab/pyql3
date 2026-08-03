@@ -141,9 +141,32 @@ $$D_{\text{result}}(x, y, z) = D_1(x, y, z) \odot D_2(x, y, z)$$
 
 ## 7. Catalog Plotting & World Coordinate Overlay
 
-The **Plot Catalog** tool overlays external astronomical source catalogs (CSV, TXT, DAT) directly onto the 2D image plane or collapsed datacube slices.
+The **Plot Catalog** tool overlays external astronomical source catalogs directly onto the 2D image plane or collapsed datacube slices. Both text tables (CSV, TXT, DAT, ECSV, IPAC, ...) and FITS tables (`.fits`, `.fit`, `.fts`, and gzipped variants) are read.
 
 ![Plot Catalog](images/catalog_tool.png)
+
+### Input Formats
+
+Text catalogs are parsed by `astropy.io.ascii` in guess mode, so most delimited or
+fixed-width layouts load without configuration.
+
+For a **FITS table**, any binary (`BINTABLE`) or ASCII (`TABLE`) extension can be used:
+
+- When the file holds more than one table extension, the tool asks which one to read; a
+  file with a single table loads without prompting. Tile-compressed image extensions are
+  not offered, even though FITS stores them as binary tables.
+- Columns holding one value *per row per element* — a spectrum column, for instance — are
+  omitted, since a catalog overlay needs one scalar per source. The extension label next to
+  the filename reports how many were skipped.
+- Undefined (`TNULL`) and masked coordinates are counted as unusable in the status line
+  rather than being plotted at the origin.
+- Coordinate columns are guessed from the usual `photutils` and SExtractor spellings
+  (`xcentroid`/`ycentroid`, `X_IMAGE`/`Y_IMAGE`, `ALPHA_J2000`/`DELTA_J2000`, `RAJ2000`,
+  ...) in addition to plain `X`/`Y` and `RA`/`DEC`, and can always be overridden with the
+  column selectors.
+
+On the command line, `--catalog <file>` loads a catalog at startup and `--catalog-hdu
+<index|EXTNAME>` selects the FITS extension non-interactively.
 
 ### Features & Coordinate Modes
 

@@ -173,7 +173,7 @@ uv run pytest -v
 - `tests/test_depth_plot.py`: Spectrum extraction, background subtraction, line list parsing, LaTeX label formatting, and Y-auto scaling.
 - `tests/test_analysis_tools.py`: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.
 - `tests/test_cuts.py`: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.
-- `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close.
+- `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns.
 - `tests/test_menu_actions.py`: The `QAction.triggered` bool-vs-coordinate slot hazard and `as_center()` coercion (see the Qt slot gotcha in `AGENTS.md`).
 - `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, and `DirectoryPoller` service.
 - `tests/test_poller.py`: Settle detection for files still being written, burst coalescing, and the auto-load retry/backoff path.
