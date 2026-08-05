@@ -87,10 +87,46 @@ attribute caches can report a stale size, a failed parse means *retry later*, ne
 exhausted.
 
 `MainWindow` caches each tool as a `self._<name>_dialog` attribute and reopens it only if
-not already visible. When the display unit changes (DN/s vs Total DN), `update_tools_for_unit()`
-walks that hard-coded list of dialog attributes and calls each dialog's `update_plot()`, so
-labels and graphs refresh instantly. **A new tool must be added to the list inside
-`update_tools_for_unit()`** or it will silently go stale.
+not already visible. Those attribute names are listed once, in `MainWindow.TOOL_DIALOG_ATTRS`,
+and two things walk the list: `update_tools_for_unit()` (calls each dialog's `update_plot()` /
+`update_stats()` when the display unit changes between DN/s and Total DN, so labels and graphs
+refresh instantly) and `close_tool_dialogs()` from `closeEvent`. **A new tool must be added to
+`TOOL_DIALOG_ATTRS`** or it will silently go stale on a unit change *and* be left on screen
+after its window closes.
+
+### Multiple windows (CRITICAL)
+
+Several `MainWindow`s are open at once — **File ➔ New Window**, **Open in New Window...**, the
+Arithmetic tool's result, and one per file named on the command line. A window owns everything
+it displays: its `FitsReader`, `ImageViewer`, tool dialogs and `DirectoryPoller`. Tools take the
+viewer as a constructor argument (`base_tool.py`) and never look it up, so independence is
+automatic — do not reintroduce a lookup that walks up to "the" main window.
+
+Three things are process-wide and must stay that way:
+
+- **`get_window_manager()`** (`pyql3/gui/window_manager.py`) is the window list, plus the
+  most-recently-used order. A path arriving with no window attached (a Finder open-document
+  event, `quicklook3 cube.fits` while the app is running) goes to `WindowManager.open_path()`,
+  which targets the most recently used window and creates one if all are closed. **Never bind
+  the open-document handler to a particular window's `load_fits`** — that was a crash waiting to
+  happen, since closing that window left `FileOpenHandler` calling a method on a deleted C++
+  object.
+- **`get_config()`** (`services/config.py`) is one `ConfigManager` per process. A manager per
+  window gave each one a private snapshot of `~/.pyql3/config.json`, so recent-files updates
+  overwrote each other — atomically, and therefore invisibly.
+- **One poller per directory.** `DirectoryPoller.start_polling()` takes the watch over from
+  whoever holds it (`watcher_of()`), rather than adding a second `PollingObserver` that would
+  double the scan traffic and load every frame twice. Auto-loaded frames go to the window that
+  owns the watch — *not* to the most recently used window, so a watch following a reduction
+  cannot hijack a window opened to compare something. `MainWindow.confirm_watch_takeover()` asks
+  before moving a watch, and `PollingDialog` takes that as its `confirm_takeover` hook.
+
+`MainWindow.closeEvent()` releases all three kinds of per-window state: it stops the poller
+(else an orphaned observer thread keeps scanning), closes the tool dialogs (they are top-level
+windows, so they otherwise stay on screen and keep the application alive past the last main
+window), and closes the `FitsReader` (an open handle makes the file unreplaceable on Windows).
+The **Window** menu lists every window of the application, grouping each window's tool dialogs
+under it once more than one is open.
 
 ### Data state: `raw_data` vs `transposed_data` vs `display_data` (CRITICAL)
 

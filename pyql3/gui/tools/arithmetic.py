@@ -198,19 +198,13 @@ class ArithmeticDialog(QDialog):
             op_str = f"({name1} {op_char} {name2})"
             final_header.add_history(f"Arithmetic: {op_str}")
             
-            # Spawning a new main window!
-            from pyql3.gui.main_window import MainWindow
-            
-            # To avoid the window being garbage collected immediately, parent it (or store a ref)
-            # Parent must be None so it acts as an independent top-level window.
-            self.result_win = MainWindow()
+            # The result goes into its own independent window, cascaded off this one.
+            # The window manager holds the reference that keeps it alive, so there is no
+            # local list of child windows to leak here.
+            from pyql3.gui.window_manager import get_window_manager
+
+            self.result_win = get_window_manager().new_window()
             self.result_win.load_from_memory(result, final_header, title=op_str)
-            self.result_win.show()
-            
-            # Prevent python from garbage collecting the window immediately
-            if not hasattr(self, 'child_windows'):
-                self.child_windows = []
-            self.child_windows.append(self.result_win)
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Arithmetic error:\n{str(e)}")

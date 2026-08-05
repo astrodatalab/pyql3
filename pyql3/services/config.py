@@ -111,3 +111,26 @@ class ConfigManager:
     def clear_recent_files(self):
         self.set("recent_files", [])
 
+
+#: The single ConfigManager shared by every window in this process (see get_config).
+_shared_config = None
+
+
+def get_config():
+    """Return the process-wide :class:`ConfigManager`.
+
+    One settings file, one object. Several ``MainWindow``s are open at once, and each
+    building its own manager gave every window a private snapshot of
+    ``~/.pyql3/config.json``: opening a file in window A appended to A's recent-files
+    list and saved it, then the next save from window B wrote B's older list back over
+    it. Nothing is corrupted -- ``save()`` swaps a temp file into place -- but the
+    update is silently lost, and the two windows disagree about what "recent" means.
+
+    Tests that need an isolated settings file construct ``ConfigManager(path)``
+    directly rather than going through here.
+    """
+    global _shared_config
+    if _shared_config is None:
+        _shared_config = ConfigManager()
+    return _shared_config
+

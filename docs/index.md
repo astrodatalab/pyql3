@@ -66,6 +66,7 @@ Download the standalone compiled application for your operating system below. No
 * **Astronomical Coordinates:** Integrates WCS pixel-to-world (RA/Dec) coordinate translations at your mouse pointer.
 * **Advanced Scaling:** Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling.
 * **Analysis Tools:** Features built-in region cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and Catalog Plotting.
+* **Several Cubes at Once:** Open as many windows as you like (**File ➔ New Window**, or one per file on the command line). Each window has its own scaling, colormap and analysis tools, so two cubes can be compared side by side.
 * **Live File Polling:** Monitor a directory for incoming data files and automatically load them in real-time.
 
 ---

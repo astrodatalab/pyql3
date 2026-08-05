@@ -9,14 +9,14 @@ QuickLook 3 can be launched directly from the terminal or integrated into automa
 Launch PyQL3 with command-line arguments to automatically open specific FITS files, set display scaling, apply colormaps, or start directory polling:
 
 ```bash
-uv run python main.py [OPTIONS] [FILEPATH]
+uv run python main.py [OPTIONS] [FILEPATH ...]
 ```
 
 ### Options Reference
 
 | Flag | Description | Default | Example |
 | :--- | :--- | :--- | :--- |
-| `filepath` | Path to a 2D or 3D FITS file to load immediately upon launch | `None` | `uv run python main.py data.fits` |
+| `filepath ...` | One or more 2D or 3D FITS files to load immediately upon launch. Each opens in its own window | `None` | `uv run python main.py data.fits` |
 | `--collapsed` | Start with the collapsed (slab) view active instead of a single channel | `False` | `--collapsed` |
 | `--collapse-range` | Start collapsed over `ZMIN ZMAX` channels (implies `--collapsed`) | `None` | `--collapse-range 100 200` |
 | `--poll-dir` | Path to directory to automatically monitor for new FITS files | `None` | `--poll-dir ~/data/observing_run` |
@@ -26,6 +26,25 @@ uv run python main.py [OPTIONS] [FILEPATH]
 
 Scaling, colormap, rotation and extension are set from the **Display** menu and the
 controls under the image rather than from flags.
+
+### Comparing several cubes
+
+Naming more than one file opens one window per file, cascaded, with any display flags applied to
+all of them:
+
+```bash
+uv run python main.py s150531_a025002_Kn5_035.fits s150531_a026002_Kn5_035.fits --collapse-range 100 200
+```
+
+Each window is independent: its own scaling, colormap, collapse range and its own Depth Plot,
+Statistics and other tool windows. More windows can be opened at any time with **File ➔ New
+Window** (⌘N / Ctrl+N) or **File ➔ Open in New Window...**, and **File ➔ Close Window** (⌘W /
+Ctrl+W) closes one without quitting the application. The **Window** menu lists every open window
+with its tool windows grouped underneath, and **Bring All to Front** raises the whole set.
+
+Opening a file from Finder, or running `quicklook3 cube.fits` while the application is already
+open, loads it into the window you used most recently — so it replaces the view you were last
+looking at, rather than one hidden behind it. Use **Open in New Window...** to keep both.
 
 ---
 
@@ -172,3 +191,9 @@ uv run python main.py --poll-dir /path/to/raw_data
 ### Behavior
 - When a new file ending in `.fits` or `.fit` is created or moved into the watched directory, QuickLook 3 automatically loads the new dataset in real-time.
 - Active analytical tools (Depth Plot, Profile Cuts, Statistics) automatically refresh to reflect the newly detected file.
+- New frames load into **the window that started the watch**, and only that window. Opening
+  another window to look at something else will not divert the incoming frames to it.
+- A directory is watched by **one window at a time**. Pointing a second window at a directory
+  another window is already watching asks first, and then *moves* the watch — new frames start
+  appearing in the second window instead of the first. Two simultaneous watches would scan the
+  directory twice and load every frame twice, which matters on a busy NFS share.

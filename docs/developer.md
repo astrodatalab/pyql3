@@ -15,6 +15,7 @@ pyql3/
 ├── data/                     # Bundled spectral line lists (*.txt), see Packaging
 ├── gui/
 │   ├── main_window.py        # Main PySide6 application window & menu dispatch
+│   ├── window_manager.py     # The open windows, and where a new file opens
 │   ├── viewers/
 │   │   └── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
 │   ├── tools/
@@ -38,6 +39,19 @@ pyql3/
 ```
 
 Tool dialogs embed their own `pyqtgraph.PlotWidget` rather than sharing a plot viewer class.
+
+### One window per cube
+
+`MainWindow` is not a singleton. Every window owns its own `FitsReader`, `ImageViewer`, tool
+dialogs and `DirectoryPoller`, so two cubes can be compared side by side with an independent
+Depth Plot, scaling and colormap in each. Only the settings file, the window list and directory
+watches are shared across the process.
+
+!!! info "Canonical statement lives in `AGENTS.md`"
+    What is per-window, what is process-wide, where a file opened from Finder or a shell lands,
+    and what `closeEvent` has to release are written down once, in the "Multiple windows"
+    section of
+    [`AGENTS.md`](https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md).
 
 ---
 

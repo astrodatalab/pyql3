@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from pyql3 import get_resource_path
 from pyql3.gui.file_open import FileOpenHandler
 from pyql3.gui.main_window import MainWindow
+from pyql3.gui.window_manager import get_window_manager
 
 
 def install_cli():
@@ -38,7 +39,8 @@ def install_cli():
 
 def main():
     parser = argparse.ArgumentParser(description="QuickLook 3")
-    parser.add_argument("filename", nargs="?", help="Optional FITS file to load on startup")
+    parser.add_argument("filenames", nargs="*", metavar="filename",
+                        help="Optional FITS file(s) to load on startup; each opens in its own window")
     parser.add_argument("--collapsed", action="store_true", help="Start the app with collapsed view activated (defaults to full cube)")
     parser.add_argument("--collapse-range", nargs=2, type=int, metavar=('ZMIN', 'ZMAX'), help="Start collapsed over the specified range of channels (implies --collapsed)")
     parser.add_argument("--poll-dir", help="Directory to poll for new FITS files (initializes with the most recent one)")
@@ -74,29 +76,40 @@ def main():
         splash.show()
         app.processEvents()
         
+    manager = get_window_manager()
     window = MainWindow()
     window.show()
-    
+
     if args.poll_dir:
         poll_dir = os.path.expanduser(args.poll_dir)
         if os.path.isdir(poll_dir):
             window.poller.start_polling(poll_dir)
-            if not args.filename:
+            if not args.filenames:
                 files = glob.glob(os.path.join(poll_dir, '*.fits')) + glob.glob(os.path.join(poll_dir, '*.fit'))
                 if files:
-                    args.filename = max(files, key=os.path.getmtime)
-    
-    if args.filename:
-        window.load_fits(args.filename)
-        
-        # Only apply collapsed logic if a 3D cube was loaded successfully
-        if window.image_viewer.transposed_data is not None and window.image_viewer.transposed_data.ndim == 3:
-            if args.collapsed or args.collapse_range:
-                if args.collapse_range:
-                    window.image_viewer.txt_zmin.setText(str(args.collapse_range[0]))
-                    window.image_viewer.txt_zmax.setText(str(args.collapse_range[1]))
-                # This will trigger z_mode_changed which applies the range and updates the view
-                window.image_viewer.radio_range.setChecked(True)
+                    args.filenames = [max(files, key=os.path.getmtime)]
+
+    def apply_startup_view(win):
+        """Apply the collapse options, which only mean anything for a loaded 3D cube."""
+        if win.image_viewer.transposed_data is None or win.image_viewer.transposed_data.ndim != 3:
+            return
+        if args.collapsed or args.collapse_range:
+            if args.collapse_range:
+                win.image_viewer.txt_zmin.setText(str(args.collapse_range[0]))
+                win.image_viewer.txt_zmax.setText(str(args.collapse_range[1]))
+            # This will trigger z_mode_changed which applies the range and updates the view
+            win.image_viewer.radio_range.setChecked(True)
+
+    if args.filenames:
+        window.load_fits(args.filenames[0])
+        apply_startup_view(window)
+
+        # Several cubes side by side: one window each, cascaded, every one independent
+        # with its own tools. The display options above are applied to all of them.
+        for extra in args.filenames[1:]:
+            extra_window = manager.new_window()
+            extra_window.load_fits(extra)
+            apply_startup_view(extra_window)
 
     if args.catalog and os.path.isfile(args.catalog):
         hdu = args.catalog_hdu
@@ -106,8 +119,13 @@ def main():
         window._plot_catalog_dialog.load_catalog_file(args.catalog, hdu=hdu)
         
     # Anything Finder asked for outranks a file named on the command line, so this runs
-    # last: a queued open-document request is applied on top of args.filename.
-    file_open_handler.set_loader(window.load_fits)
+    # last: a queued open-document request is applied on top of args.filenames.
+    #
+    # The loader is the window manager's, not one window's `load_fits`. Binding to a
+    # single window meant that closing it left the handler calling a method on a deleted
+    # C++ object; routing sends the file to the window in use, or opens one if the user
+    # has closed them all.
+    file_open_handler.set_loader(manager.open_path)
 
     if splash:
         splash.finish(window)

@@ -8,27 +8,53 @@ from pyql3.core.fits_reader import FitsReader
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.base_tool import as_center
-from pyql3.services.poller import DirectoryPoller
+from pyql3.gui.window_manager import get_window_manager
+from pyql3.services.poller import DirectoryPoller, watcher_of
 from pyql3.gui.dialogs.polling import PollingDialog
-from pyql3.services.config import ConfigManager
-from PySide6.QtCore import QTimer
+from pyql3.services.config import get_config
+from PySide6.QtCore import QEvent, QTimer
 import pyql3
 from pyql3 import get_resource_path
 
 class MainWindow(QMainWindow):
+    """One window, one FITS file, one independent set of tools.
+
+    Several of these are open at once (**File -> New Window**). Each owns its own
+    `FitsReader`, `ImageViewer`, tool dialogs and directory poller, so nothing here is
+    shared between windows except the settings file -- see `get_config` for why that
+    one has to be a single object -- and the window list that decides where a file
+    opened from Finder or a shell lands (`pyql3.gui.window_manager`).
+    """
+
+    #: Cached tool dialogs, kept as attributes so a second Plot -> Depth Plot reuses
+    #: the open one. Listed once here because two things walk them: the display-unit
+    #: refresh, and the teardown in `closeEvent`. A new tool must be added to this
+    #: tuple or it will neither follow a DN/s <-> Total DN change nor close with its
+    #: window.
+    TOOL_DIALOG_ATTRS = (
+        '_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog',
+        '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog',
+        '_plot_catalog_dialog', '_surf_dialog', '_cont_dialog', '_rotate_dialog',
+        '_arith_dialog',
+    )
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("QuickLook 3")
-        
+
         # Set application icon
         icon_path = get_resource_path("pyql3/icon.png")
         self.setWindowIcon(QIcon(icon_path))
-        
+
         self.resize(600, 850)
-        
+
         self.fits_reader = FitsReader()
-        self.config = ConfigManager()
-        
+        self.config = get_config()
+
+        # Registered before anything can fail below, so a half-built window is still
+        # removed from the list when it is closed.
+        get_window_manager().register(self)
+
         # Setup Poller
         self.poller = DirectoryPoller(self)
         self.poller.file_detected.connect(self.on_file_detected)
@@ -66,10 +92,17 @@ class MainWindow(QMainWindow):
         # File Menu
         file_menu = menubar.addMenu("File")
         
+        new_window_action = file_menu.addAction("New Window")
+        new_window_action.setShortcut(QKeySequence.StandardKey.New)
+        new_window_action.triggered.connect(lambda checked=False: self.new_window())
+
         open_action = file_menu.addAction("Open...")
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_file)
-        
+
+        open_new_action = file_menu.addAction("Open in New Window...")
+        open_new_action.triggered.connect(self.open_file_in_new_window)
+
         self.recent_menu = file_menu.addMenu("Recent Files")
         self.update_recent_files_menu()
         
@@ -87,7 +120,11 @@ class MainWindow(QMainWindow):
         polling_action.triggered.connect(self.open_polling_config)
         
         file_menu.addSeparator()
-        
+
+        close_action = file_menu.addAction("Close Window")
+        close_action.setShortcut(QKeySequence.StandardKey.Close)
+        close_action.triggered.connect(self.close)
+
         exit_action = file_menu.addAction("Exit")
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.setMenuRole(QAction.MenuRole.QuitRole)
@@ -233,22 +270,47 @@ class MainWindow(QMainWindow):
         about_action.setMenuRole(QAction.MenuRole.AboutRole)
         about_action.triggered.connect(self.show_about)
 
-    def get_open_tool_windows(self):
-        """Returns a list of all visible top-level and child tool windows / dialogs excluding MainWindow itself."""
-        windows = []
+    @staticmethod
+    def _is_listable_window(widget, exclude=()):
+        """True for a widget the Window menu should offer to raise."""
+        if not isinstance(widget, QWidget) or widget in exclude:
+            return False
+        if not widget.isWindow() or not widget.isVisible():
+            return False
+        if isinstance(widget, QMenu) or widget.inherits("QMenu"):
+            return False
+        return bool(widget.windowTitle())
+
+    def own_tool_windows(self):
+        """This window's own visible tool dialogs, in the order Qt parented them.
+
+        Tools are constructed with the main window as their parent, so ownership is
+        exactly Qt's child relationship. Keeping the split per window is what lets the
+        menu say which cube a Depth Plot belongs to -- with several windows open, one
+        flat list of nine identically-titled dialogs is unusable.
+        """
+        return [w for w in self.findChildren(QWidget) if self._is_listable_window(w, exclude=(self,))]
+
+    @staticmethod
+    def orphan_tool_windows():
+        """Visible windows owned by no main window, so nothing drops out of the menu.
+
+        Nothing is expected here; it is a safety net for a dialog created without a
+        parent, which would otherwise be unreachable once it fell behind another window.
+        """
         app = QApplication.instance()
-        if app:
-            for w in app.topLevelWidgets():
-                if isinstance(w, QWidget) and w.isWindow() and w.isVisible() and w != self:
-                    if not isinstance(w, QMenu) and not w.inherits("QMenu") and w.windowTitle():
-                        if w not in windows:
-                            windows.append(w)
-        for w in self.findChildren(QWidget):
-            if w.isWindow() and w.isVisible() and w != self and w.windowTitle():
-                if not isinstance(w, QMenu) and not w.inherits("QMenu"):
-                    if w not in windows:
-                        windows.append(w)
-        return windows
+        if not app:
+            return []
+        mains = get_window_manager().windows()
+        owned = set()
+        for main in mains:
+            owned.update(main.findChildren(QWidget))
+        return [w for w in app.topLevelWidgets()
+                if MainWindow._is_listable_window(w, exclude=tuple(mains)) and w not in owned]
+
+    def get_open_tool_windows(self):
+        """Visible tool windows relevant to this main window (its own, plus orphans)."""
+        return self.own_tool_windows() + self.orphan_tool_windows()
 
     def bring_window_to_front(self, window):
         """Brings the specified window or dialog to front and focuses it."""
@@ -260,13 +322,49 @@ class MainWindow(QMainWindow):
             window.activateWindow()
 
     def bring_all_to_front(self):
-        """Brings MainWindow and all open tool windows / dialogs to front."""
+        """Brings every main window of this application, and their dialogs, to front."""
+        for main in get_window_manager().windows():
+            if main is not self:
+                self.bring_window_to_front(main)
+                for w in main.own_tool_windows():
+                    self.bring_window_to_front(w)
+        for w in self.orphan_tool_windows():
+            self.bring_window_to_front(w)
+        # This window last, so the menu the user just used ends up on top.
         self.bring_window_to_front(self)
-        for w in self.get_open_tool_windows():
+        for w in self.own_tool_windows():
             self.bring_window_to_front(w)
 
+    def _add_raise_action(self, menu, window, title):
+        act = menu.addAction(title)
+        act.setCheckable(True)
+        if window.isActiveWindow():
+            act.setChecked(True)
+        act.triggered.connect(lambda checked=False, target=window: self.bring_window_to_front(target))
+        return act
+
+    @staticmethod
+    def _disambiguated_titles(windows):
+        """Menu labels for `windows`, numbering repeats of the same title.
+
+        Two windows showing the same cube, or two Depth Plots, are otherwise
+        indistinguishable in the menu.
+        """
+        counts = {}
+        labels = []
+        for w in windows:
+            base = w.windowTitle() or type(w).__name__
+            counts[base] = counts.get(base, 0) + 1
+            labels.append(base if counts[base] == 1 else f"{base} #{counts[base]}")
+        return labels
+
     def update_window_menu(self):
-        """Populates the Window menu dynamically with all currently open windows and dialogs."""
+        """Populate the Window menu with every open window of this application.
+
+        With one main window this is the flat list it has always been. With several, each
+        window's tools are grouped under it, so it is clear which cube a given Depth Plot
+        or Statistics window is reading.
+        """
         if not hasattr(self, 'window_menu'):
             return
 
@@ -277,28 +375,37 @@ class MainWindow(QMainWindow):
 
         self.window_menu.addSeparator()
 
-        # Main window action
-        main_title = self.windowTitle() or "QuickLook 3"
-        main_act = self.window_menu.addAction(main_title)
-        main_act.setCheckable(True)
-        if self.isActiveWindow():
-            main_act.setChecked(True)
-        main_act.triggered.connect(lambda: self.bring_window_to_front(self))
+        mains = get_window_manager().windows()
+        if self not in mains:
+            mains = mains + [self]
+        main_labels = self._disambiguated_titles(mains)
 
-        open_wins = self.get_open_tool_windows()
-        if open_wins:
+        if len(mains) == 1:
+            self._add_raise_action(self.window_menu, self, main_labels[0] or "QuickLook 3")
+            tool_windows = self.get_open_tool_windows()
+            if tool_windows:
+                self.window_menu.addSeparator()
+                for w, label in zip(tool_windows, self._disambiguated_titles(tool_windows), strict=True):
+                    self._add_raise_action(self.window_menu, w, label)
+            return
+
+        for main, label in zip(mains, main_labels, strict=True):
+            tools = main.own_tool_windows()
+            if not tools:
+                self._add_raise_action(self.window_menu, main, label)
+                continue
+
+            submenu = self.window_menu.addMenu(label)
+            self._add_raise_action(submenu, main, "Bring to Front")
+            submenu.addSeparator()
+            for w, tool_label in zip(tools, self._disambiguated_titles(tools), strict=True):
+                self._add_raise_action(submenu, w, tool_label)
+
+        orphans = self.orphan_tool_windows()
+        if orphans:
             self.window_menu.addSeparator()
-            title_counts = {}
-            for w in open_wins:
-                base_title = w.windowTitle() or type(w).__name__
-                title_counts[base_title] = title_counts.get(base_title, 0) + 1
-                display_title = base_title if title_counts[base_title] == 1 else f"{base_title} #{title_counts[base_title]}"
-
-                act = self.window_menu.addAction(display_title)
-                act.setCheckable(True)
-                if w.isActiveWindow():
-                    act.setChecked(True)
-                act.triggered.connect(lambda checked=False, target=w: self.bring_window_to_front(target))
+            for w, label in zip(orphans, self._disambiguated_titles(orphans), strict=True):
+                self._add_raise_action(self.window_menu, w, label)
 
     def install_cli_tool(self):
         """Write a `quicklook3` launcher on PATH, so the app can be started like ds9.
@@ -365,10 +472,70 @@ class MainWindow(QMainWindow):
             f"<p><a href='https://github.com/astrodatalab/pyql3'>https://github.com/astrodatalab/pyql3</a></p>"
         )
 
+    FITS_FILE_FILTER = "FITS Files (*.fits *.fit *.fits.gz);;All Files (*)"
+
     def open_file(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Open FITS File", "", "FITS Files (*.fits *.fit *.fits.gz);;All Files (*)")
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open FITS File", "", self.FITS_FILE_FILTER)
         if filepath:
             self.load_fits(filepath)
+
+    def open_file_in_new_window(self):
+        """Load a file into a second window, leaving this one as it is."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Open FITS File in New Window", "", self.FITS_FILE_FILTER)
+        if filepath:
+            self.new_window(filepath)
+
+    def new_window(self, filepath=None):
+        """Open another independent main window, optionally with a file already loaded.
+
+        The new window gets its own reader, viewer, tools and poller; only the settings
+        file is shared. Returns the window so callers (and tests) can drive it.
+        """
+        window = get_window_manager().new_window(near=self)
+        if filepath:
+            window.load_fits(filepath)
+        return window
+
+    def changeEvent(self, event):
+        """Track which window was used last, for files that arrive without one.
+
+        A file double-clicked in Finder, or a `quicklook3 cube.fits` run while the
+        application is open, has no window attached to it and goes to the most recently
+        used one.
+        """
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            get_window_manager().touch(self)
+        super().changeEvent(event)
+
+    def closeEvent(self, event):
+        """Release everything this window owns before it goes away.
+
+        Each of these leaks per closed window if skipped: the poller keeps a
+        `PollingObserver` thread scanning a directory nobody is watching any more; tool
+        dialogs are top-level windows, so they stay on screen after their window is
+        gone (and, being visible windows, keep the application alive once the last main
+        window closes); and the open FITS handle keeps the file un-replaceable on
+        Windows, where an open file cannot be unlinked or overwritten.
+        """
+        self._closed = True
+        self.poller.stop_polling()
+        self.close_tool_dialogs()
+        self.fits_reader.close()
+        get_window_manager().unregister(self)
+        super().closeEvent(event)
+
+    def close_tool_dialogs(self):
+        """Close this window's tool dialogs, letting each drop its ROI from the viewer."""
+        for attr in self.TOOL_DIALOG_ATTRS:
+            dialog = getattr(self, attr, None)
+            if dialog is None:
+                continue
+            try:
+                dialog.close()
+            except RuntimeError:
+                # Already destroyed by Qt; nothing left to tidy.
+                pass
 
     def load_fits(self, filepath, ext=None, force=False, show_errors=True):
         """Load and display a FITS file.
@@ -548,7 +715,7 @@ class MainWindow(QMainWindow):
 
     def update_tools_for_unit(self):
         """Update any open tool dialogs when the display unit changes."""
-        for attr in ['_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog', '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog', '_plot_catalog_dialog', '_surf_dialog', '_cont_dialog', '_rotate_dialog', '_arith_dialog']:
+        for attr in self.TOOL_DIALOG_ATTRS:
             if hasattr(self, attr):
                 dialog = getattr(self, attr)
                 if dialog and dialog.isVisible():
@@ -665,8 +832,35 @@ class MainWindow(QMainWindow):
         self._strehl_dialog.show()
         self._strehl_dialog.raise_()
 
+    def confirm_watch_takeover(self, path):
+        """Ask before moving another window's directory watch to this one.
+
+        Only one window watches a given directory (see `pyql3.services.poller`), so this
+        is a real change of destination for every frame that arrives, not a duplicate
+        watch. Returning True lets `start_polling` take it over.
+        """
+        other = watcher_of(path)
+        if other is None or other is self.poller:
+            return True
+
+        owner = other.parent()
+        owner_title = owner.windowTitle() if owner is not None and hasattr(owner, 'windowTitle') else ""
+        owner_name = f'"{owner_title}"' if owner_title else "Another window"
+
+        reply = QMessageBox.question(
+            self,
+            "Directory Already Watched",
+            f"{owner_name} is already watching:\n{path}\n\n"
+            "A directory is watched by one window at a time, so new files appear in a "
+            "single place. Move the watch to this window?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def open_polling_config(self):
-        dialog = PollingDialog(self.poller, self, config=self.config)
+        dialog = PollingDialog(self.poller, self, config=self.config,
+                               confirm_takeover=self.confirm_watch_takeover)
         if dialog.exec():
             # Save the active polling dir to config if started
             if self.poller.watch_path:
@@ -683,6 +877,11 @@ class MainWindow(QMainWindow):
         self._attempt_auto_load(filepath, 0)
 
     def _attempt_auto_load(self, filepath, attempt):
+        # A retry is scheduled on a timer, so it can outlive the window it belongs to.
+        # Loading into a closed window -- or worse, warning from one -- is not wanted.
+        if getattr(self, '_closed', False):
+            return
+
         if self.load_fits(filepath, show_errors=False):
             return
 

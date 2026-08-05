@@ -1,13 +1,22 @@
 # To Do List
 
-- Allow the ability to spawn new windows
-- Look into a tabbed interface for multiple viewers 
+- Look into a tabbed interface for multiple viewers. The groundwork is the refactor multi-window
+  did not need: extract the document (`FitsReader` + `ImageViewer` + its tool registry) out of
+  `MainWindow` into a panel widget, so a window can hold several. The fiddly part is that the
+  display state currently lives as **Display** menu checkmarks, which would have to be re-synced
+  from the active tab on every tab switch.
+- Draw regions on the view like ds9 (circles, boxes, arrows, text) with YAML and ds9 `.reg`
+  save/load — planned in detail in [TODO_regions.md](TODO_regions.md)
 - Should be some way to reset the highlighting of rows in the plot catalog tool
 - Zenodo integration of release versions so the tool is citeable
-- Ability to parsh and load ds9 region files
-- Ability to draw arrows, circles, squares, and custom regions on images like ds9
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
 # DONE
+- Multiple cubes at once, one per window: **File ➔ New Window** / **Open in New Window...** /
+  **Close Window**, several filenames on the command line, and the Arithmetic result. Each window
+  owns its reader, viewer, display settings, tool dialogs and directory watch. Files arriving
+  without a window (Finder, `quicklook3` while running) go to the most recently used window, or
+  open a new one if none are left; a directory is watched by one window at a time, and moving a
+  watch asks first. The **Window** menu groups each window's tools under it.
 - Launch from a shell like ds9: **Help -> Install 'quicklook3' Command Line Tool...** (or `--install-cli`) writes a `quicklook3` launcher to /usr/local/bin or ~/.local/bin on macOS and Linux, with a quarantine guard for downloaded .app bundles. The menu action shows the exact path, the run command and the uninstall command, and installs only after confirmation. The macOS bundle also registers FITS document types, so Finder's Open With and double-click work.
 - Load FITS tables (binary or ASCII) in the Plot Catalog tool, with an extension chooser for multi-table files, `--catalog-hdu` on the command line, vector columns dropped, masked/undefined coordinates skipped, and photutils/SExtractor column names auto-detected.
 - Add the ability to overplot a spectral line list on the Depth Plot tool. Loaded from the data directory with default linelists and custom CSV support. Drawn as vertical dotted lines with line names anchored at the bottom, dynamically filtered by visible x-axis region.

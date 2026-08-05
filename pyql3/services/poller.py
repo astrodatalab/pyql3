@@ -20,6 +20,14 @@ Note that on NFS this is necessary but *not sufficient*: clients cache file attr
 look settled here. Stability decides *when to try*, never *whether the file is good* —
 the caller must treat a failed parse as "retry later", not "corrupt". `MainWindow`
 does exactly that.
+
+Why only one poller may watch a directory
+-----------------------------------------
+Each window owns a poller, and several windows are open at once. Two of them watching
+the same directory scan it twice and load every new frame twice, so `start_polling`
+takes the watch over from whoever holds it (`watcher_of`) instead of adding a second
+observer. Auto-loaded frames therefore land in exactly one window: the one that owns
+the watch.
 """
 
 import os
@@ -40,6 +48,27 @@ SETTLE_CHECKS = 2
 MAX_HOLD_TICKS = 8
 
 FITS_SUFFIXES = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fts.gz")
+
+#: Canonical directory path -> the one `DirectoryPoller` watching it. See `watcher_of`.
+_watches = {}
+
+
+def _watch_key(path):
+    """Canonical form of a directory path, so two spellings of one directory collide."""
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def watcher_of(path):
+    """The poller already watching `path`, or None. Compares canonical paths.
+
+    A directory is watched by at most one poller per process, and this is how a caller
+    finds out who holds a watch before taking it over. Two windows watching one
+    directory would each run a `PollingObserver` over it, doubling the scan traffic on
+    a share whose scan cost already grows with the number of files in the directory,
+    and would then *both* load every new frame -- the same cube read twice, displayed
+    twice, and two "could not be read" dialogs when a frame is still arriving.
+    """
+    return _watches.get(_watch_key(path))
 
 
 def is_fits_path(path):
@@ -98,6 +127,8 @@ class DirectoryPoller(QObject):
         super().__init__(parent)
         self.observer = None
         self.watch_path = None
+        #: Canonical path this poller holds in `_watches`, or None when not watching.
+        self._watch_key = None
         self._interval = float(interval)
 
         # path -> [last_signature, consecutive_stable_count]
@@ -131,12 +162,25 @@ class DirectoryPoller(QObject):
     # ----------------------------------------------------------------- control
 
     def start_polling(self, path):
+        """Watch `path`, taking the watch over from another poller if one holds it.
+
+        Claiming the directory is done here rather than left to the caller so the
+        one-watch-per-directory rule holds however polling is started -- the menu, the
+        `--poll-dir` flag, or a test. The GUI asks the user before taking a watch away
+        from another window; see `MainWindow.confirm_watch_takeover`.
+        """
         self.stop_polling()
 
         if not path or not os.path.isdir(path):
             return False
 
+        previous = watcher_of(path)
+        if previous is not None and previous is not self:
+            previous.stop_polling()
+
         self.watch_path = path
+        self._watch_key = _watch_key(path)
+        _watches[self._watch_key] = self
         handler = FITSFileHandler(self._candidate_seen.emit)
         self.observer = PollingObserver(timeout=self._interval)
         self.observer.schedule(handler, path, recursive=False)
@@ -145,6 +189,13 @@ class DirectoryPoller(QObject):
         return True
 
     def stop_polling(self):
+        if self._watch_key is not None:
+            # Only drop the registry entry if it is still ours: a poller that was
+            # already taken over must not unregister its successor.
+            if _watches.get(self._watch_key) is self:
+                del _watches[self._watch_key]
+            self._watch_key = None
+
         self._timer.stop()
         self._pending.clear()
         self._held_path = None
