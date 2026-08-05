@@ -75,6 +75,34 @@ Run the application through `uv`. It will automatically fetch dependencies and l
 uv run python main.py
 ```
 
+### 3. Optional: a `quicklook3` command, like `ds9`
+
+To open FITS files from any directory with one word, install a launcher on your `PATH` — from
+the menu bar (**Help ➔ Install 'quicklook3' Command Line Tool...**) or from a terminal:
+
+```bash
+uv run python main.py --install-cli     # source checkout
+/Applications/QuickLook3.app/Contents/MacOS/QuickLook3 --install-cli   # installed macOS bundle
+/opt/QuickLook3/QuickLook3 --install-cli                              # unpacked Linux build
+
+quicklook3 cube.fits --collapse-range 100 200
+```
+
+The menu action shows exactly which file it will create, what that file will run, how to run
+the command afterwards, and how to remove it — and installs nothing until you click
+**Install**. The `--install-cli` flag treats itself as the confirmation and prints the same
+summary after installing.
+
+It installs into `/usr/local/bin` when writable, otherwise `~/.local/bin`, and gives you the
+`export PATH=...` line if that directory is not already on your `PATH`. To uninstall, delete
+the file (`rm ~/.local/bin/quicklook3`); nothing else is written. macOS and Linux only.
+
+On macOS, open a freshly downloaded `QuickLook3.app` from Finder once (or run
+`xattr -cr /Applications/QuickLook3.app`) before using `quicklook3`: macOS kills a quarantined app
+started from a shell without printing anything. The installed launcher detects this and tells
+you the fix. The macOS bundle also registers as a viewer for `.fits`, `.fit`, `.fts` and
+`.fz`, so it appears in Finder's **Open With** menu and accepts files dropped on its icon.
+
 ## Usage
 
 ### Building a Standalone Application

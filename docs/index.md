@@ -37,6 +37,25 @@ Download the standalone compiled application for your operating system below. No
     xattr -cr /path/to/QuickLook3.app
     ```
 
+!!! tip "Launching from the terminal, and opening FITS files from Finder"
+    After dragging `QuickLook3.app` to your Applications folder, choose
+    **Help ➔ Install 'quicklook3' Command Line Tool...** to get a `quicklook3` command on your `PATH`:
+
+    ```bash
+    quicklook3 cube.fits --collapse-range 100 200
+    ```
+
+    The dialog shows exactly where the command will be installed and how to remove it
+    again (`rm` the one file it creates), and nothing is written until you agree.
+
+    The bundle also registers as a viewer for `.fits`, `.fit`, `.fts` and `.fz`, so
+    QuickLook 3 shows up in Finder's **Open With** menu.
+
+    One ordering note: open the app from Finder at least once (or run the `xattr -cr` command
+    above) before using `quicklook3`. macOS kills a freshly downloaded, quarantined app with no
+    message when it is started from a shell. See the
+    [Command Line Guide](cli.md#launching-like-ds9-the-quicklook3-command) for details.
+
 ---
 
 ## ✨ Key Features

@@ -1,5 +1,6 @@
 import os
-from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
+import sys
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QMenu, QFileDialog, 
                                QMessageBox, QApplication)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
@@ -220,6 +221,14 @@ class MainWindow(QMainWindow):
 
         # Help Menu
         help_menu = menubar.addMenu("Help")
+
+        # Windows has no equivalent single-directory-on-PATH convention, so the action is
+        # simply absent there rather than present and always failing.
+        if not sys.platform.startswith('win'):
+            install_cli_action = help_menu.addAction("Install 'quicklook3' Command Line Tool...")
+            install_cli_action.triggered.connect(self.install_cli_tool)
+            help_menu.addSeparator()
+
         about_action = help_menu.addAction("About QuickLook 3")
         about_action.setMenuRole(QAction.MenuRole.AboutRole)
         about_action.triggered.connect(self.show_about)
@@ -290,6 +299,59 @@ class MainWindow(QMainWindow):
                 if w.isActiveWindow():
                     act.setChecked(True)
                 act.triggered.connect(lambda checked=False, target=w: self.bring_window_to_front(target))
+
+    def install_cli_tool(self):
+        """Write a `quicklook3` launcher on PATH, so the app can be started like ds9.
+
+        The running application knows its own location, which is why this belongs in the
+        GUI: a user who installed from the .dmg never has to work out where the bundle
+        ended up or which directory is on their PATH.
+
+        Nothing is written until the user has seen the exact path and agreed to it. A menu
+        item that silently drops an executable somewhere on PATH is not something anyone
+        should have to discover after the fact.
+        """
+        from pyql3.services.cli_install import CliInstallError, describe_plan, install, plan
+
+        try:
+            proposed = plan()
+        except CliInstallError as exc:
+            QMessageBox.warning(self, "Install Command Line Tool", str(exc))
+            return
+
+        if not self.confirm_cli_install(proposed):
+            return
+
+        try:
+            path = install(plan_=proposed)
+        except CliInstallError as exc:
+            QMessageBox.warning(self, "Install Command Line Tool", str(exc))
+            return
+
+        QMessageBox.information(
+            self, "Install Command Line Tool",
+            f"Installed the '{path.name}' command.\n\n"
+            + "\n".join(describe_plan(proposed, done=True)))
+
+    def confirm_cli_install(self, proposed):
+        """Show what will be written and return True only if the user accepts.
+
+        Split out so the decision can be driven in tests, and so this method stays purely
+        about presenting the plan.
+        """
+        from pyql3.services.cli_install import describe_plan
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Install Command Line Tool")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f"Install the '{proposed.name}' command line tool?")
+        # Plain text, not rich: paths and shell lines must not be re-interpreted as markup
+        box.setInformativeText("\n".join(describe_plan(proposed)))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Ok).setText("Install")
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+
+        return box.exec() == QMessageBox.StandardButton.Ok
 
     def show_about(self):
         QMessageBox.about(

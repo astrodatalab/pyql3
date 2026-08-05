@@ -6,7 +6,35 @@ from PySide6.QtWidgets import QApplication, QSplashScreen
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtCore import Qt
 from pyql3 import get_resource_path
+from pyql3.gui.file_open import FileOpenHandler
 from pyql3.gui.main_window import MainWindow
+
+
+def install_cli():
+    """Handle `--install-cli`, printing what happened. Returns a process exit code.
+
+    This runs before any `QApplication` exists so that the frozen application can act as
+    its own installer: a user who dragged QuickLook3.app out of the .dmg can run
+    `/Applications/QuickLook3.app/Contents/MacOS/QuickLook3 --install-cli` and get a
+    working `quicklook3` command without a separate installer script.
+    """
+    from pyql3.services.cli_install import CliInstallError, describe_plan, install, plan
+
+    try:
+        proposed = plan()
+        path = install(plan_=proposed)
+    except CliInstallError as exc:
+        print(f"quicklook3: {exc}", file=sys.stderr)
+        return 1
+
+    # The flag is the consent here, so this reports rather than asks -- but it prints the
+    # same lines the GUI shows beforehand, including how to undo it. The menu action, where
+    # nothing was typed deliberately, confirms first.
+    print(f"Installed the '{path.name}' command.")
+    for line in describe_plan(proposed, done=True):
+        print(line)
+    return 0
+
 
 def main():
     parser = argparse.ArgumentParser(description="QuickLook 3")
@@ -16,12 +44,23 @@ def main():
     parser.add_argument("--poll-dir", help="Directory to poll for new FITS files (initializes with the most recent one)")
     parser.add_argument("--catalog", help="Catalog file (.csv, .txt, .dat, or a FITS table) to load into the Plot Catalog tool on startup")
     parser.add_argument("--catalog-hdu", help="Table extension of a FITS catalog, as an index or EXTNAME (default: the first table extension)")
+    parser.add_argument("--install-cli", action="store_true", help="Install a 'quicklook3' launcher on PATH so QuickLook 3 can be started from a shell, then exit")
     args = parser.parse_args()
+
+    if args.install_cli:
+        sys.exit(install_cli())
 
     app = QApplication(sys.argv)
     app.setApplicationName("QuickLook3")
     app.setApplicationDisplayName("QuickLook3")
-    
+
+    # Catch Finder "open with" requests, which arrive as events rather than argv. Installed
+    # before the window exists because a cold launch delivers the event first; the handler
+    # queues until set_loader() below.
+    file_open_handler = FileOpenHandler(app)
+    app.installEventFilter(file_open_handler)
+
+
     # Set the dock/application icon (especially important for macOS)
     icon_path = get_resource_path("pyql3/icon.png")
     app.setWindowIcon(QIcon(icon_path))
@@ -66,6 +105,10 @@ def main():
         window.open_plot_catalog()
         window._plot_catalog_dialog.load_catalog_file(args.catalog, hdu=hdu)
         
+    # Anything Finder asked for outranks a file named on the command line, so this runs
+    # last: a queued open-document request is applied on top of args.filename.
+    file_open_handler.set_loader(window.load_fits)
+
     if splash:
         splash.finish(window)
         

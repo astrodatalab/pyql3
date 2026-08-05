@@ -41,6 +41,10 @@ exe = EXE(
     upx=True,
     console=False,
     disable_windowed_traceback=False,
+    # Deliberately off. argv_emulation intercepts macOS open-document Apple Events before
+    # Qt starts and rewrites sys.argv from them; it only covers the launching document and
+    # has a history of hanging. pyql3.gui.file_open.FileOpenHandler handles the event
+    # inside Qt instead, which also catches files opened while the app is already running.
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
@@ -60,5 +64,25 @@ app = BUNDLE(
     coll,
     name='QuickLook3.app',
     icon='pyql3/icon.png',
-    bundle_identifier=None,
+    # A real reverse-DNS identifier: with PyInstaller's default of None the Info.plist
+    # gets CFBundleIdentifier = 'QuickLook3', which macOS accepts but which makes
+    # `open -b`, LaunchServices registration, and per-app settings unreliable.
+    bundle_identifier='edu.ucla.astro.pyql3',
+    info_plist={
+        # Registers QuickLook3 as an opener for FITS files, which is what puts it in
+        # Finder's "Open With" menu and allows a double-click to launch it with the file.
+        # LaunchServices matches only the final extension component, so `.fits.gz` cannot
+        # be claimed here without also claiming every other `.gz`.
+        'CFBundleDocumentTypes': [
+            {
+                'CFBundleTypeName': 'FITS Image',
+                'CFBundleTypeRole': 'Viewer',
+                'CFBundleTypeExtensions': ['fits', 'fit', 'fts', 'fz'],
+                # Alternate, not Owner: astronomers usually have another FITS viewer
+                # installed and it should not be displaced without being asked.
+                'LSHandlerRank': 'Alternate',
+            },
+        ],
+        'NSHighResolutionCapable': True,
+    },
 )

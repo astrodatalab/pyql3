@@ -177,7 +177,9 @@ uv run pytest -v
 - `tests/test_menu_actions.py`: The `QAction.triggered` bool-vs-coordinate slot hazard and `as_center()` coercion (see the Qt slot gotcha in `AGENTS.md`).
 - `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, and `DirectoryPoller` service.
 - `tests/test_poller.py`: Settle detection for files still being written, burst coalescing, and the auto-load retry/backoff path.
-- `tests/test_packaging_assets.py`: Bundled line lists and `cmcrameri` colormaps are present, and `QuickLook3.spec` registers every asset.
+- `tests/test_packaging_assets.py`: Bundled line lists and `cmcrameri` colormaps are present, and `QuickLook3.spec` registers every asset, the bundle identifier, and the FITS document types.
+- `tests/test_cli_install.py`: The `quicklook3` launcher — side-effect-free planning, argument forwarding and quoting, venv interpreter preservation, quarantine guard, disk-image and foreign-file refusals, install directory choice.
+- `tests/test_file_open.py`: Finder open-document routing (queueing before the window exists, real `QFileOpenEvent` delivery) and the Install Command Line Tool menu action, including that declining the confirmation writes nothing.
 
 ### Tests that need real instrument data
 

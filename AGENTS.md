@@ -154,6 +154,48 @@ Windows. Always build with `uv run pyinstaller --noconfirm QuickLook3.spec` — 
   `libxcb-cursor0`, `libxkbcommon-x11-0`, `libdbus-1-3`, `xvfb`) and runs pytest under
   `xvfb-run --auto-servernum` with `QT_QPA_PLATFORM=offscreen`.
 
+### Desktop and shell integration (macOS)
+
+**`argv_emulation` stays `False`.** Finder does not pass a double-clicked file in `argv`; it
+sends an open-document Apple Event that Qt delivers as `QEvent.Type.FileOpen`.
+`pyql3/gui/file_open.py` handles that event — `main.py` installs it on the `QApplication`
+*before* `MainWindow` exists, because a cold launch delivers the event first, and the handler
+queues paths until `set_loader()` arrives. PyInstaller's `argv_emulation` is the competing
+mechanism: it rewrites `sys.argv` from the same event, covers only the launching document,
+and has a history of hanging. Turning it on duplicates the work and breaks the queue.
+
+The `BUNDLE` call also owns two Finder-visible facts: a reverse-DNS `bundle_identifier`
+(PyInstaller's `None` default writes the bare string `QuickLook3`, which makes `open -b` and
+LaunchServices registration unreliable) and `CFBundleDocumentTypes`, which is what puts
+QuickLook 3 in the **Open With** menu. `.fits.gz` cannot be listed there — LaunchServices
+matches only the final extension, so claiming it means claiming every `.gz`.
+
+`pyql3/services/cli_install.py` writes the `quicklook3` launcher (**Help ➔ Install 'quicklook3' Command
+Line Tool...**, or `--install-cli`).
+
+**The menu action must not install anything before the user agrees.** `plan()` computes the
+target path and validates every precondition without touching the filesystem; the dialog is
+rendered from `describe_plan()`, which states the file to be created, what it will run, how
+to run the command, and the `rm` that undoes it; only then is `install(plan_=...)` called
+with the very plan that was shown. Keep planning side-effect-free — a menu item that drops an
+executable onto `PATH` on a single click, before saying where, is not acceptable. `--install-cli`
+skips the prompt because typing the flag is the consent, but prints the same summary.
+
+Any test that calls `MainWindow.install_cli_tool()` must stub `confirm_cli_install`, or the
+real modal dialog blocks the suite forever.
+
+Three further constraints were each learned from a real failure, so do not simplify them away:
+
+- **Never `resolve()` `sys.executable`.** A venv's `python` is a symlink to the base
+  interpreter; a launcher pointing at the resolved path runs an interpreter with none of the
+  project's dependencies and dies on `import PySide6`.
+- **A quarantined bundle is killed with SIGKILL and no output**, so a launcher for a
+  downloaded `.app` embeds an `xattr -p com.apple.quarantine` check. Without it, `quicklook3` looks
+  like it does nothing at all.
+- **Read-only alone does not mean "disk image".** Since Big Sur the macOS system volume is
+  sealed, so `/bin` and friends report read-only while being permanent. Refusing to install
+  requires read-only *and* a path under a mount root (`/Volumes`, `/media`, ...).
+
 ### Release workflow invariants
 
 Three properties of `.github/workflows/release.yml` are deliberate. Preserve them:

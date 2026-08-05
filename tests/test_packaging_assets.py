@@ -40,3 +40,24 @@ def test_pyinstaller_spec_includes_all_assets():
     content = spec_path.read_text()
     assert "pyql3/data" in content, "QuickLook3.spec missing pyql3/data entry"
     assert "cmcrameri" in content, "QuickLook3.spec missing cmcrameri collection"
+
+
+def test_macos_bundle_declares_an_identifier_and_fits_documents():
+    """The .app has to be identifiable and has to claim FITS files.
+
+    Without `CFBundleDocumentTypes` QuickLook3 never appears in Finder's "Open With" menu,
+    and with PyInstaller's default `bundle_identifier=None` the identifier is the bare
+    string `QuickLook3`, which makes `open -b` and LaunchServices registration unreliable.
+    """
+    content = pathlib.Path("QuickLook3.spec").read_text()
+
+    assert "bundle_identifier=None" not in content, "the .app has no real bundle identifier"
+    assert "bundle_identifier='edu.ucla.astro.pyql3'" in content
+
+    assert "CFBundleDocumentTypes" in content, "the .app does not claim FITS documents"
+    for extension in ("'fits'", "'fit'", "'fts'"):
+        assert extension in content, f"FITS extension {extension} not claimed by the bundle"
+
+    # Finder's open-document event is handled inside Qt (see pyql3/gui/file_open.py), so
+    # PyInstaller's argv rewriting must stay off; the two mechanisms conflict.
+    assert "argv_emulation=False" in content
