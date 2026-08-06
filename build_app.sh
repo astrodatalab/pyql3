@@ -20,6 +20,11 @@ found_cmc = list(dist_dir.glob('**/cmcrameri*')) + list(dist_dir.glob('**/cmc*')
 if not found_cmc:
     print('ERROR: No cmcrameri assets found in dist build artifact!')
     sys.exit(1)
+# ds9 region support: seven compiled extensions PyInstaller only picks up via collect_all.
+found_regions = list(dist_dir.glob('**/regions/_geometry/*'))
+if not found_regions:
+    print('ERROR: No regions/_geometry extensions found in dist build artifact!')
+    sys.exit(1)
 print('ALL PACKAGED ASSETS VERIFIED SUCCESSFULLY!')
 "
 

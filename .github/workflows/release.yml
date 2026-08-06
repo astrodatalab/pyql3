@@ -96,6 +96,14 @@ jobs:
           if not found_cmc:
               print('ERROR: No cmcrameri assets found in dist build artifact!')
               sys.exit(1)
+
+          # ds9 region support: seven compiled extensions that PyInstaller only picks up
+          # via collect_all('regions') in the spec.
+          found_regions = list(dist_dir.glob('**/regions/_geometry/*'))
+          print('Found regions extensions in dist:', [str(p) for p in found_regions])
+          if not found_regions:
+              print('ERROR: No regions/_geometry extensions found in dist build artifact!')
+              sys.exit(1)
           print('ALL PACKAGED ASSETS VERIFIED SUCCESSFULLY IN DIST BUILD!')
           "
 

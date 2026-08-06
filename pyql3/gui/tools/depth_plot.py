@@ -980,19 +980,13 @@ class DepthPlotDialog(BaseToolDialog):
                     cunit = "µm"
                 
                 cx, cy = x0 + w/2.0, y0 + h/2.0
-                
-                # Un-flip and un-rotate to get coords in transposed_data space
-                k = self.image_viewer.rot_angle // 90
-                for _ in range((4 - k) % 4):
-                    cx, cy = cy, x_len - 1 - cx
-                
-                if self.image_viewer.flip:
-                    cx = x_len - 1 - cx
-                
-                current_x_axis = getattr(self.image_viewer, 'current_x_axis', 'AXIS 3')
-                current_y_axis = getattr(self.image_viewer, 'current_y_axis', 'AXIS 2')
-                x_idx = int(current_x_axis.split()[-1]) - 1
-                y_idx = int(current_y_axis.split()[-1]) - 1
+
+                # Un-flip and un-rotate to get coords in transposed_data space. This used to
+                # be inlined here with one axis length used for both axes, which put the
+                # lookup at the wrong pixel for a rotated non-square plane (BUGS.md B13).
+                cx, cy = self.image_viewer.display_to_orig(cx, cy)
+
+                x_idx, y_idx = self.image_viewer.display_axis_indices()
                     
                 fixed_coords = np.zeros((z_len, wcs.naxis))
                 if wcs.naxis > max(x_idx, y_idx):

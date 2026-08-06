@@ -887,6 +887,10 @@ boxes corrected and a fully finite render.
 
 ## B13. Depth Plot un-rotation uses one axis length for both axes
 
+- **Status:** ✅ FIXED (with B14) — `depth_plot.py` now calls
+  `ImageViewer.display_to_orig()`, covered by
+  `tests/test_coords.py::test_the_old_depth_plot_un_rotation_was_wrong_for_non_square_planes`,
+  which keeps the old arithmetic verbatim and asserts that it disagreed
 - **Severity:** low (currently invisible)
 - **File:** `pyql3/gui/tools/depth_plot.py:983-990`
 
@@ -913,6 +917,9 @@ single shared `display_to_orig()` / `orig_to_display()` pair (see **B14**).
 
 ## B14. Coordinate-transform logic is duplicated three times
 
+- **Status:** ✅ FIXED — extracted to `pyql3/core/coords.py` with
+  `ImageViewer.orig_to_display()` / `.display_to_orig()` as adapters; all three call sites
+  now go through them. Covered by `tests/test_coords.py` (181 cases)
 - **Severity:** low (maintenance; source of B13)
 - **Files:** `image_viewer.py:1204-1219`, `plot_catalog.py:18-40`, `depth_plot.py:983-990`
 
@@ -922,6 +929,20 @@ times, with three different levels of correctness. Extract
 `plot_catalog` version is the correct one) and have all three call sites use them. Add a
 round-trip property test over `rot_angle ∈ {0, 90, 180, 270} × flip ∈ {False, True}` on a
 non-square array.
+
+### Fix
+`pyql3/core/coords.py` holds the arithmetic as pure functions, so it is tested against the
+production transform itself: `ImageViewer.apply_spatial_transforms()` reads only
+`self.rot_angle` and `self.flip`, so the tests call it unbound against a stub, transform a
+labelled 5×3 array, and assert the mapper reports where each label actually went — every
+pixel, all eight flip × rotation combinations. A round-trip test alone would not have caught
+B13, since both directions can be wrong together.
+
+The module also provides `orig_angle_to_display()` (needed for a box's position angle and an
+arrow's heading, see `TODO_regions.md`) and named helpers for the FITS 1-based /
+numpy 0-based / pyqtgraph centre-at-`i+0.5` conventions that meet in this code.
+
+Writing the angle mapping is what turned up **B20**.
 
 ---
 
@@ -1173,6 +1194,77 @@ only derived it from the sharing flags that produced B18.
 Option 2 is the simplest defensible design and the reopen cost is measured to be trivial;
 the question is whether preserving unsaved header edits across an extension switch is worth
 the Windows exposure.
+
+---
+
+## B20. Position-angle compass mirrors the rotation instead of the array
+
+- **Status:** ✅ FIXED — the three copies now call
+  `ImageViewer.north_east_display_angles()`, covered by `tests/test_position_angle.py`
+  (49 cases; nothing covered the compass before)
+- **Severity:** medium (the N/E compass points the wrong way, and it is what a user checks
+  orientation against)
+- **Files:** `image_viewer.py:1229-1234` (`toggle_position_angle`),
+  `rotate.py:109-111` (the "North Angle" readout), `rotate.py:147-149`
+  (`on_north_up_clicked`) — the same three lines in three places
+
+### Root cause
+The display pipeline is: flip the array (`np.flip`), then rotate the array (`np.rot90`), then
+rotate the *ImageItem* by `view_rotation` with a `QTransform`. The compass composes those in a
+different order:
+
+```python
+theta_n_vis = (theta_n_base + self.rot_angle + self.view_rotation) % 360.0
+if self.flip:
+    theta_n_vis = (180.0 - theta_n_vis) % 360.0     # mirror applied last, to everything
+```
+
+A flip about X maps a direction `θ` to `180 - θ`, and each 90° step adds 90°, so the
+data-consistent value is `(180 - θ) + 90k` — the mirror belongs *before* the rotation terms,
+not around them. Mirroring the whole sum also mirrors `view_rotation`, which is applied to the
+already-flipped array by a transform on the ImageItem and so must not be mirrored at all. One
+ordering error, two symptoms. Note the arrows are added with `getView().addItem()` rather than
+parented to the ImageItem, so including `view_rotation` in the angle is itself correct.
+
+With `flip` off every combination agrees, which is why this has gone unnoticed.
+
+### Symptom
+North for `theta_n_base = 90°`, comparing `coords.orig_angle_to_display` (verified against
+`apply_spatial_transforms` in `tests/test_coords.py`) with what the compass draws:
+
+| flip | rot_angle | view_rotation | correct | drawn |
+|------|-----------|---------------|---------|-------|
+| off  | any       | any           | —       | agrees |
+| on   | 0         | 0             | 90°     | 90° |
+| on   | 90        | 0             | 180°    | **0°** |
+| on   | 270       | 0             | 0°      | **180°** |
+| on   | 0         | 30            | 120°    | **60°** |
+| on   | 180       | 30            | 300°    | **240°** |
+
+So with a horizontal flip and a 90°/270° rotation the N and E arrows point exactly backwards,
+and with a flip and any view rotation they rotate the wrong way. **North Up** inherits it:
+`on_north_up_clicked` solves for `view_rot` with the same expression, so with flip on it
+settles on an orientation that is not north up.
+
+### Fix
+`ImageViewer.north_east_display_angles(include_view_rotation=True)` is now the only place the
+composition happens: `coords.orig_angle_to_display()` for the array transforms, then
+`view_rotation` added outside the mirror. `toggle_position_angle` and both `rotate.py` sites
+call it; `on_north_up_clicked` passes `include_view_rotation=False`, which is the only reason
+it needed its own expression before.
+
+Tested geometrically rather than by restating the formula: North is a direction in orig space,
+so a step from the centre toward North is two orig points, and the arrows must follow where
+those points land on screen (`coords.orig_to_display`, itself pinned against
+`apply_spatial_transforms` in `tests/test_coords.py`). An independent anchor asserts that with
+no transforms at all the drawn angle is simply the base angle.
+
+The tests were checked against the bug: restoring the old expression fails 19 of them, and
+**every failure is a `flip=True` case** — with `view_rotation=0` at `rot_angle` 0 and 180 still
+passing, matching the table above. `test_a_flip_with_a_quarter_turn_used_to_point_backwards`
+and `test_a_flip_with_a_view_rotation_used_to_turn_the_wrong_way` keep the old expression
+verbatim and assert it was 180° (respectively twice the view rotation) out, so the two symptoms
+are recorded rather than described.
 
 ---
 

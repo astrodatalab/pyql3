@@ -98,18 +98,14 @@ class RotateDialog(BaseToolDialog):
             self.btn_north_up.setEnabled(False)
             return
 
-        theta_n_base, _, is_wcs = self.image_viewer.get_north_angle_base()
-        if not is_wcs or theta_n_base is None:
+        # Angle of North as drawn, transforms composed in the display's own order (B20)
+        theta_n_vis, _, is_wcs = self.image_viewer.north_east_display_angles()
+        if not is_wcs:
             self.lbl_pa.setText("North Angle: No WCS / PA info")
             self.btn_north_up.setEnabled(False)
             return
 
         self.btn_north_up.setEnabled(True)
-
-        # Compute current visual angle of North
-        theta_n_vis = (theta_n_base + self.image_viewer.rot_angle + self.image_viewer.view_rotation) % 360.0
-        if self.image_viewer.flip:
-            theta_n_vis = (180.0 - theta_n_vis) % 360.0
 
         # Offset from UP (+Y, 90.0 deg)
         offset = ((theta_n_vis - 90.0 + 180.0) % 360.0) - 180.0
@@ -140,14 +136,11 @@ class RotateDialog(BaseToolDialog):
         if self.image_viewer is None:
             return
 
-        theta_n_base, _, is_wcs = self.image_viewer.get_north_angle_base()
-        if not is_wcs or theta_n_base is None:
+        # Angle of North after the array flip and rotation, before any view rotation
+        theta_n_array, _, is_wcs = self.image_viewer.north_east_display_angles(
+            include_view_rotation=False)
+        if not is_wcs:
             return
-
-        # Current angle of North after array rotation & flip (excluding view_rotation)
-        theta_n_array = (theta_n_base + self.image_viewer.rot_angle) % 360.0
-        if self.image_viewer.flip:
-            theta_n_array = (180.0 - theta_n_array) % 360.0
 
         # We want (theta_n_array + view_rot) == 90.0 (straight UP)
         target_view_rot = ((90.0 - theta_n_array + 180.0) % 360.0) - 180.0

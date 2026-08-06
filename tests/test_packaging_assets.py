@@ -40,6 +40,9 @@ def test_pyinstaller_spec_includes_all_assets():
     content = spec_path.read_text()
     assert "pyql3/data" in content, "QuickLook3.spec missing pyql3/data entry"
     assert "cmcrameri" in content, "QuickLook3.spec missing cmcrameri collection"
+    # `regions` ships compiled `_geometry` extensions that PyInstaller does not find from the
+    # imports alone, so ds9 region support silently breaks in a bundle without this.
+    assert "collect_all('regions')" in content, "QuickLook3.spec missing regions collection"
 
 
 def test_macos_bundle_declares_an_identifier_and_fits_documents():

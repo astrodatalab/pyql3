@@ -159,6 +159,22 @@ picks the default X-axis by sniffing whether `CTYPE1` contains `RA`.
 The view supports rotation and flips (N up, E left); when mapping a screen coordinate back to
 a numpy index or WCS position, apply the inverse transforms.
 
+**That mapping lives in exactly one place: `pyql3/core/coords.py` (CRITICAL).** Use
+`ImageViewer.orig_to_display()` / `.display_to_orig()`, or the pure functions behind them —
+never re-derive the flip/`rot90` arithmetic inline. It was written three times before it was
+written once, at three different levels of correctness, and the odd one out silently used one
+axis length for both axes (`BUGS.md` B13/B14). `coords.orig_angle_to_display()` does the same
+for directions, which a box's position angle or an arrow's heading needs: a flip maps `θ` to
+`180 - θ` and each 90° step adds 90°, **in that order**, and `view_rotation` is added *after*
+both because it transforms the already-flipped array. Composing that differently was `BUGS.md`
+B20 — three copies that pointed the N/E compass backwards under a flip. Angles on screen come
+from `ImageViewer.north_east_display_angles()`; do not re-derive them either.
+
+"orig" means `transposed_data` indices, i.e. the coordinate along whichever FITS axis the AXIS
+1/2/3 combos currently map to X or Y — that is what a WCS lookup wants. It is *not* `raw_data`
+axis order. View rotation needs no arithmetic at all: `apply_view_rotation()` is a `QTransform`
+on the ImageItem, so anything parented to the image inherits it.
+
 ### Qt slot gotcha
 
 `QAction.triggered` is `triggered(bool checked=False)`, and PySide6 picks that overload for

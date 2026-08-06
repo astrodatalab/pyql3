@@ -1,6 +1,9 @@
 # Plan: ds9-style regions (circle, box, arrow, text)
 
-Status: **planned, not started.** Written 2026-08-05 against commit `e2be099`.
+Status: **Phases 0-2 done; Phases 3-6 planned.** Written 2026-08-05 against commit `e2be099`.
+
+Remaining: Phase 3 (the interactive layer), Phase 4 (the Region menu), Phase 5 (edges),
+Phase 6 (docs, and the packaging checks already partly done in Phase 2).
 
 Goal: draw circles, boxes, arrows and text on the image the way ds9 does, edit them
 interactively, and save/load them — natively in a flexible format (YAML), with ds9 `.reg`
@@ -173,7 +176,24 @@ importer.
 
 ## Phases
 
-### Phase 0 — one canonical coordinate mapper (prerequisite, own commit)
+### Phase 0 — one canonical coordinate mapper ✅ DONE
+
+Landed as `pyql3/core/coords.py` + `ImageViewer.orig_to_display()` / `.display_to_orig()` /
+`.orig_spatial_dims()`, with all three call sites rewired and 181 cases in
+`tests/test_coords.py`. This closed `BUGS.md` B13 and B14, and writing the angle mapping turned
+up **B20** (the PA compass mirrored the rotation instead of the array), which is fixed too —
+`ImageViewer.north_east_display_angles()`, covered by `tests/test_position_angle.py`. So the
+angle mapping regions will need is in place and tested before anything depends on it.
+
+Naming note for the phases below: **"orig" means `transposed_data` indices**, the coordinate
+along whichever FITS axis is currently mapped to X or Y. Earlier drafts of this plan said
+"raw FITS pixels", which is wrong in the project's vocabulary — `raw_data` is the untouched
+FITS array in original axis order, and choosing which axis is X is a separate step. Region
+geometry is stored in **orig** coordinates.
+
+The original scope, for the record:
+
+
 
 `apply_spatial_transforms()` flips and `rot90`s the **data**, so display pixels are not FITS
 pixels, and that mapping is currently written twice in inverse forms:
@@ -197,7 +217,33 @@ pinning the FITS ↔ numpy ↔ pyqtgraph offsets.
 
 Worth landing on its own even if the rest slips.
 
-### Phase 1 — model + native YAML (no GUI)
+### Phase 1 — model + native YAML ✅ DONE
+
+Landed as `pyql3/core/regions_model.py` (`Circle`, `Box`, `Arrow`, `Text`, `SkyAnchor`,
+`RegionList`) with 67 cases in `tests/test_regions_model.py`. `pyyaml` moved into
+`[project] dependencies` with the lock committed. Notes for the phases that build on it:
+
+- **The `SkyAnchor` container exists but nothing populates it yet.** Filling it needs a WCS,
+  and the `wcs.sub(['longitude','latitude'])` trap is documented in Phase 2, so that is where
+  the conversion belongs. Phase 1 defines and round-trips the record only; pixel geometry is
+  authoritative while `frame == "image"`.
+- **Shapes are keyword-only** (`Circle(x=…, y=…, radius=…)`). A dataclass cannot otherwise put
+  a subclass's mandatory geometry after the base class's defaulted styling, and positional
+  construction would silently reorder geometry as fields are added.
+- **Arrows are stored as ds9 stores them** — tail, length, heading — with `Arrow.end` and
+  `Arrow.from_points()` for the two-handled ROI that Phase 3 will use.
+- **Unknown fields are rejected, not ignored**, listing what is allowed. A silently dropped
+  `colour:` in a hand-edited file looks like the setting simply does not work. Every problem in
+  a file is reported at once for the same reason.
+- **A ds9 `.reg` file handed to the YAML loader is recognised** and answered with a pointer to
+  the ds9 reader, rather than "found str" — it is by far the likeliest wrong file. Tests also
+  pin the reverse: a valid file whose *labels* contain ds9 syntax must still load.
+- `pyyaml` is pure Python and imported normally, so `QuickLook3.spec` should need no entry —
+  confirm at the next build rather than assuming.
+
+The original scope, for the record:
+
+
 
 `pyql3/core/regions_model.py`: dataclasses `Circle`, `Box` (with PA), `Arrow`, `Text`, with a
 shared attribute block — label, colour, line width, dash, font size, tag/group, visibility —
@@ -208,8 +254,8 @@ plus two things ds9 has no room for:
 - `frame: image | sky` — whether the stored geometry is pixels or `(ra, dec)` plus angular
   sizes, so a region file survives reloading a dithered frame with a different WCS.
 
-Geometry is stored in **0-based pixels of the raw FITS spatial axes**, never display
-coordinates, with the sky position written alongside when a WCS exists. Native file is
+Geometry is stored in **0-based orig coordinates** (`transposed_data` indices, see Phase 0),
+never display coordinates, with the sky position written alongside when a WCS exists. Native file is
 versioned YAML (`format: pyql3-regions/1`), loaded with **`yaml.safe_load` only**.
 
 `pyyaml` is currently only a transitive *dev* dependency (via mkdocs) — it has to move into
@@ -217,7 +263,58 @@ versioned YAML (`format: pyql3-regions/1`), loaded with **`yaml.safe_load` only*
 imports; validate by hand here rather than adopting it, and treat "use pydantic or drop it"
 as a separate question.
 
-### Phase 2 — ds9 `.reg` IO on top of `regions`
+### Phase 2 — ds9 `.reg` IO ✅ DONE
+
+Landed as `pyql3/core/ds9_regions.py` (`to_ds9` / `from_ds9` / `Report`) and
+`pyql3/core/sky.py` (`CelestialMap`), with 43 cases in `tests/test_ds9_regions.py`. `regions`
+added with the lock committed, `collect_all('regions')` in the spec, and `regions/_geometry`
+added to the bundle greps in `build_app.sh` and `release.yml`. Also added
+`ImageViewer.display_axis_indices()`, consolidating a fourth copy of the AXIS-combo expression
+(one of which defaulted to `AXIS 1` — the *wavelength* axis on an OSIRIS cube).
+
+Found while building it, beyond what the plan anticipated:
+
+- **`regions` reads `textangle` but never writes it.** It arrives as `visual['rotation']` and
+  is absent from `serialize()` output, so a rotated label loses its angle. Rotated text is
+  therefore kept away from the library entirely and hand-written as `# text(...) textangle=…`;
+  un-rotated text still goes through it. This is a second gap alongside `vector`, and it is
+  measured, not inferred.
+- **ds9's `image` frame means FITS axes 1 and 2, always.** An OSIRIS cube is displayed on axes
+  3 and 2, so image-frame coordinates are simply a different plane between the two
+  applications. `to_ds9(frame="auto")` therefore writes *sky* coordinates whenever the display
+  is not on axes 1 and 2 and a WCS allows it, and says so in the `Report`; on import, image
+  frame regions on such a cube are loaded but flagged. This is the single biggest interop trap
+  and the plan did not have it.
+- Box angles convert correctly through sky frames (20° pixel → 160° in the file → 20° back),
+  so the library owns every angle conversion for shapes. Only arrows are ours.
+
+**Settled by ds9 (files 22-25, checked 2026-08-06). No open format questions remain.**
+
+| File | Result |
+|------|--------|
+| `22_mixed_frames.reg` | ✅ a coordinate-system change part way through a file is accepted |
+| `23_sky_vector.reg` + `24_image_vector_reference.reg` | ✅ a sky-frame `# vector(...)` is drawn, and on an unrotated field its direction matches an image-frame vector at the same angle |
+| `25_sky_angle_on_rotated_field.reg` (on `check_rotated.fits`) | ✅ on a 30°-rotated field a sky-frame vector lies along a sky-frame box at the same angle, pointing up and right as predicted (~15° CCW from screen right) |
+
+File 25 was the one that could actually decide it. Files 23 and 24 agreed on an *unrotated*
+field, where the sky and image angle conventions coincide — verified locally: the conversion is
+the identity at zero rotation — so they would have agreed whichever convention ds9 used. On a
+30°-rotated field the two differ by 30°, and Keck data is rotated as a matter of course. Comparing
+against a *box* is what made it decidable, because `regions` already implements the box
+convention.
+
+So **ds9 measures a vector's angle in a sky frame from the sky axes, exactly as it does a box's**,
+and a sky export writes its arrows on the sky too — tail as RA/Dec, length in degrees, direction
+converted by `_pixel_angle_to_sky`. Leaving them in pixel coordinates would have meant a "sky"
+file whose arrows do not follow the field, which defeats the only reason to export sky
+coordinates. The conversion is borrowed from the library's own box handling rather than
+reimplemented, so there is one implementation of ds9's convention and it is the tested one.
+`tests/test_ds9_regions.py::test_a_sky_angle_is_not_the_image_angle_on_a_rotated_field` pins it
+(45° pixel → 75° sky at 30° rotation).
+
+The original scope, for the record:
+
+
 
 `pyql3/core/ds9_regions.py` wraps `Regions.parse` / `Regions.serialize` for circle, box,
 text and line, and owns a hand-written path for arrows on both sides (finding 1).
@@ -286,14 +383,14 @@ multi-window model.
   regression asserting the `wcs.celestial` NaN trap stays fixed; malformed `.reg` never
   raising; the skipped-shape report.
 - Offscreen GUI: draw a region, flip and rotate through all four steps, assert it still
-  covers the same raw pixels; save in one window, load in another.
+  covers the same orig pixels; save in one window, load in another.
 - `uv add regions` with the lock committed (CI runs `uv sync --frozen`, so an unlocked
   dependency fails the release build), `collect_all('regions')` in `QuickLook3.spec`, and
   `_geometry` added to the bundled-asset greps in `build_app.sh` and
   `.github/workflows/release.yml`.
 - `docs/tools.md` for the region tools, `docs/cli.md` for the flag, and AGENTS.md for the two
-  new invariants (single coordinate mapper; region geometry stored in raw FITS pixels, never
-  display coordinates) plus the note that arrows bypass `regions`.
+  new invariants (single coordinate mapper — already added with Phase 0; region geometry
+  stored in orig coordinates, never display coordinates) plus the note that arrows bypass `regions`.
 
 ## Risks
 

@@ -8,6 +8,7 @@ from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
+from pyql3.core import coords
 
 try:
     # Imported for its side effect: this registers the Crameri colormaps with
@@ -249,6 +250,58 @@ class ImageViewer(QWidget):
             if k != 0:
                 arr = np.rot90(arr, k=k)
         return arr
+
+    def orig_spatial_dims(self):
+        """`(nx, ny)` of `transposed_data`'s spatial axes, before flip and rotation.
+
+        The last two axes are the spatial ones for both a 2-D image `(x, y)` and a cube
+        `(z, x, y)`. Returns None when there is nothing loaded.
+        """
+        if getattr(self, 'transposed_data', None) is None:
+            return None
+        nx, ny = self.transposed_data.shape[-2:]
+        return int(nx), int(ny)
+
+    def display_axis_indices(self):
+        """The 0-based FITS axis indices currently shown as X and Y.
+
+        For a 2-D image this is `(0, 1)`; for an OSIRIS cube, whose X axis is FITS axis 3, it
+        is `(2, 1)`. Anything that has to talk to a WCS or to ds9 needs this — ds9's `image`
+        frame always means FITS axes 1 and 2, so a cube displayed on other axes cannot use it.
+
+        The expression was repeated in three places with two different fallbacks, one of which
+        (`AXIS 1`) names the wavelength axis for an OSIRIS cube.
+        """
+        def index_of(attribute, default):
+            name = getattr(self, attribute, None) or default
+            try:
+                return max(0, int(str(name).split()[-1]) - 1)
+            except (ValueError, IndexError):
+                return int(str(default).split()[-1]) - 1
+
+        naxis = self.raw_data.ndim if getattr(self, 'raw_data', None) is not None else 2
+        if naxis < 3:
+            # A 2-D image has no axis mapping to consult; X is axis 1 and Y is axis 2.
+            return (0, 1)
+        return (index_of('current_x_axis', 'AXIS 3'), index_of('current_y_axis', 'AXIS 2'))
+
+    def orig_to_display(self, x, y):
+        """Map a `transposed_data` coordinate to its position on screen, or None if no data.
+
+        Thin adapter over `pyql3.core.coords`; see that module for what "orig" means and why
+        the arithmetic lives in exactly one place (`BUGS.md` B13/B14).
+        """
+        dims = self.orig_spatial_dims()
+        if dims is None:
+            return None
+        return coords.orig_to_display(x, y, *dims, flip=self.flip, rot_angle=self.rot_angle)
+
+    def display_to_orig(self, x, y):
+        """Map a screen coordinate back to a `transposed_data` coordinate, or None if no data."""
+        dims = self.orig_spatial_dims()
+        if dims is None:
+            return None
+        return coords.display_to_orig(x, y, *dims, flip=self.flip, rot_angle=self.rot_angle)
 
     def current_plane(self):
         """The 2-D plane currently on screen, oriented like `display_data` but *without*
@@ -1172,6 +1225,35 @@ class ImageViewer(QWidget):
 
         return theta_n_base, theta_e_base, has_wcs_pa
 
+    def north_east_display_angles(self, include_view_rotation=True):
+        """North and East as they appear on screen: `(theta_n, theta_e, is_wcs)` in degrees.
+
+        `get_north_angle_base()` reports the two directions in *orig* space; this puts them
+        through the display transforms. Which means going through `coords`, in this order:
+        the flip mirrors an angle, each 90° step adds 90°, and only then does the ImageItem's
+        `view_rotation` apply — it rotates the already-flipped, already-rotated array, so it
+        must sit outside the mirror.
+
+        Getting that order wrong is `BUGS.md` B20: the compass used to mirror the whole sum,
+        which pointed N and E backwards for a flip with a 90°/270° rotation and turned the
+        wrong way for a flip with any view rotation. It was written that way in three places,
+        so all three now call this.
+
+        `include_view_rotation=False` gives the angle after the array transforms only, which
+        is what solving for a "North Up" view rotation needs.
+        """
+        theta_n_base, theta_e_base, is_wcs = self.get_north_angle_base()
+        if not is_wcs or theta_n_base is None or theta_e_base is None:
+            return None, None, False
+
+        def to_display(angle):
+            shown = coords.orig_angle_to_display(angle, flip=self.flip, rot_angle=self.rot_angle)
+            if include_view_rotation:
+                shown += self.view_rotation
+            return shown % 360.0
+
+        return to_display(theta_n_base), to_display(theta_e_base), True
+
     def apply_view_rotation(self, angle):
         """Apply a visual-only rotation to the ImageItem via QTransform.
         Does not modify display_data or transposed_data."""
@@ -1222,17 +1304,9 @@ class ImageViewer(QWidget):
 
         import math
 
-        theta_n_base, theta_e_base, is_wcs = self.get_north_angle_base()
-        if not is_wcs or theta_n_base is None:
+        theta_n_vis, theta_e_vis, is_wcs = self.north_east_display_angles()
+        if not is_wcs:
             return
-
-        # 2. Apply GUI view rotation (rot_angle + view_rotation in deg CCW) and horizontal flip
-        theta_n_vis = (theta_n_base + self.rot_angle + self.view_rotation) % 360.0
-        theta_e_vis = (theta_e_base + self.rot_angle + self.view_rotation) % 360.0
-
-        if self.flip:
-            theta_n_vis = (180.0 - theta_n_vis) % 360.0
-            theta_e_vis = (180.0 - theta_e_vis) % 360.0
 
         # Compass size scaled to the visible view window
         view_rect = self.imv.getView().viewRect()
@@ -1440,24 +1514,10 @@ class ImageViewer(QWidget):
                 
                 if self.wcs and self.wcs.naxis >= 2:
                     try:
-                        # Inverse rotation and flip to get original pixel coordinates
-                        orig_x, orig_y = x, y
-                        
-                        # Invert rotation
-                        k = self.rot_angle // 90
-                        if k != 0:
-                            if k == 1: # rotated 90
-                                orig_x, orig_y = orig_y, max_x - 1 - orig_x
-                            elif k == 2: # rotated 180
-                                orig_x, orig_y = max_x - 1 - orig_x, max_y - 1 - orig_y
-                            elif k == 3: # rotated 270
-                                orig_x, orig_y = max_y - 1 - orig_y, orig_x
-                                
-                        # Invert flip
-                        if self.flip:
-                            orig_max_x = max_y if k % 2 == 1 else max_x
-                            orig_x = orig_max_x - 1 - orig_x
-                            
+                        # Undo the display flip and rotation to get the coordinate along the
+                        # FITS axes, which is what the WCS is indexed by.
+                        orig_x, orig_y = self.display_to_orig(x, y)
+
                         # WCS pixel to world
                         if self.wcs.naxis == 2:
                             p1 = orig_x; p2 = orig_y

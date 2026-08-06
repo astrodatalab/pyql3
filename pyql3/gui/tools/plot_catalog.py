@@ -129,28 +129,14 @@ def to_float(val):
 
 
 def map_to_display(image_viewer, orig_x, orig_y):
-    if image_viewer.display_data is None:
-        return orig_x, orig_y
-        
-    shape = image_viewer.display_data.shape
-    is_3d = (image_viewer.display_data.ndim == 3)
-    max_x = shape[1] if is_3d else shape[0]
-    max_y = shape[2] if is_3d else shape[1]
-    
-    k = image_viewer.rot_angle // 90
-    orig_max_x = max_y if k % 2 == 1 else max_x
-    orig_max_y = max_x if k % 2 == 1 else max_y
-    
-    curr_x, curr_y = float(orig_x), float(orig_y)
-    
-    if image_viewer.flip:
-        curr_x = orig_max_x - 1 - curr_x
-        
-    for _ in range(k):
-        curr_x, curr_y = orig_max_y - 1 - curr_y, curr_x
-        orig_max_x, orig_max_y = orig_max_y, orig_max_x
-        
-    return curr_x, curr_y
+    """Map a FITS-axis pixel coordinate to display coordinates.
+
+    Kept as a module-level function because the catalog code calls it per row; the arithmetic
+    itself lives in `pyql3.core.coords` and is shared with the WCS readout and the Depth Plot
+    (`BUGS.md` B14). Unloaded viewers pass the coordinate through unchanged, as before.
+    """
+    mapped = image_viewer.orig_to_display(orig_x, orig_y)
+    return (orig_x, orig_y) if mapped is None else mapped
 
 class PlotCatalogDialog(BaseToolDialog):
     def __init__(self, parent=None, image_viewer=None):
@@ -552,8 +538,7 @@ class PlotCatalogDialog(BaseToolDialog):
 
                     pixel_coords = wcs.world_to_pixel_values(*coords_in)
 
-                    ax1_idx = int(getattr(self.image_viewer, 'current_x_axis', 'AXIS 1').split()[-1]) - 1
-                    ax2_idx = int(getattr(self.image_viewer, 'current_y_axis', 'AXIS 2').split()[-1]) - 1
+                    ax1_idx, ax2_idx = self.image_viewer.display_axis_indices()
 
                     orig_x = float(pixel_coords[ax1_idx])
                     orig_y = float(pixel_coords[ax2_idx])
