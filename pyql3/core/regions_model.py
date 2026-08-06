@@ -314,7 +314,7 @@ class RegionList:
         A region file is something a user may well have edited by hand, so being told about
         one bad field at a time, five saves in a row, is the wrong experience.
         """
-        if _looks_like_ds9(text):
+        if looks_like_ds9(text):
             # By far the likeliest wrong file to be handed here, and as YAML it parses to a
             # bare string, which would otherwise produce a baffling "found str".
             raise RegionFormatError(
@@ -375,7 +375,7 @@ _DS9_SHAPES = ("circle(", "box(", "ellipse(", "polygon(", "point(", "line(", "ve
                "text(", "annulus(")
 
 
-def _looks_like_ds9(text):
+def looks_like_ds9(text):
     """True for something that is plainly a ds9 `.reg` file.
 
     Either the header ds9 writes, or a coordinate-system line followed by a shape call. Both

@@ -87,19 +87,29 @@ class BaseToolDialog(QDialog):
             self.disable_draw_mode()
             
     def enable_draw_mode(self):
+        """Take over the view's drag handling so a drag draws this tool's box.
+
+        Ownership goes through the viewer rather than being arranged here. Each tool used to
+        save and restore `mouseDragEvent` itself, which breaks as soon as two tools are in draw
+        mode: the second saves the first's handler, and restoring in the wrong order leaves the
+        view unable to pan at all. `begin_exclusive_drag` also revokes any other tool's draw
+        mode, so the two buttons cannot both look active.
+        """
         if self.image_viewer is None or self.roi is None:
             return
-        if not hasattr(self, '_old_drag'):
-            self._old_drag = self.image_viewer.imv.getView().mouseDragEvent
-        self.image_viewer.imv.getView().mouseDragEvent = self.custom_mouse_drag
-        # Disable panning temporarily
-        self.image_viewer.imv.getView().setMouseEnabled(x=False, y=False)
-        
+        self.image_viewer.begin_exclusive_drag(
+            self, self.custom_mouse_drag, on_revoked=self._draw_mode_revoked)
+
     def disable_draw_mode(self):
-        if hasattr(self, '_old_drag') and self.image_viewer is not None:
-            self.image_viewer.imv.getView().mouseDragEvent = self._old_drag
-            self.image_viewer.imv.getView().setMouseEnabled(x=True, y=True)
-            del self._old_drag
+        if self.image_viewer is not None:
+            self.image_viewer.end_exclusive_drag(self)
+        if hasattr(self, '_drag_start_pos'):
+            del self._drag_start_pos
+        if hasattr(self, 'btn_draw') and self.btn_draw.isChecked():
+            self.btn_draw.setChecked(False)
+
+    def _draw_mode_revoked(self):
+        """Something else took the drag; drop the button without asking for it back."""
         if hasattr(self, '_drag_start_pos'):
             del self._drag_start_pos
         if hasattr(self, 'btn_draw') and self.btn_draw.isChecked():

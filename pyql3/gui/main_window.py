@@ -1,7 +1,8 @@
 import os
 import sys
+from pathlib import Path
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
-                               QMenu, QFileDialog, 
+                               QMenu, QFileDialog, QInputDialog,
                                QMessageBox, QApplication)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from pyql3.core.fits_reader import FitsReader
@@ -35,7 +36,7 @@ class MainWindow(QMainWindow):
         '_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog',
         '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog',
         '_plot_catalog_dialog', '_surf_dialog', '_cont_dialog', '_rotate_dialog',
-        '_arith_dialog',
+        '_arith_dialog', '_region_list_dialog',
     )
 
     def __init__(self):
@@ -83,6 +84,14 @@ class MainWindow(QMainWindow):
         # Connect viewer context menu requests
         self.image_viewer.request_depth_plot.connect(self.open_depth_plot)
         self.image_viewer.request_gaussian_fit.connect(self.open_gaussian_fit)
+
+        # The region layer draws no dialogs itself; it asks, and this answers.
+        self.image_viewer.region_layer.region_activated.connect(self.open_region_properties)
+        self.image_viewer.region_layer.region_menu_requested.connect(self.show_region_menu)
+        self.image_viewer.region_layer.render_mode_changed.connect(self.on_region_render_mode)
+        #: Open property dialogs, keyed by id() of the region, so double-clicking the same
+        #: region twice raises the dialog it already has rather than stacking another.
+        self._region_property_dialogs = {}
         
         self.create_menus()
 
@@ -90,63 +99,63 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         
         # File Menu
-        file_menu = menubar.addMenu("File")
+        self.file_menu = menubar.addMenu("File")
         
-        new_window_action = file_menu.addAction("New Window")
+        new_window_action = self.file_menu.addAction("New Window")
         new_window_action.setShortcut(QKeySequence.StandardKey.New)
         new_window_action.triggered.connect(lambda checked=False: self.new_window())
 
-        open_action = file_menu.addAction("Open...")
+        open_action = self.file_menu.addAction("Open...")
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_file)
 
-        open_new_action = file_menu.addAction("Open in New Window...")
+        open_new_action = self.file_menu.addAction("Open in New Window...")
         open_new_action.triggered.connect(self.open_file_in_new_window)
 
-        self.recent_menu = file_menu.addMenu("Recent Files")
+        self.recent_menu = self.file_menu.addMenu("Recent Files")
         self.update_recent_files_menu()
         
-        save_action = file_menu.addAction("Save FITS As...")
+        save_action = self.file_menu.addAction("Save FITS As...")
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_file_as)
         
-        header_action = file_menu.addAction("Edit FITS Header")
+        header_action = self.file_menu.addAction("Edit FITS Header")
         header_action.triggered.connect(self.edit_header)
         
-        arith_action = file_menu.addAction("Arithmetic...")
+        arith_action = self.file_menu.addAction("Arithmetic...")
         arith_action.triggered.connect(self.open_arithmetic_tool)
         
-        polling_action = file_menu.addAction("Polling...")
+        polling_action = self.file_menu.addAction("Polling...")
         polling_action.triggered.connect(self.open_polling_config)
         
-        file_menu.addSeparator()
+        self.file_menu.addSeparator()
 
-        close_action = file_menu.addAction("Close Window")
+        close_action = self.file_menu.addAction("Close Window")
         close_action.setShortcut(QKeySequence.StandardKey.Close)
         close_action.triggered.connect(self.close)
 
-        exit_action = file_menu.addAction("Exit")
+        exit_action = self.file_menu.addAction("Exit")
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.setMenuRole(QAction.MenuRole.QuitRole)
         exit_action.triggered.connect(self.close)
 
         # Display Menu
-        display_menu = menubar.addMenu("Display")
+        self.display_menu = menubar.addMenu("Display")
         
-        redisplay_action = display_menu.addAction("Redisplay image")
+        redisplay_action = self.display_menu.addAction("Redisplay image")
         redisplay_action.triggered.connect(self.redisplay_image)
         
-        rotate_action = display_menu.addAction("Rotate Image...")
+        rotate_action = self.display_menu.addAction("Rotate Image...")
         rotate_action.triggered.connect(self.open_rotate)
         
-        display_menu.addSeparator()
+        self.display_menu.addSeparator()
         
-        scaling_menu = display_menu.addMenu("Scaling")
+        self.scaling_menu = self.display_menu.addMenu("Scaling")
         
         self.scale_action_group = QActionGroup(self)
         self.scale_actions = {}
         for scale_opt in ["Linear", "Negative", "HistEq", "Logarithmic", "Sqrt", "AsinH"]:
-            act = scaling_menu.addAction(scale_opt)
+            act = self.scaling_menu.addAction(scale_opt)
             act.setCheckable(True)
             self.scale_action_group.addAction(act)
             self.scale_actions[scale_opt] = act
@@ -154,9 +163,9 @@ class MainWindow(QMainWindow):
             if scale_opt == "Linear":
                 act.setChecked(True)
                 
-        display_menu.addSeparator()
+        self.display_menu.addSeparator()
         
-        colormap_menu = display_menu.addMenu("Colormap")
+        self.colormap_menu = self.display_menu.addMenu("Colormap")
         self.cmap_action_group = QActionGroup(self)
         self.cmap_actions = {}
         
@@ -169,9 +178,9 @@ class MainWindow(QMainWindow):
         
         for i, (_group_name, cmaps) in enumerate(colormap_groups):
             if i > 0:
-                colormap_menu.addSeparator()
+                self.colormap_menu.addSeparator()
             for cmap in cmaps:
-                act = colormap_menu.addAction(cmap)
+                act = self.colormap_menu.addAction(cmap)
                 act.setCheckable(True)
                 self.cmap_action_group.addAction(act)
                 self.cmap_actions[cmap] = act
@@ -179,30 +188,30 @@ class MainWindow(QMainWindow):
                 if cmap == "cmc.oslo":
                     act.setChecked(True)
                     
-        invert_cmap_action = display_menu.addAction("Invert Colormap")
+        invert_cmap_action = self.display_menu.addAction("Invert Colormap")
         invert_cmap_action.setCheckable(True)
         invert_cmap_action.triggered.connect(lambda checked: self.image_viewer.set_colormap(invert=checked))
                 
-        self.colorbar_action = display_menu.addAction("Show Colorbar")
+        self.colorbar_action = self.display_menu.addAction("Show Colorbar")
         self.colorbar_action.setCheckable(True)
         self.colorbar_action.triggered.connect(self.image_viewer.toggle_colorbar)
         
-        display_menu.addSeparator()
+        self.display_menu.addSeparator()
         
-        self.pa_action = display_menu.addAction("Position Angle")
+        self.pa_action = self.display_menu.addAction("Position Angle")
         self.pa_action.setCheckable(True)
         self.pa_action.triggered.connect(self.toggle_pa)
         
-        units_menu = display_menu.addMenu("Data Units")
+        self.units_menu = self.display_menu.addMenu("Data Units")
         self.unit_action_group = QActionGroup(self)
         
-        self.action_dn_s = units_menu.addAction("As DN/s")
+        self.action_dn_s = self.units_menu.addAction("As DN/s")
         self.action_dn_s.setCheckable(True)
         self.action_dn_s.setChecked(True)
         self.unit_action_group.addAction(self.action_dn_s)
         self.action_dn_s.triggered.connect(lambda: self.set_display_unit(False))
         
-        self.action_tot_dn = units_menu.addAction("As Total DN")
+        self.action_tot_dn = self.units_menu.addAction("As Total DN")
         self.action_tot_dn.setCheckable(True)
         self.unit_action_group.addAction(self.action_tot_dn)
         self.action_tot_dn.triggered.connect(lambda: self.set_display_unit(True))
@@ -211,62 +220,91 @@ class MainWindow(QMainWindow):
         self.image_viewer.combo_scale.currentIndexChanged.connect(self.sync_scaling_from_viewer)
 
         # Plot Menu
-        plot_menu = menubar.addMenu("Plot")
+        self.plot_menu = menubar.addMenu("Plot")
         
-        depth_plot_action = plot_menu.addAction("Depth Plot")
+        depth_plot_action = self.plot_menu.addAction("Depth Plot")
         # Drop QAction.triggered's `checked` flag: no centre is implied from the menu
         depth_plot_action.triggered.connect(lambda checked=False: self.open_depth_plot())
         
-        hcut_action = plot_menu.addAction("Horizontal Cut")
+        hcut_action = self.plot_menu.addAction("Horizontal Cut")
         hcut_action.triggered.connect(self.open_horizontal_cut)
         
-        vcut_action = plot_menu.addAction("Vertical Cut")
+        vcut_action = self.plot_menu.addAction("Vertical Cut")
         vcut_action.triggered.connect(self.open_vertical_cut)
         
-        dcut_action = plot_menu.addAction("Diagonal Cut")
+        dcut_action = self.plot_menu.addAction("Diagonal Cut")
         dcut_action.triggered.connect(self.open_diagonal_cut)
         
-        surf_action = plot_menu.addAction("Surface")
+        surf_action = self.plot_menu.addAction("Surface")
         surf_action.triggered.connect(self.open_surface_plot)
         
-        cont_action = plot_menu.addAction("Contour")
+        cont_action = self.plot_menu.addAction("Contour")
         cont_action.triggered.connect(self.open_contour_plot)
         
-        plot_cat_action = plot_menu.addAction("Plot Catalog")
+        plot_cat_action = self.plot_menu.addAction("Plot Catalog")
         plot_cat_action.triggered.connect(self.open_plot_catalog)
         
         # Analysis Menu
-        analysis_menu = menubar.addMenu("Analysis")
-        stats_action = analysis_menu.addAction("Statistics")
+        self.analysis_menu = menubar.addMenu("Analysis")
+        stats_action = self.analysis_menu.addAction("Statistics")
         stats_action.triggered.connect(self.open_statistics)
-        phot_action = analysis_menu.addAction("Photometry")
+        phot_action = self.analysis_menu.addAction("Photometry")
         phot_action.triggered.connect(self.open_photometry)
-        gauss_action = analysis_menu.addAction("Gaussian Fit")
+        gauss_action = self.analysis_menu.addAction("Gaussian Fit")
         gauss_action.triggered.connect(lambda checked=False: self.open_gaussian_fit())
         
         # Strehl Ratio Tool
         action_strehl = QAction("Strehl Ratio", self)
         action_strehl.triggered.connect(self.open_strehl_tool)
-        analysis_menu.addAction(action_strehl)
+        self.analysis_menu.addAction(action_strehl)
         
         # Removed Math Menu as Arithmetic was moved to File Menu
         
+        # Region Menu
+        self.region_menu = menubar.addMenu("Region")
+
+        for label, kind in (("New Circle", "circle"), ("New Box", "box"),
+                            ("New Arrow", "arrow"), ("New Text...", "text")):
+            act = self.region_menu.addAction(label)
+            act.triggered.connect(lambda checked=False, k=kind: self.start_drawing_region(k))
+
+        self.region_menu.addSeparator()
+
+        region_list_action = self.region_menu.addAction("Region List...")
+        region_list_action.triggered.connect(self.open_region_list)
+
+        self.region_menu.addSeparator()
+
+        load_regions_action = self.region_menu.addAction("Load Regions...")
+        load_regions_action.triggered.connect(self.load_regions)
+
+        save_regions_action = self.region_menu.addAction("Save Regions As...")
+        save_regions_action.triggered.connect(self.save_regions_as)
+
+        export_ds9_action = self.region_menu.addAction("Export ds9 Regions...")
+        export_ds9_action.triggered.connect(self.export_ds9_regions)
+
+        self.region_menu.addSeparator()
+
+        delete_regions_action = self.region_menu.addAction("Delete All Regions")
+        delete_regions_action.triggered.connect(self.delete_all_regions)
+
         # Window Menu
         self.window_menu = menubar.addMenu("Window")
         self.window_menu.aboutToShow.connect(self.update_window_menu)
         self.update_window_menu()
 
         # Help Menu
-        help_menu = menubar.addMenu("Help")
+        self.help_menu = menubar.addMenu("Help")
 
         # Windows has no equivalent single-directory-on-PATH convention, so the action is
         # simply absent there rather than present and always failing.
         if not sys.platform.startswith('win'):
-            install_cli_action = help_menu.addAction("Install 'quicklook3' Command Line Tool...")
+            install_cli_action = self.help_menu.addAction("Install 'quicklook3' Command Line Tool...")
             install_cli_action.triggered.connect(self.install_cli_tool)
-            help_menu.addSeparator()
+            self.help_menu.addSeparator()
 
-        about_action = help_menu.addAction("About QuickLook 3")
+        about_action = self.help_menu.addAction("About QuickLook 3")
         about_action.setMenuRole(QAction.MenuRole.AboutRole)
         about_action.triggered.connect(self.show_about)
 
@@ -817,6 +855,250 @@ class MainWindow(QMainWindow):
         if initial_center is not None and hasattr(self._gauss_dialog, 'set_center'):
             self._gauss_dialog.set_center(initial_center)
 
+
+    # ----------------------------------------------------------------- regions
+
+    @property
+    def region_layer(self):
+        return getattr(self.image_viewer, 'region_layer', None)
+
+    def open_region_list(self):
+        from pyql3.gui.tools.region_list import RegionListDialog
+        if not hasattr(self, '_region_list_dialog') or not self._region_list_dialog.isVisible():
+            self._region_list_dialog = RegionListDialog(self, self.image_viewer)
+        self._region_list_dialog.show()
+        self._region_list_dialog.raise_()
+
+    def open_region_properties(self, region):
+        """Open the ds9-style editor for one region, or raise the one already open for it.
+
+        Keyed by `id(region)` deliberately: model regions are dataclasses compared by value, so
+        two identical circles are `==` and a dict keyed by the region itself would confuse them
+        (and could not be built at all, since they are unhashable).
+        """
+        from pyql3.gui.dialogs.region_properties import RegionPropertiesDialog
+
+        if self.region_layer is None:
+            return
+
+        key = id(region)
+        existing = self._region_property_dialogs.get(key)
+        if existing is not None:
+            try:
+                if existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return existing
+            except RuntimeError:
+                pass        # the dialog was destroyed; fall through and make another
+
+        dialog = RegionPropertiesDialog(region, self.region_layer, self)
+        self._region_property_dialogs[key] = dialog
+        dialog.finished.connect(lambda _result, k=key: self._region_property_dialogs.pop(k, None))
+        dialog.show()
+        dialog.raise_()
+        return dialog
+
+    def on_region_render_mode(self, bulk, count):
+        """Say when regions stop being individually editable, rather than letting it be a mystery.
+
+        Above the layer's limit the whole set is drawn as a few aggregate items — see
+        `region_layer.INTERACTIVE_LIMIT` for the measurements behind that — which means no dragging
+        and no right-clicking. Silently losing interaction would read as a bug.
+        """
+        from pyql3.gui.viewers.region_layer import INTERACTIVE_LIMIT
+
+        if bulk:
+            self.statusBar().showMessage(
+                f"{count:,} regions: drawn as a fixed overlay, since more than "
+                f"{INTERACTIVE_LIMIT:,} cannot each be dragged. Editing still works through "
+                "Region ➔ Region List.", 12000)
+        else:
+            self.statusBar().showMessage(
+                f"{count:,} regions: individually editable again.", 6000)
+
+    def load_regions_from(self, filepath, announce=True):
+        """Load a region file into this window. Returns True if anything was loaded.
+
+        Shared by the menu and the `--regions` command-line flag, so the two cannot diverge.
+        """
+        from pyql3.core.regions_io import load_regions
+        from pyql3.core.regions_model import RegionFormatError
+
+        if self.region_layer is None:
+            return False
+
+        try:
+            region_list, report = load_regions(
+                filepath, wcs=self.image_viewer.wcs,
+                axis_indices=self.image_viewer.display_axis_indices())
+        except (RegionFormatError, OSError) as exc:
+            if announce:
+                QMessageBox.warning(self, "Load Regions", str(exc))
+            else:
+                print(f"pyql3: could not load regions from {filepath}: {exc}", file=sys.stderr)
+            return False
+
+        self.region_layer.set_regions(region_list.regions)
+        if announce:
+            self._report_region_conversion("Load Regions", report,
+                                           f"Loaded {len(region_list)} region(s).")
+        return True
+
+    def build_region_menu(self, region):
+        """The context menu for a region on the image.
+
+        pyqtgraph's own ROI menu cannot be used: it walks up to the ImageItem these items are
+        parented to, whose `getContextMenus()` returns `[None]`, and pyqtgraph raises trying to add
+        that to a menu (`BUGS.md` M12). The layer asks for this instead.
+
+        Kept separate from showing it because `QMenu.exec` is modal and blocks until dismissed,
+        which makes a menu impossible to inspect otherwise.
+        """
+        from pyql3.gui.dialogs.region_properties import copy_region_coordinates
+
+        menu = QMenu(self)
+        menu.addAction("Properties...").triggered.connect(
+            lambda: self.open_region_properties(region))
+        menu.addAction("Copy Coordinates").triggered.connect(
+            lambda: self.statusBar().showMessage(
+                f"Copied: {copy_region_coordinates(region, self.image_viewer)}", 6000))
+        menu.addSeparator()
+        menu.addAction("Delete").triggered.connect(lambda: self.region_layer.remove(region))
+        return menu
+
+    def show_region_menu(self, region, global_position):
+        """Pop up `build_region_menu` at a screen position."""
+        if self.region_layer is None:
+            return None
+
+        menu = self.build_region_menu(region)
+        # Held on self: a QMenu with no Python owner is deleted before it can be shown.
+        self._region_menu = menu
+        if global_position is not None:
+            menu.exec(global_position)
+        return menu
+
+    def start_drawing_region(self, kind):
+        """Enter drawing mode for one shape. A text region asks for its label first.
+
+        The layer deliberately puts nothing on screen itself, so the label prompt lives here.
+        """
+        if self.region_layer is None or self.image_viewer.transposed_data is None:
+            QMessageBox.information(self, "Region", "Load a FITS file before drawing regions.")
+            return
+
+        attributes = {}
+        if kind == "text":
+            label, accepted = QInputDialog.getText(self, "New Text Region", "Label:")
+            if not accepted or not label.strip():
+                return
+            attributes["text"] = label.strip()
+
+        self.region_layer.begin_draw(kind, **attributes)
+        hint = ("Click the image to place the label."
+                if kind == "text" else f"Drag on the image to draw a {kind}.")
+        self.statusBar().showMessage(hint, 6000)
+
+    def delete_all_regions(self):
+        layer = self.region_layer
+        if layer is None or not len(layer):
+            return
+        count = len(layer)
+        reply = QMessageBox.question(
+            self, "Delete All Regions",
+            f"Delete all {count} region{'s' if count != 1 else ''}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            layer.clear()
+
+    def load_regions(self):
+        """Open a region file, in either format, and replace what is on screen."""
+        from pyql3.core.regions_io import FILE_FILTERS
+
+        if self.region_layer is None:
+            return
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Load Regions", "", ";;".join(FILE_FILTERS))
+        if filepath:
+            self.load_regions_from(filepath)
+
+    def save_regions_as(self):
+        """Save in the native format, or ds9's if the name says so."""
+        from pyql3.core.regions_io import FILE_FILTERS, suggested_filename
+
+        layer = self.region_layer
+        if layer is None:
+            return
+        if not len(layer):
+            QMessageBox.information(self, "Save Regions", "There are no regions to save.")
+            return
+
+        default = suggested_filename(self.fits_reader.filepath, ".yml")
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Regions", default, ";;".join(FILE_FILTERS))
+        if not filepath:
+            return
+        if not Path(filepath).suffix:
+            filepath += ".yml"
+
+        report = self._write_regions(filepath, layer.regions)
+        if report is not None:
+            self._report_region_conversion("Save Regions", report,
+                                           f"Saved {len(layer)} region(s) to {filepath}.")
+
+    def export_ds9_regions(self):
+        """Save as ds9 `.reg` regardless of the name given."""
+        from pyql3.core.regions_io import suggested_filename
+
+        layer = self.region_layer
+        if layer is None:
+            return
+        if not len(layer):
+            QMessageBox.information(self, "Export ds9 Regions", "There are no regions to export.")
+            return
+
+        default = suggested_filename(self.fits_reader.filepath, ".reg")
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export ds9 Regions", default, "ds9 regions (*.reg);;All files (*)")
+        if not filepath:
+            return
+        if Path(filepath).suffix.lower() != ".reg":
+            # The exporter picks its format from the suffix, so this has to be honest.
+            filepath = str(Path(filepath).with_suffix(".reg"))
+
+        report = self._write_regions(filepath, layer.regions)
+        if report is not None:
+            self._report_region_conversion("Export ds9 Regions", report,
+                                           f"Exported {len(layer)} region(s) to {filepath}.")
+
+    def _write_regions(self, filepath, regions):
+        """Write regions and return the conversion report, or None if the write failed.
+
+        The native format has nothing to report, so `save_regions` returns None for it; an empty
+        report stands in, keeping "wrote it, nothing to say" distinct from "did not write it".
+        """
+        from pyql3.core.ds9_regions import Report
+        from pyql3.core.regions_io import save_regions
+
+        try:
+            report = save_regions(
+                filepath, regions, wcs=self.image_viewer.wcs,
+                axis_indices=self.image_viewer.display_axis_indices(),
+                written_by=f"QuickLook 3 v{pyql3.__version__}",
+                source=os.path.basename(self.fits_reader.filepath or ""))
+        except OSError as exc:
+            QMessageBox.warning(self, "Save Regions", f"Could not write the file:\n{exc}")
+            return None
+        return report if report is not None else Report()
+
+    def _report_region_conversion(self, title, report, success):
+        """Say what was lost converting to or from ds9, rather than dropping it silently."""
+        if report is not None and (report.skipped or report.notes):
+            QMessageBox.information(self, title, f"{success}\n\n{report.summary()}")
+        else:
+            self.statusBar().showMessage(success, 6000)
 
     def open_arithmetic_tool(self):
         from .tools.arithmetic import ArithmeticDialog

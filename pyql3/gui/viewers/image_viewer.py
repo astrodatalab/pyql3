@@ -34,6 +34,9 @@ class JumpSlider(QSlider):
 class ImageViewer(QWidget):
     request_depth_plot = Signal(object)
     request_gaussian_fit = Signal(object)
+    #: Emitted when the displayed plane's geometry changes — a flip, a 90° rotation, a new axis
+    #: mapping or new data. Anything drawn on top in stored coordinates has to be re-placed.
+    display_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -119,6 +122,10 @@ class ImageViewer(QWidget):
         self._itime_coadds = 1.0
         # Guards the slider <-> ImageView timeline sync (see on_imv_time_changed)
         self._syncing_slice = False
+        # Exclusive drag handling; see begin_exclusive_drag
+        self._drag_owner = None
+        self._drag_handler_before = None
+        self._drag_revoked_callback = None
         # True when the displayed plane has no finite pixels at all (see update_image_display)
         self._plane_all_invalid = False
 
@@ -139,6 +146,11 @@ class ImageViewer(QWidget):
         # pyqtgraph timeline has to write back to it or the labels, the pixel readout and
         # every analysis tool report a different slice than the one on screen.
         self.imv.sigTimeChanged.connect(self.on_imv_time_changed)
+
+        # Drawn regions. Constructed last: it parents its items to the ImageItem and follows
+        # `slider_slice`, so both have to exist first.
+        from pyql3.gui.viewers.region_layer import RegionLayer
+        self.region_layer = RegionLayer(self)
 
     def get_wavelength_for_slice(self, z):
         if getattr(self, 'wcs', None) is None or getattr(self, 'wcs_z_idx', None) is None:
@@ -261,6 +273,56 @@ class ImageViewer(QWidget):
             return None
         nx, ny = self.transposed_data.shape[-2:]
         return int(nx), int(ny)
+
+    # ------------------------------------------------------- exclusive drag handling
+
+    def begin_exclusive_drag(self, owner, handler, on_revoked=None):
+        """Give `owner` sole control of the view's drag handling until it gives it back.
+
+        Drawing a box or a region works by replacing `ViewBox.mouseDragEvent`, and only one
+        thing can hold it at a time. Each caller used to save the current handler itself and
+        restore it on the way out, which corrupts as soon as two of them overlap: the second
+        saves the *first's* handler, and whichever finishes last restores the wrong one, leaving
+        the view permanently unable to pan. Ownership is tracked here instead, and the previous
+        owner is told (`on_revoked`) so it can un-check its own button.
+        """
+        view = self.imv.getView()
+        if self._drag_owner is not None and self._drag_owner is not owner:
+            self._revoke_exclusive_drag()
+
+        if self._drag_handler_before is None:
+            # Captured once, and only ever the genuine original.
+            self._drag_handler_before = view.mouseDragEvent
+
+        view.mouseDragEvent = handler
+        view.setMouseEnabled(x=False, y=False)
+        self._drag_owner = owner
+        self._drag_revoked_callback = on_revoked
+
+    def end_exclusive_drag(self, owner=None):
+        """Hand drag handling back. A non-owner asking for this is ignored, not obeyed."""
+        if self._drag_owner is None:
+            return
+        if owner is not None and self._drag_owner is not owner:
+            return
+
+        view = self.imv.getView()
+        if self._drag_handler_before is not None:
+            view.mouseDragEvent = self._drag_handler_before
+            self._drag_handler_before = None
+        view.setMouseEnabled(x=True, y=True)
+        self._drag_owner = None
+        self._drag_revoked_callback = None
+
+    def exclusive_drag_owner(self):
+        return self._drag_owner
+
+    def _revoke_exclusive_drag(self):
+        """Take the drag away from its current owner and let it tidy up its own UI."""
+        callback = self._drag_revoked_callback
+        self.end_exclusive_drag()
+        if callback is not None:
+            callback()
 
     def display_axis_indices(self):
         """The 0-based FITS axis indices currently shown as X and Y.
@@ -977,6 +1039,9 @@ class ImageViewer(QWidget):
             self.display_data = self.transposed_data
             self.apply_transforms()
             self.update_image_display()
+            # A 2-D image reaches the screen without going through refresh_display, so this is
+            # the only place overlays learn that the plane's geometry changed.
+            self.display_changed.emit()
             self.lbl_zsize.setText("ZSize: 1")
             self.tab_advanced.setEnabled(True)
             self.combo_ext.setEnabled(True)
@@ -1101,6 +1166,10 @@ class ImageViewer(QWidget):
         self.display_data = self.transposed_data.copy()
         self.apply_transforms()
         self.update_image_display(bypass_imv=(self.display_data.ndim == 2))
+        # A flip or rotation moves every drawn overlay; anything holding stored coordinates has
+        # to re-derive its position from them (see RegionLayer.refresh).
+        self.display_changed.emit()
+
     @property
     def data_multiplier(self):
         if self.disp_as_dn:

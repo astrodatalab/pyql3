@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--poll-dir", help="Directory to poll for new FITS files (initializes with the most recent one)")
     parser.add_argument("--catalog", help="Catalog file (.csv, .txt, .dat, or a FITS table) to load into the Plot Catalog tool on startup")
     parser.add_argument("--catalog-hdu", help="Table extension of a FITS catalog, as an index or EXTNAME (default: the first table extension)")
+    parser.add_argument("--regions", help="Region file to draw on startup (.yml QuickLook 3 regions, or a ds9 .reg); the format is detected from the contents")
     parser.add_argument("--install-cli", action="store_true", help="Install a 'quicklook3' launcher on PATH so QuickLook 3 can be started from a shell, then exit")
     args = parser.parse_args()
 
@@ -111,13 +112,26 @@ def main():
             extra_window.load_fits(extra)
             apply_startup_view(extra_window)
 
-    if args.catalog and os.path.isfile(args.catalog):
-        hdu = args.catalog_hdu
-        if hdu is not None and hdu.lstrip('-').isdigit():
-            hdu = int(hdu)
-        window.open_plot_catalog()
-        window._plot_catalog_dialog.load_catalog_file(args.catalog, hdu=hdu)
-        
+    # `~` is expanded for every path taken from the command line; --catalog used to be the one
+    # that was not, so `--catalog ~/cat.csv` was silently ignored (BUGS.md M6).
+    if args.catalog:
+        catalog = os.path.expanduser(args.catalog)
+        if os.path.isfile(catalog):
+            hdu = args.catalog_hdu
+            if hdu is not None and hdu.lstrip('-').isdigit():
+                hdu = int(hdu)
+            window.open_plot_catalog()
+            window._plot_catalog_dialog.load_catalog_file(catalog, hdu=hdu)
+        else:
+            print(f"pyql3: no catalog file at {catalog}", file=sys.stderr)
+
+    if args.regions:
+        regions_path = os.path.expanduser(args.regions)
+        # Reports to stderr rather than a dialog: a flag was typed, so there is a terminal to
+        # read, and a modal dialog on startup would block an automated launch.
+        window.load_regions_from(regions_path, announce=False)
+
+
     # Anything Finder asked for outranks a file named on the command line, so this runs
     # last: a queued open-document request is applied on top of args.filenames.
     #

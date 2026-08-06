@@ -1,9 +1,9 @@
 # Plan: ds9-style regions (circle, box, arrow, text)
 
-Status: **Phases 0-2 done; Phases 3-6 planned.** Written 2026-08-05 against commit `e2be099`.
+Status: **Phases 0-5 done; Phase 6 (docs) planned.** Written 2026-08-05 against commit `e2be099`.
 
-Remaining: Phase 3 (the interactive layer), Phase 4 (the Region menu), Phase 5 (edges),
-Phase 6 (docs, and the packaging checks already partly done in Phase 2).
+Remaining: Phase 6 — user and developer documentation. The packaging checks were done in Phase 2,
+and the tests landed with each phase.
 
 Goal: draw circles, boxes, arrows and text on the image the way ds9 does, edit them
 interactively, and save/load them — natively in a flexible format (YAML), with ds9 `.reg`
@@ -23,7 +23,7 @@ Replaces two entries in `TODO.md`: *"Ability to parse and load ds9 region files"
 
 ## What was verified (do not re-litigate without re-running)
 
-Run with `uvx --with regions python -c ...` — `regions` is not a project dependency yet.
+Reproduce with `uv run python -c ...`; `regions` is a project dependency as of Phase 2.
 
 1. **`regions` 0.12 drops ds9 `vector(...)` silently.** Feeding it a file containing
    `circle`, `box`, `# vector(10,10,40,45) vector=1`, `# text(70,70) text={hello}` and
@@ -335,7 +335,35 @@ Anything skipped in either direction — unsupported shapes and `-` exclusions o
 dialog**. Silent loss is the exact failure mode finding 1 demonstrates, and the YAML file
 stays the source of truth.
 
-### Phase 3 — interactive layer
+### Phase 3 — interactive layer ✅ DONE
+
+Landed as `pyql3/gui/viewers/region_layer.py` (`RegionLayer`), created by every `ImageViewer` as
+`self.region_layer`, with 63 cases in `tests/test_region_layer.py`. Also added
+`ImageViewer.display_changed` (emitted whenever the plane's geometry changes) and the
+exclusive-drag arbiter. Notes for Phase 4:
+
+- **The layer is the API the menu should drive**: `add` / `remove` / `clear` / `set_regions` /
+  `restyle` / `begin_draw(kind, **attributes)` / `cancel_draw` / `place_at`, with signals
+  `regions_changed`, `region_drawn` and `draw_mode_changed`. It puts nothing on screen itself —
+  the label text and colour of a new region come in as `begin_draw` attributes, so the dialogs
+  stay in Phase 4.
+- **Model regions are compared by value**, being dataclasses, so two identical circles are `==`.
+  Every lookup in the layer is by identity (`is`); a region list dialog must do the same.
+- **`begin_draw` also fixed a bug older than regions.** `BaseToolDialog.enable_draw_mode` saved
+  and restored `ViewBox.mouseDragEvent` itself, so two tools in draw mode corrupted it between
+  them and left the view unable to pan. Ownership now goes through
+  `ImageViewer.begin_exclusive_drag`, which revokes the previous owner and un-checks its button.
+- Text regions are two items: a `TextItem` for the label and a small `TargetItem` as the drag
+  handle. `pg.TargetItem` supports its own label, but it cannot be rotated, and `textangle`
+  round-trips through ds9.
+- One pyqtgraph trap worth keeping: `ROI.setAngle(a, centerLocal=[0.5, 0.5])` rotates about a
+  point *half a pixel* from the corner, not the centre — `centerLocal` is in local pixels, while
+  `center` is normalised. The layer uses `center=[0.5, 0.5]`, which is verified to hold a box's
+  centre still.
+
+The original scope, for the record:
+
+
 
 `pyql3/gui/viewers/region_layer.py`, one per `ImageViewer`, owning the graphics items and the
 stored model:
@@ -354,7 +382,52 @@ already stomp on each other. Region drawing would be a third claimant. Add an ex
 arbiter on the viewer (`begin_exclusive_drag(owner)` / `end_exclusive_drag`) that both go
 through.
 
-### Phase 4 — the Region menu
+### Phase 4 — the Region menu ✅ DONE
+
+Landed as a top-level **Region** menu on `MainWindow`, `pyql3/gui/tools/region_list.py`
+(`RegionListDialog`, in `TOOL_DIALOG_ATTRS`) and `pyql3/core/regions_io.py` (the format dispatch),
+with 39 cases in `tests/test_region_ui.py`.
+
+- **Loading picks the format by content, not by suffix** — a ds9 file named `.yml` is an ordinary
+  thing to be handed. Saving picks it by suffix, so **Export ds9 Regions...** forces `.reg` rather
+  than writing YAML into a file the user named `.reg`.
+- **The Phase 1 sky-anchor gap is closed.** `regions_io.with_sky_anchors()` fills in RA/Dec, the
+  angular sizes and the sky angle when a WCS allows it, into *copies* — the live regions are left
+  alone, so saving has no side effects on what is on screen.
+- **The list dialog is a view of the layer, not a second copy.** Editing a cell writes to the model
+  region and re-places it; dragging on the image writes back and the table refreshes. Both
+  directions go through `regions_changed`, so they cannot drift.
+- **This fixed `BUGS.md` M11 on the way.** The test helper reached a menu entry by walking
+  `menuBar().actions()` and calling `.menu()` — which makes the Python wrapper a transient owner,
+  so PySide6 destroyed the menu and every action in it before the helper returned. Every menu is
+  now stored on `self`; reach one through its attribute, never through `action.menu()`.
+- One trap for later: `start_drawing_region` shows a modal `QMessageBox` when nothing is loaded, so
+  any test firing that action on an empty window must stub it or the suite hangs — the same hazard
+  AGENTS.md already records for `install_cli_tool`.
+
+**Follow-up from testing (2026-08-06), now done.** Two problems came out of real use:
+
+- **Right-clicking a region raised in the terminal** — `BUGS.md` M12. pyqtgraph's
+  `ROI.raiseContextMenu` walks up to the ImageItem we parent to, whose `getContextMenus()` returns
+  `[None]`, which pyqtgraph then refuses to add to a menu. Regions are the first ROIs here with
+  `removable=True`, the only way to reach that code. `RegionItemInteraction` now handles right-click
+  and double-click itself, and a test asserts the inherited path *still* raises so the override
+  cannot be dropped.
+- **A region could be drawn but not changed.** `pyql3/gui/dialogs/region_properties.py` is the
+  ds9-style editor: double-click a region (or Properties… from its context menu, or the Region
+  List) and every field the model carries is editable — colour, line width, text, text size, angle,
+  dash, tag, visibility, geometry and the channel range. Apply writes through and redraws; Cancel
+  restores, including anything a previous Apply wrote. Dialogs are keyed by `id(region)` so the same
+  region reuses its editor, which matters because two identical regions are `==` as dataclasses.
+- While fixing that: **a shape's label is now drawn**, as ds9 draws `text={...}` beside a circle or
+  box. Without it the text size and colour fields meant nothing for anything but a text region.
+
+`QMenu.exec` is modal, so `build_region_menu` is separate from `show_region_menu`; a test that pops
+a menu up hangs the suite.
+
+The original scope, for the record:
+
+
 
 New top-level menu: New Circle / Box / Arrow / Text (click-drag to place), Load Regions…,
 Save Regions…, Export ds9 .reg…, Region List…, Delete All.
@@ -367,7 +440,97 @@ coordinates (precedent in `plot_catalog.show_context_menu`).
 Regions belong to the window's viewer, so each window keeps its own overlay, matching the
 multi-window model.
 
-### Phase 5 — edges
+### Phase 5 — edges ✅ DONE (measured, 2026-08-06)
+
+The static-render cap is no longer a guess. Measured on a 64×64×20 cube, one circle per region,
+`QT_QPA_PLATFORM=offscreen` (so these are construction and update costs, not painting):
+
+| regions | RSS over baseline | per region | time to add | `refresh()` | Region List build |
+|---------|-------------------|-----------:|------------:|------------:|------------------:|
+| 1,000 | 40 MB | 41 kB | 0.23 s | 0.009 s | 0.10 s |
+| 5,000 | 240 MB | 49 kB | 4.4 s | 0.060 s | 2.2 s |
+| 10,000 | 600 MB | 62 kB | 27 s | 0.117 s | 16 s |
+
+A region *as data* is **0.21 kB** — the graphics items cost 200–300× the model. Profiling the add
+path in the expensive regime: 55% is `SignalInstance.connect` (pyqtgraph's ROI and its handles wire
+up ~7 signals per region) and most of the rest is `setParentItem` → pyqtgraph's `_updateView` /
+`itemChange` bookkeeping. Both are inherent to one QGraphicsItem per region, not to anything this
+code does. So **tens of thousands of interactive regions is not reachable by tuning**; 10,000 is
+already 0.6 GB and half a minute to load, and 100,000 would be ~6 GB.
+
+The same 200,000 regions drawn as a **single `ScatterPlotItem`** cost 0.42 kB each and 0.098 s to
+build — 130× less memory, 300× faster:
+
+| regions | RSS over baseline | per region | build | re-place |
+|---------|-------------------|-----------:|------:|---------:|
+| 10,000 | 4 MB | 0.41 kB | 0.005 s | 0.004 s |
+| 200,000 | 83 MB | 0.42 kB | 0.098 s | 0.084 s |
+
+**Built, and measured on a real cube.** Above `region_layer.INTERACTIVE_LIMIT` (500) the layer stops
+building per-region items and draws the whole set as one item per distinct style: a
+`ScatterPlotItem` for circles, a `+` marker for text positions, and one NaN-broken `PlotDataItem`
+polyline for boxes and arrows (barbs included, so an arrow still reads as one). `plot_catalog`
+already renders catalogue markers this way, so the pattern was established here.
+
+20,000 regions, end to end through the GUI:
+
+| | before the cap (extrapolated) | with the cap |
+|---|---|---|
+| load from file | ~2 min, ~1.2 GB | **2.1 s, 154 MB** |
+| scene items | 40,000 | **1** |
+| rotate 90° | ~0.25 s | **0.039 s** |
+| step one channel | ~0.01 s | **0.038 s** |
+| open the Region List | ~60 s | **0.001 s** (declines to list, says so) |
+| delete 19,800 | minutes | **0.12 s**, and the remaining 200 are draggable again |
+
+The switch is announced in the status bar, and crossing back below the limit restores per-region
+interaction. The Region List refuses to fill in above `LIST_LIMIT` (2,000) rather than showing the
+first 2,000 as if the rest had been lost — `QTableWidget` needs 16 s to build 10,000 rows, on every
+drag frame. A `QAbstractTableModel` behind a `QTableView` would lift that ceiling if it ever needs
+lifting.
+
+**Labels are hidden while the view moves**, the optimisation `plot_catalog` already uses for
+catalogue labels — the same trick, found to apply here for the same reason. Measured on 400
+labelled regions by forcing real paints: **34.2 ms per pan frame with the labels drawn, 23.4 ms
+without** (32%). Text is by far the most expensive thing on the overlay to paint, and a drag
+repaints every label on every frame. `sigRangeChanged` hides them at once and a 200 ms debounce
+brings back only those inside the visible rect, which also caps the cost when zoomed in. The shapes
+themselves stay visible — losing the regions mid-drag would be worse than the frame rate.
+
+Two things the measurement also showed, not acted on: the ROI *handles* are another ~15% of a frame
+(18.1 ms against 21.2 ms for 400 unlabelled regions), and they could be hidden during a pan on the
+same timer since they cannot be grabbed mid-drag; and a label near the edge of the view still paints
+into it, which is why the cull grows the rect by 10% before testing.
+
+**`--regions` is in**, mirroring `--catalog`, detecting the format from the file's contents and
+reporting to stderr rather than a modal dialog — a flag was typed, so there is a terminal to read,
+and a dialog would block an automated launch. `BUGS.md` M6 is fixed at the same time: `--catalog`
+was the one command-line path that skipped `expanduser`, so `--catalog ~/cat.csv` was silently
+ignored. A test now asserts every flag expands `~`.
+
+**Three defects found while building this, all fixed:**
+
+- `add()` ended by refreshing *every* region's channel visibility, so a bulk load was O(N²) — 48 s
+  for 10,000 regions, more than half the total. Now per-entry
+  (`tests/test_region_layer.py::test_adding_a_region_does_not_touch_the_others`).
+- `item_for` / `label_for` / `remove` / `restyle` scanned the entry list, so deleting a selection of
+  N was O(N²). Now an `id(region)` → entry dict, with tests that it is emptied on removal so it
+  cannot hold graphics items alive.
+
+- **A reproducible segfault.** `restyle()` destroyed a region's items and immediately rebuilt them,
+  which handed the old C++ objects to the garbage collector — and it then ran *inside* the
+  construction of the replacements, crashing in `pg.ROI.addScaleHandle`. It reproduced in two runs
+  out of three, only in a full-suite run. `restyle()` now updates the items in place and only
+  rebuilds when a label appears or disappears, and `_destroy_items` holds removed items until the
+  next event-loop turn so the collector never chooses the moment. Five consecutive clean runs.
+
+The per-drag-frame table rebuild is no longer a scaling problem: above `LIST_LIMIT` the table holds
+nothing, and below it there are at most 2,000 rows. It would still be worth moving to a
+model/view if the limit is ever raised.
+
+The original scope, for the record:
+
+
 
 - `--regions file.yml|file.reg` on the command line, mirroring `--catalog`.
 - Thousands of regions (someone converting a catalog) would crawl with one editable ROI

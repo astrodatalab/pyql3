@@ -133,3 +133,25 @@ def rewrite_fits_in_place():
     has the file open -- see `_rewrite_fits_in_place` for why that fails on Windows.
     """
     return _rewrite_fits_in_place
+
+
+@pytest.fixture
+def click_event():
+    """Factory for a pyqtgraph mouse-click event, as the scene delivers one to an item.
+
+    Region items handle right-click and double-click themselves (see `RegionItemInteraction`), so
+    several test files need to synthesise these.
+    """
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtWidgets import QGraphicsSceneMouseEvent
+    from pyqtgraph.GraphicsScene.mouseEvents import MouseClickEvent
+
+    def make(button=Qt.MouseButton.RightButton, double=False, scene_pos=(5.0, 5.0),
+             screen_pos=(50, 50)):
+        qt_event = QGraphicsSceneMouseEvent()
+        qt_event.setButton(button)
+        qt_event.setScenePos(QPointF(*scene_pos))
+        qt_event.setScreenPos(QPoint(*screen_pos))
+        return MouseClickEvent(qt_event, double=double)
+
+    return make

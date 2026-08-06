@@ -1268,6 +1268,47 @@ are recorded rather than described.
 
 ---
 
+## M12. Right-clicking a region raised in the terminal
+
+- **Status:** ✅ FIXED — `region_layer.py` (`RegionItemInteraction`), `main_window.py`
+  (`build_region_menu` / `show_region_menu`), covered by
+  `tests/test_region_layer.py` and `tests/test_region_properties.py`
+- **Severity:** medium (every right-click on a region printed a traceback and showed no menu)
+- **Reported from use**, not from a review.
+- **File:** the interaction between `pyqtgraph.ROI.raiseContextMenu` and our parenting choice
+
+### Root cause
+`pg.ROI.raiseContextMenu` calls `self.scene().addParentContextMenus(self, menu, ev)`, which walks
+up the parent chain asking each item for extra menus. Region items are parented to the **ImageItem**
+so they inherit the view rotation (`apply_view_rotation` is a `QTransform` on that item), and
+`ImageItem.getContextMenus()` is:
+
+```python
+def getContextMenus(self, event):
+    return [self.getMenu()] if hasattr(self, "getMenu") else []
+```
+
+`ImageItem.getMenu()` returns **None** unless the image is removable, so this returns `[None]` —
+truthy, so pyqtgraph's `or []` does not save it — and the loop below reaches
+`raise Exception(f"Cannot add object {menuOrAct} ...")`.
+
+A region is the first ROI in this application constructed with `removable=True`, and
+`contextMenuEnabled()` is `self.removable`, so no earlier ROI could reach `raiseContextMenu` at
+all. The tool dialogs' ROIs are parented to the same ImageItem and were never affected.
+
+### Fix
+`RegionItemInteraction` overrides `mouseClickEvent` and `raiseContextMenu` on the region item
+classes: a right-click asks the layer for a menu (`region_menu_requested`) and a double-click asks
+for the properties editor (`region_activated`), so pyqtgraph's parent walk is never entered.
+`tests/test_region_layer.py::test_the_pyqtgraph_menu_path_would_still_raise` asserts the inherited
+path *does* still raise, so the override cannot be quietly removed.
+
+`MainWindow.build_region_menu()` is split from `show_region_menu()` because `QMenu.exec` is modal
+and blocks until dismissed — a test that shows one hangs the suite, the same way `install_cli_tool`
+does without a stubbed `confirm_cli_install`.
+
+---
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |
@@ -1277,11 +1318,11 @@ are recorded rather than described.
 | M3 | `poller.py:14`, `:23` | Watches `.fits`/`.fit` only, while the Open dialog accepts `.fits.gz`. | Add `.gz` handling (check the full suffix chain). |
 | M4 | `arithmetic.py:150-163` | The Active-Image operand is not cast to float, unlike the file operand (`:161`). Not currently reachable for integer wraparound (the other operand is always float), but the two paths differ in dtype/precision. | `return self.image_viewer.raw_data.astype(float), ...`. |
 | M5 | `arithmetic.py:199-201` | `final_header = h1 if h1 is not None else ...` mutates the operand's header in place via `add_history`. For the file operand that object is fresh, but for `Active Image` it is a `.copy()` — fine today, fragile if the copy is ever dropped. | `final_header = (h1 or h2 or fits.Header()).copy()`. |
-| M6 | `main.py:60` | `--catalog` is not passed through `os.path.expanduser`, so `~/cat.csv` is silently ignored (unlike `--poll-dir`, which is expanded at `:40`). | Expand it. |
+| M6 | ✅ FIXED — `main.py` | `--catalog` was not passed through `os.path.expanduser`, so `~/cat.csv` was silently ignored (unlike `--poll-dir`). | Done: expanded, and a missing file now says so on stderr instead of being ignored. `--regions` was added the same way, and `tests/test_region_ui.py` asserts every command-line path expands `~`. |
 | M7 | `advanced_plots.py:44` | Downsample factor uses `img_data.shape[0]` only, so a 100×4096 array is not downsampled. | `ds = max(1, max(img_data.shape) // 256)`. |
 | M8 | `advanced_plots.py:48`, `fitting.py:243` | `np.nan_to_num(data, nan=np.nanmedian(data))` warns and yields NaN for an all-NaN region. | Guard with `np.all(np.isnan(...))` and substitute 0. |
 | M9 | `advanced_plots.py:134-138` | `ContourDialog.update_plot` returns early when *Show Contours* is unchecked, before `clear_contours()`, so contours from a previous slice can linger. | Clear first, then return. |
-| M11 | `main_window.py:57-219` | `create_menus` keeps its `QMenu` objects in locals only, so nothing holds a Python reference. Harmless today (C++ parenting keeps them alive while unwrapped), but any code that calls `menu_action.menu()` creates a transient Python owner and PySide6 deletes the C++ object. Found while writing the B0 tests. | Store the menus on `self` (`self.file_menu = …`, etc.) as is already done for `self.window_menu` and `self.recent_menu`. |
+| M11 | ✅ FIXED — `main_window.py` | `create_menus` kept its `QMenu` objects in locals only, so nothing held a Python reference. Harmless while unwrapped, but any code calling `action.menu()` becomes a transient Python owner and PySide6 deletes the C++ menu **and every QAction in it** when that wrapper is collected. Confirmed while writing the Phase 4 region-menu tests: a helper that walked `menuBar().actions()` and called `.menu()` got back an action that was already dead. | Done: every menu is now stored on `self` (`self.file_menu`, `self.display_menu`, `self.scaling_menu`, `self.colormap_menu`, `self.units_menu`, `self.plot_menu`, `self.analysis_menu`, `self.region_menu`, `self.help_menu`, joining `self.window_menu` and `self.recent_menu`). **Reach a menu through its attribute, never through `action.menu()`** — see `tests/test_region_ui.py::menu_action`. |
 | M10 | `header_editor.py:104-136` | `apply_table_edits` writes back *every* row, including structural cards (`SIMPLE`, `BITPIX`, `NAXIS*`), and coerces types by string-parsing, so `'2.0'` string values silently become floats. | Only write rows whose text differs from the original card, and skip the structural keywords. |
 
 ---

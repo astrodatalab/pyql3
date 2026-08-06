@@ -310,7 +310,7 @@ def _arrow_lines(arrows, use_sky, mapping, report):
                 report.skipped.append("an arrow whose length could not be put on the sky")
                 continue
             length_text = f"{length / 3600.0:.8f}"
-            angle = _pixel_angle_to_sky(mapping, arrow.x, arrow.y, arrow.angle)
+            angle = pixel_angle_to_sky(mapping, arrow.x, arrow.y, arrow.angle)
         else:
             length_text = f"{arrow.length:.8f}"
             angle = arrow.angle % 360.0
@@ -320,7 +320,7 @@ def _arrow_lines(arrows, use_sky, mapping, report):
     return lines
 
 
-def _pixel_angle_to_sky(mapping, x, y, angle_deg):
+def pixel_angle_to_sky(mapping, x, y, angle_deg):
     """A direction measured from the image axes, expressed as ds9 wants it in a sky frame.
 
     In a sky frame ds9 measures an angle from the *sky* axes, so it differs from the image-frame
@@ -342,8 +342,8 @@ def _pixel_angle_to_sky(mapping, x, y, angle_deg):
     return float(probe.to_sky(mapping.wcs2d).angle.to_value(u.deg)) % 360.0
 
 
-def _sky_angle_to_pixel(mapping, ra_deg, dec_deg, angle_deg):
-    """The inverse of `_pixel_angle_to_sky`, by the same borrowed conversion."""
+def sky_angle_to_pixel(mapping, ra_deg, dec_deg, angle_deg):
+    """The inverse of `pixel_angle_to_sky`, by the same borrowed conversion."""
     probe = RectangleSkyRegion(SkyCoord(float(ra_deg) * u.deg, float(dec_deg) * u.deg),
                                2.0 * u.arcsec, 1.0 * u.arcsec, float(angle_deg) * u.deg)
     return float(probe.to_pixel(mapping.wcs2d).angle.to_value(u.deg)) % 360.0
@@ -469,8 +469,8 @@ def _arrow_from_match(match, frame, mapping, line_number, report):
                 f"line {line_number}: an arrow whose length could not be converted to pixels")
             return None
         # A sky-frame angle is measured from the sky axes, so on a rotated field it is not the
-        # image-frame angle. The conversion is the library's own (see `_sky_angle_to_pixel`).
-        angle = _sky_angle_to_pixel(mapping, x_raw, y_raw, angle_raw)
+        # image-frame angle. The conversion is the library's own (see `sky_angle_to_pixel`).
+        angle = sky_angle_to_pixel(mapping, x_raw, y_raw, angle_raw)
     else:
         x, y = x_raw - 1.0, y_raw - 1.0     # ds9 counts pixels from 1
         length = length_raw
