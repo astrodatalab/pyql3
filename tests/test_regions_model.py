@@ -84,7 +84,82 @@ def test_defaults_are_left_out_of_the_file():
     text = RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0)]).to_yaml()
     entry, = yaml.safe_load(text)["regions"]
 
-    assert entry == {"type": "circle", "x": 1.0, "y": 2.0, "radius": 3.0}
+    assert entry == {"type": "circle", "x": 1.0, "y": 2.0, "radius": 3.0, "frame": "image"}
+
+
+def test_the_frame_is_written_even_when_it_is_the_default():
+    """A file can hold a region in both frames at once, so which one is meant is never implied.
+
+    The geometry above it is pixels and a `sky` block below it is degrees; a reader — human or
+    otherwise — should not have to know that a missing key means pixels.
+    """
+    both = Circle(x=1.0, y=2.0, radius=3.0, sky=SkyAnchor(ra_deg=266.4, dec_deg=-29.0))
+    entries = yaml.safe_load(RegionList(regions=[both]).to_yaml())["regions"]
+
+    assert entries[0]["frame"] == "image"
+    assert entries[0]["sky"]["ra_deg"] == 266.4
+
+
+# ------------------------------------------------------------------ the style block
+
+def test_every_file_records_the_formatting_it_was_written_with():
+    """ds9 writes a `global` line; this is the same idea, and for the same reason.
+
+    Without it a region that took the defaults has no colour, width or font size anywhere in the
+    file, and its appearance depends on what this build happens to default to when it is read.
+    """
+    written = yaml.safe_load(RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0)]).to_yaml())
+
+    assert written["style"] == {"color": "green", "line_width": 2, "dash": False,
+                                "font_size": 12}
+
+
+def test_the_style_block_supplies_what_a_region_leaves_out():
+    """Editing one block restyles everything that did not override it, as ds9's global does."""
+    text = """format: pyql3-regions/1
+style:
+  color: cyan
+  line_width: 4
+  dash: true
+  font_size: 20
+regions:
+- {type: circle, x: 1.0, y: 2.0, radius: 3.0}
+- {type: circle, x: 4.0, y: 5.0, radius: 6.0, color: red}
+"""
+    plain, overridden = RegionList.from_yaml(text).regions
+
+    assert (plain.color, plain.line_width, plain.dash, plain.font_size) == ("cyan", 4, True, 20)
+    assert overridden.color == "red", "a region's own value wins over the block"
+    assert overridden.line_width == 4, "...and the rest still comes from the block"
+
+
+def test_a_styled_file_round_trips_what_it_shows():
+    """What is written back is what was on screen, whatever block it was read under."""
+    text = """format: pyql3-regions/1
+style: {color: cyan}
+regions:
+- {type: circle, x: 1.0, y: 2.0, radius: 3.0}
+"""
+    once = RegionList.from_yaml(text)
+    twice = RegionList.from_yaml(RegionList(regions=once.regions).to_yaml())
+
+    assert twice.regions[0].color == "cyan", "the colour must survive a save under new defaults"
+    assert twice.regions == once.regions
+
+
+@pytest.mark.parametrize("block,complaint", [
+    ("style: {colour: cyan}", "unknown key"),
+    ("style: {line_width: 0}", "at least 1"),
+    ("style: {dash: yes please}", "true or false"),
+    ("style: {color: '  '}", "must not be blank"),
+    ("style: [cyan]", "should be a mapping"),
+])
+def test_a_bad_style_block_is_refused(block, complaint):
+    """Everything below it is read against this block, so there is no going on without it."""
+    text = f"format: pyql3-regions/1\n{block}\nregions: []\n"
+
+    with pytest.raises(RegionFormatError, match=complaint):
+        RegionList.from_yaml(text)
 
 
 def test_non_default_values_are_written():
@@ -100,9 +175,12 @@ def test_the_file_declares_its_format_and_leads_with_type_and_geometry():
                                    color="red")]).to_yaml()
 
     assert yaml.safe_load(text)["format"] == FORMAT
-    # Readability: shape and geometry before styling, in declaration order.
+    # Readability: the file's own formatting up top, as ds9 puts its `global` line, then shape
+    # and geometry before styling, in declaration order.
     keys = [line.split(":")[0].strip("- ") for line in text.splitlines() if ":" in line]
-    assert keys[:6] == ["format", "regions", "type", "x", "y", "width"]
+    assert keys[:2] == ["format", "style"]
+    start = keys.index("regions")
+    assert keys[start:start + 5] == ["regions", "type", "x", "y", "width"]
 
 
 def test_a_channel_range_is_written_on_one_line():

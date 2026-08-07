@@ -15,11 +15,15 @@
   List** table, and **Send Regions to Plot Catalog...** for a large set. Saved as readable YAML or
   ds9 `.reg` — the format is read from the file's contents, not its name — with a report of
   anything a conversion could not carry, plus `--regions` on the command line. Geometry is stored
-  in pixels with the sky position alongside, so regions survive flips and rotations. Above 500
+  in pixels with the sky position alongside, so regions survive flips and rotations, and a file
+  saved on an image with a WCS holds both frames at once: loading it on a different pointing of the
+  same field asks which to use, as ds9 does, and placing them by sky puts them back on the same
+  stars. Above 500
   regions the set is drawn as one overlay instead of one item each: 20,000 load in 2 s rather than
   2 minutes, at the cost of per-region dragging. Labels are culled to the view, hidden while
   panning, and switchable off. The record of how it was built, with the measurements, is in
-  [TODO_regions.md](TODO_regions.md); the durable rules are in `AGENTS.md`.- Clearing a row selection in the Plot Catalog tool: a **Clear Selection** button beside the search
+  [TODO_regions.md](TODO_regions.md); the durable rules are in `AGENTS.md`.
+- Clearing a row selection in the Plot Catalog tool: a **Clear Selection** button beside the search
   box, **Escape** in the table, and a **Clear Selection** context-menu entry. Qt's only built-in way
   out of a single-selection table is ctrl-clicking the selected row, which nobody finds — and since
   selecting also recentres the view, a stray click was awkward to undo.

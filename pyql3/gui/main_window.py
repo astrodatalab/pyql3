@@ -1010,7 +1010,9 @@ class MainWindow(QMainWindow):
     def load_regions_from(self, filepath, announce=True):
         """Load a region file into this window. Returns True if anything was loaded.
 
-        Shared by the menu and the `--regions` command-line flag, so the two cannot diverge.
+        Shared by the menu and the `--regions` command-line flag, so the two cannot diverge. Only
+        the menu may put a question to the user: a command-line load takes the frame the file was
+        saved with rather than stopping a startup on a dialog.
         """
         from pyql3.core.regions_io import load_regions
         from pyql3.core.regions_model import RegionFormatError
@@ -1021,7 +1023,8 @@ class MainWindow(QMainWindow):
         try:
             region_list, report = load_regions(
                 filepath, wcs=self.image_viewer.wcs,
-                axis_indices=self.image_viewer.display_axis_indices())
+                axis_indices=self.image_viewer.display_axis_indices(),
+                choose_frame=self.choose_region_frame if announce else None)
         except (RegionFormatError, OSError) as exc:
             if announce:
                 QMessageBox.warning(self, "Load Regions", str(exc))
@@ -1034,6 +1037,32 @@ class MainWindow(QMainWindow):
             self._report_region_conversion("Load Regions", report,
                                            f"Loaded {len(region_list)} region(s).")
         return True
+
+    def choose_region_frame(self, offer):
+        """Ask which of a file's two coordinate frames to place its regions in.
+
+        A region file written with a WCS holds both — pixels of the image it was drawn on, and
+        RA/Dec — and on a different pointing they disagree. ds9 puts the same question. It is only
+        asked when the answer would move something: `regions_io.placed_on_image` skips the hook
+        when the frames agree, which is every file loaded back onto its own image.
+
+        **A test that reaches this must stub it**, as with `confirm_cli_install` — a real modal
+        dialog blocks the suite until it times out.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Load Regions")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("This region file gives every region in two coordinate frames.")
+        box.setInformativeText(
+            f"{offer.summary()} on this image, so the file was drawn on a different pointing.\n\n"
+            "Sky coordinates put each region back on the same piece of sky. Image coordinates "
+            "put it on the same pixel of this file.")
+        sky = box.addButton("Sky (RA/Dec)", QMessageBox.ButtonRole.AcceptRole)
+        image = box.addButton("Image (pixels)", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(sky if offer.saved == "sky" else image)
+        box.exec()
+
+        return "image" if box.clickedButton() is image else "sky"
 
     def build_region_menu(self, region):
         """The context menu for a region on the image.

@@ -277,6 +277,11 @@ The native format is readable YAML that can be edited by hand:
 ```yaml
 format: pyql3-regions/1
 written_by: QuickLook 3 v3.0.19
+style:
+  color: green
+  line_width: 2
+  dash: false
+  font_size: 12
 regions:
 - type: circle
   x: 31.5
@@ -284,15 +289,67 @@ regions:
   radius: 4.0
   text: src A
   z_range: [120, 180]
+- type: box
+  x: 20.0
+  y: 30.0
+  width: 6.0
+  height: 4.0
+  angle: 30.0
+  color: red
+  line_width: 3
+  dash: true
 ```
 
-Geometry is stored in **pixels**, with the sky position recorded alongside when the file has a WCS,
-so a region stays where it was drawn and still means something on another frame of the same field.
+The **`style:` block is ds9's `global` line**: it records the formatting the file was written with,
+and each region writes only what it does differently — the box above is red and dashed, the circle
+takes the file's green. Nothing about a region's appearance is left to whichever defaults the
+program happens to have when the file is read, and editing the one block restyles every region that
+did not override it.
+
+Geometry is stored in **pixels**, and when the image has a WCS the sky position is recorded
+alongside it — so the file holds every region in **both frames at once**, with `frame:` naming the
+one that was meant:
+
+```yaml
+- type: circle
+  x: 10.0
+  y: 9.0
+  radius: 3.0
+  frame: sky          # ...or image, which is written out too rather than left implied
+  sky:
+    ra_deg: 266.4171407868465
+    dec_deg: -29.00776633506410
+    size_arcsec: 0.105
+```
+
+`frame: sky` means the same thing it does in ds9: the region is placed from its RA/Dec, so a set
+drawn on one dither lands on the same stars in the next, and a box keeps its orientation on the sky
+if the field is rotated. `frame: image` keeps the stored pixels instead, which is what something
+fixed to the detector wants.
+
+**Loading a file whose two frames disagree asks which to use** — that is, a file drawn on a
+different pointing of the same field. The question names the difference ("3 region(s) sit up to
+20.4 pixel(s) apart in the two frames") and defaults to the frame the file was saved with. It is
+not asked when the two agree, which is every file loaded back onto the image it was drawn on: those
+regions come back exactly where they were. `--regions` at startup never asks; it takes the frame
+the file was saved with.
+
+Anything that moved, and anything that could not be placed because this image has no WCS, is said
+in the summary. A file saved with no WCS available has no sky positions to record and is always
+read back in pixels.
 
 ds9 export writes sky coordinates automatically when image coordinates would not line up — ds9's
 `image` frame always means FITS axes 1 and 2, while an OSIRIS cube is displayed on axes 3 and 2.
 Anything that cannot be carried across, in either direction, is listed in a summary rather than
 dropped in silence.
+
+On the way in, every frame ds9 writes is read: `image`, `physical`, and the sky frames `icrs`,
+`fk5`/`j2000`, `fk4`/`b1950`, `galactic` and `ecliptic`. A sky-frame file needs the image to have a
+WCS covering the two axes on display — with one, positions in any of those frames land on the right
+pixel, in decimal degrees or sexagesimal. `physical` is read as image coordinates: the two differ
+only for a file cut out of a larger one with IRAF `LTV`/`LTM` keywords, and that shift is not
+applied. Shapes QuickLook 3 does not draw — an ellipse, a compass, a ruler — are named in the
+summary, so a file never loads short without saying why.
 
 `--regions FILE` loads a region file at startup, in either format.
 

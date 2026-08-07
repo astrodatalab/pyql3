@@ -1554,6 +1554,94 @@ which walks every live ViewBox, so window construction is O(live views) — 0.03
 `tests/conftest.py::destroy_leftover_windows` destroys leftovers with `shiboken6.delete`:
 **150 s → 60 s** for the full suite, same 937 tests.
 
+## M20. A ds9 region file in the `physical` frame loaded as nothing at all
+
+- **Status:** ✅ FIXED — `ds9_regions.py` (`_normalize_pixel_frames`, `_parse_shapes`,
+  `_report_annotations`), covered by `tests/test_ds9_regions.py` (`test_a_physical_frame_reads_as_
+  image_coordinates` and the three tests beside it)
+- **Severity:** high — every region in the file was lost, and the GUI said the file was fine
+- **Reported by a user**, opening `example/mag06maylgs1_wide_kp_GCOWS_2012a.reg`.
+
+### Symptom
+
+Thirty-odd `AstropyUserWarning`s on the terminal — `A coordinate frame was not found for region:
+"box(...)", skipping` — and an empty image. The dialog said `Loaded 0 region(s).` with no
+explanation, because the `Report` was empty: nothing in *our* code had skipped anything.
+
+### Root cause
+
+Two failures, one behind the other.
+
+`regions` 0.12 lists `physical` among its **unsupported frames**, and its parser does not treat
+that as a local failure: `read.py` sets `frame = None`, and every shape after that line is then
+dropped for having no frame. One word on line 4 cost all 29 regions. ds9's two pixel frames differ
+only through IRAF's `LTV`/`LTM` section keywords — absent from every reduced cube and mosaic we
+handle — so `physical` and `image` are the same numbers here.
+
+The loss was invisible because the library reports through `warnings.warn`. A GUI user never sees
+the terminal, and the default warning filter shows a given message once per process, so the second
+attempt at the same file printed nothing at all. This module exists to make ds9 conversion losses
+explicit; a whole category of them was bypassing the `Report`.
+
+### Fix
+
+`_normalize_pixel_frames()` rewrites `physical` frame lines to `image` before parsing and leaves a
+note saying so, including that `LTV`/`LTM` are not applied (the reader is handed a WCS, not a
+header). `_parse_shapes()` wraps `Regions.parse` in `warnings.catch_warnings(record=True)` and
+folds what it catches into `report.skipped`, deduplicated; anything that is not a `UserWarning` is
+re-emitted rather than swallowed. `_report_annotations()` covers the remaining silent hole — a
+`#`-prefixed `compass`/`ruler`/`projection` is a *comment* to `regions`, so it produces no region
+and no warning either; that same file had a compass in it. `Report.summary()` now counts items
+past ten instead of listing them, since a file that fails uniformly fails once per region.
+
+## M21. Arrows in every sky frame but ICRS landed in the wrong place
+
+- **Status:** ✅ FIXED — `ds9_regions.py` (`_sky_tail`, `_length_in_pixels`, `_arrow_from_match`)
+  and `sky.py` (`CelestialMap.from_skycoord`), covered by the `sky frames` block of
+  `tests/test_ds9_regions.py`
+- **Severity:** high — a region silently drawn somewhere it is not
+- **Found while answering "which ds9 constructs do we not support?"**, by round-tripping one
+  known pixel through every frame instead of reading the code.
+
+### Symptom
+
+A circle and an arrow written on the *same coordinates*, in the same file:
+
+| frame | circle | arrow |
+|-------|--------|-------|
+| `icrs` | exact | exact |
+| `fk5` | exact | 0.09 px off |
+| `fk4` | exact | **6954 px off** |
+| `galactic` | exact | dropped as "outside this image" |
+| `ecliptic` | exact | 248,000 px off |
+
+### Root cause
+
+Shapes go through `regions`, which reads the frame line and hands astropy a `SkyCoord` in that
+frame. Arrows are hand-parsed — the library drops `vector(...)` — and the hand-written path took
+the two numbers as ICRS RA/Dec degrees no matter what the file declared. `fk4` is B1950, ~0.7°
+away; galactic longitude is not RA at all.
+
+Two more conventions were wrong for the same reason. ds9 writes equatorial positions in
+**sexagesimal**, where the longitude is in *hours* — `_VECTOR_RE` matched decimal digits only, so
+such a line was not recognised as a vector, fell through to `regions`, which treats `# vector(`
+as a comment, and vanished **with no warning from anything**. And ds9 puts the unit inside the
+length field (`15"`), which the old regex matched and discarded before multiplying by 3600: a
+15-arcsecond arrow was drawn 3600 times too long.
+
+### Fix
+
+`CelestialMap.from_skycoord()` takes a `SkyCoord` in any frame and goes through
+`astropy.wcs.utils.skycoord_to_pixel`, which transforms into the WCS's own celestial frame first
+— the same call `regions` makes for a shape, so the two paths cannot drift. `_sky_tail()` builds
+that coordinate, choosing hours or degrees for a sexagesimal longitude by frame;
+`_length_in_pixels()` reads `"`, `'`, `d`, `p`, `i` and the bare case (degrees in a sky frame,
+pixels in a pixel frame). `_SKY_FRAMES` now maps all seven ds9 names to astropy frames, mirroring
+the library's `ds9_frame_map`, with a test asserting the two tables stay equal.
+
+A vector line that does not parse is now reported instead of silently dropped, and an arrow in a
+frame that cannot be placed (`wcsa`, `detector`) is refused rather than read as pixels.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |

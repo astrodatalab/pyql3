@@ -22,7 +22,7 @@ Nothing here knows about ds9 or about regions; `ds9_regions` builds on it.
 import math
 
 import numpy as np
-from astropy.wcs.utils import proj_plane_pixel_scales
+from astropy.wcs.utils import proj_plane_pixel_scales, skycoord_to_pixel
 
 
 class CelestialMap:
@@ -103,10 +103,35 @@ class CelestialMap:
         return (ra % 360.0, dec)
 
     def from_sky(self, ra_deg, dec_deg):
-        """`(ra_deg, dec_deg)` to orig `(x, y)`, or None if unusable or off the projection."""
+        """`(ra_deg, dec_deg)` to orig `(x, y)`, or None if unusable or off the projection.
+
+        The numbers are the WCS's own world coordinates. Anything that might be in another
+        frame — galactic, B1950 — belongs in `from_skycoord`, which converts first.
+        """
         if not self.usable:
             return None
         px, py = self.wcs2d.world_to_pixel_values(float(ra_deg), float(dec_deg))
+        return self._orig_pixel(px, py)
+
+    def from_skycoord(self, coord):
+        """A `SkyCoord` in *any* frame to orig `(x, y)`, or None.
+
+        `skycoord_to_pixel` transforms the coordinate into the WCS's own celestial frame before
+        projecting it, so a galactic or B1950 position lands where it belongs rather than where
+        its numbers would fall if they were read as RA/Dec. This is the same path the `regions`
+        package takes for a sky shape, which is what keeps a hand-parsed arrow and a
+        library-parsed circle on the same pixel.
+        """
+        if not self.usable or coord is None:
+            return None
+        try:
+            px, py = skycoord_to_pixel(coord, self.wcs2d)
+        except Exception:       # an un-transformable frame, or a WCS wcslib will not invert
+            return None
+        return self._orig_pixel(px, py)
+
+    def _orig_pixel(self, px, py):
+        """A `wcs2d` pixel pair as orig `(x, y)`, or None if it is not a real position."""
         px, py = float(px), float(py)
         if not (math.isfinite(px) and math.isfinite(py)):
             # A position outside the projection's valid range comes back as NaN rather than

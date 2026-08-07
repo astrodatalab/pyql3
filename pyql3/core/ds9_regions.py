@@ -8,6 +8,9 @@ parts it cannot do. Both gaps were measured rather than assumed (see `TODO_regio
   out of the file text and appended to the output by hand. Every ds9 arrow is a `vector`.
 - **`textangle` is read but never written**: it arrives as `visual['rotation']` and is missing
   from `serialize()` output, so a rotated label is re-attached by hand.
+- **`physical` is refused as a frame**, and refusing a frame means dropping every shape that
+  follows it — a whole file, in practice — so it is rewritten to `image` before parsing (see
+  `_normalize_pixel_frames`).
 
 Two rules about the output were established against ds9 itself:
 
@@ -22,6 +25,7 @@ is the specific failure this whole module is a reaction to.
 
 import math
 import re
+import warnings
 from dataclasses import dataclass, field
 
 import astropy.units as u
@@ -36,7 +40,14 @@ from regions import (
     TextPixelRegion,
 )
 
-from pyql3.core.regions_model import Arrow, Box, Circle, RegionList, Text
+from pyql3.core.regions_model import (
+    Arrow,
+    Box,
+    Circle,
+    RegionFormatError,
+    RegionList,
+    Text,
+)
 from pyql3.core.sky import CelestialMap
 
 #: ds9's own header line. `regions` writes its own variant, which ds9 also accepts.
@@ -46,19 +57,63 @@ DS9_HEADER = "# Region file format: DS9 version 4.1"
 OUTPUT_FRAMES = ("auto", "image", "sky")
 
 #: `vector(x, y, length, angle)`, with or without ds9's leading `#`, and any trailing
-#: properties. Written by hand because `regions` has no vector at all.
+#: properties. Written by hand because `regions` has no vector at all. The fields are taken as
+#: whole tokens rather than numbers: in a sky frame ds9 writes sexagesimal positions and a length
+#: carrying its unit (`15"`), and reading those as bare degrees put arrows kiloparsecs away.
 _VECTOR_RE = re.compile(
     r"""^\s*(?:\#\s*)?vector\s*\(\s*
-        ([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*
-        ([-+0-9.eE]+)\s*(?:"|'|d)?\s*,\s*([-+0-9.eE]+)\s*\)
+        ([^,()]+?)\s*,\s*([^,()]+?)\s*,\s*
+        ([^,()]+?)\s*,\s*([^,()]+?)\s*\)
         (?P<properties>.*)$""",
     re.VERBOSE | re.IGNORECASE)
 
+#: Enough of a vector to know one was meant. A line matching this but not `_VECTOR_RE` is
+#: reported: `regions` treats `# vector(...)` as a comment, so it would otherwise just vanish.
+_VECTOR_LOOSE_RE = re.compile(r"^\s*(?:\#\s*)?vector\s*\(", re.IGNORECASE)
+
 #: A coordinate-system line, which applies to everything after it.
 _FRAME_RE = re.compile(
-    r"^\s*(image|physical|fk4|fk5|icrs|galactic|ecliptic|wcs[a-z]?)\s*$", re.IGNORECASE)
+    r"^\s*(image|physical|fk4|b1950|fk5|j2000|icrs|galactic|ecliptic|wcs[a-z]?)\s*$",
+    re.IGNORECASE)
 
-_SKY_FRAMES = ("fk4", "fk5", "icrs", "galactic", "ecliptic")
+#: ds9's sky frames, mapped to the astropy frame each one means. This mirrors the library's own
+#: `regions.io.ds9.core.ds9_frame_map` and must keep mirroring it: a hand-parsed arrow and a
+#: library-parsed circle written on the same coordinates have to land on the same pixel, which
+#: `tests/test_ds9_regions.py::test_our_frame_table_matches_the_librarys` holds them to.
+_SKY_FRAMES = {
+    "icrs": "icrs",
+    "fk5": "fk5",
+    "j2000": "fk5",
+    "fk4": "fk4",
+    "b1950": "fk4",
+    "galactic": "galactic",
+    "ecliptic": "barycentricmeanecliptic",
+}
+
+#: Frames whose numbers are pixels of the image on display.
+_PIXEL_FRAMES = ("image", "physical")
+
+#: Astropy frames whose longitude ds9 writes in hours when it writes sexagesimal. Galactic and
+#: ecliptic sexagesimal is degrees, and reading `17:45:40` as hours there is a 15× error.
+_HOUR_ANGLE_FRAMES = ("icrs", "fk5", "fk4")
+
+#: ds9's unit suffixes on a length, as multiples of an arcsecond. `p` and `i` mean pixels, which
+#: is not an angle at all, so they are handled separately.
+_ARCSEC_PER = {'"': 1.0, "'": 60.0, "d": 3600.0}
+
+#: How many items of a report to spell out before counting the rest. A file that goes wrong
+#: uniformly goes wrong once per region, and a dialog of five hundred identical lines is a dialog
+#: nobody reads. The lists themselves stay complete for anything that wants them.
+_MAX_SUMMARY_ITEMS = 10
+
+#: Trailing wording the library adds to every warning; it is the report's job to say this.
+_WARNING_TAIL_RE = re.compile(r",?\s*skipping\.?\s*$", re.IGNORECASE)
+
+#: ds9 annotations written behind a `#`, which makes them comments to `regions` — it drops them
+#: without even a warning, so they are counted here to keep them out of the silent-loss category.
+#: `vector` is absent deliberately: that one we do read.
+_ANNOTATION_RE = re.compile(
+    r"^\s*\#\s*(compass|ruler|projection|segment|panda|epanda|bpanda)\s*\(", re.IGNORECASE)
 
 _TEXT_PROPERTY_RE = re.compile(r"text\s*=\s*\{([^}]*)\}")
 _TAG_PROPERTY_RE = re.compile(r"tag\s*=\s*\{([^}]*)\}")
@@ -84,14 +139,23 @@ class Report:
         return bool(self.skipped or self.notes)
 
     def summary(self):
+        """The report as text for a dialog, long lists shortened to a count."""
         lines = []
         if self.skipped:
             lines.append("Not converted:")
-            lines += [f"  • {item}" for item in self.skipped]
+            lines += _bulleted(self.skipped)
         if self.notes:
             lines.append("Note:")
-            lines += [f"  • {item}" for item in self.notes]
+            lines += _bulleted(self.notes)
         return "\n".join(lines)
+
+
+def _bulleted(items):
+    """`items` as bullet lines, with everything past `_MAX_SUMMARY_ITEMS` counted instead."""
+    lines = [f"  • {item}" for item in items[:_MAX_SUMMARY_ITEMS]]
+    if len(items) > _MAX_SUMMARY_ITEMS:
+        lines.append(f"  • ...and {len(items) - _MAX_SUMMARY_ITEMS} more")
+    return lines
 
 
 # ===================================================================== writing
@@ -387,13 +451,10 @@ def from_ds9(text, wcs=None, axis_indices=(0, 1), where="region file"):
     mapping = CelestialMap(wcs, *axis_indices)
     report = Report()
 
+    text = _normalize_pixel_frames(text, report)
+    _report_annotations(text, report)
     arrows, remaining = _extract_vectors(text, mapping, report)
-
-    try:
-        parsed = Regions.parse(remaining, format="ds9") if remaining.strip() else []
-    except Exception as exc:
-        from pyql3.core.regions_model import RegionFormatError
-        raise RegionFormatError(f"{where} could not be read as a ds9 region file: {exc}") from exc
+    parsed = _parse_shapes(remaining, report, where)
 
     regions = []
     pixel_frame_count = 0
@@ -417,6 +478,103 @@ def from_ds9(text, wcs=None, axis_indices=(0, 1), where="region file"):
     return RegionList(regions=regions, source=where), report
 
 
+def _normalize_pixel_frames(text, report):
+    """Rewrite ds9's `physical` frame lines to `image`, noting it in the report.
+
+    ds9 has two pixel frames. `image` counts pixels of the file as stored; `physical` counts them
+    in the coordinates of whatever the file was cut from, which IRAF records in the `LTV`/`LTM`
+    keywords. Without those keywords — the case for every reduced cube and mosaic we see — the two
+    frames are the same numbers.
+
+    `regions` 0.12 refuses `physical` outright, and refusing a frame is not a local failure there:
+    it clears the current frame, so *every shape after that line* is dropped with a warning. A
+    whole file of perfectly ordinary boxes therefore loads as nothing at all, which is what
+    `example/mag06maylgs1_wide_kp_GCOWS_2012a.reg` did. Rewriting the one word is the whole fix.
+
+    The `LTV`/`LTM` shift is not applied: the reader is handed a WCS, not a header, and no file we
+    have carries the keywords. The note says so rather than leaving the assumption implicit.
+    """
+    lines = text.splitlines()
+    rewritten = 0
+
+    for index, line in enumerate(lines):
+        # ds9 accepts several statements on a line, separated by semicolons, and the frame is one
+        # of them. Only a segment that is nothing but the word is touched, so rejoining is exact.
+        segments = line.split(";")
+        for position, segment in enumerate(segments):
+            match = _FRAME_RE.match(segment)
+            if match and match.group(1).lower() == "physical":
+                segments[position] = "image"
+                rewritten += 1
+        lines[index] = ";".join(segments)
+
+    if not rewritten:
+        return text
+
+    report.notes.append(
+        "this file uses ds9's 'physical' frame, which was read as image coordinates; the two "
+        "differ only for a file cut from a larger one with IRAF LTV/LTM keywords, which are not "
+        "applied here")
+    return "\n".join(lines)
+
+
+def _parse_shapes(text, report, where):
+    """`Regions.parse`, with everything it complains about moved into the report.
+
+    The library announces a shape it cannot read through `warnings.warn`, which lands in the
+    terminal where a GUI user never sees it — so a file it dropped entirely looked like a file
+    with nothing in it. Silent loss is the failure this module exists to prevent, so the warnings
+    are caught and reported instead of printed.
+
+    Catching them also stops the default warning filter from hiding the second copy: it shows a
+    given message once per process, so re-opening the same bad file said nothing at all.
+    """
+    if not text.strip():
+        return []
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            parsed = Regions.parse(text, format="ds9")
+        except Exception as exc:
+            raise RegionFormatError(
+                f"{where} could not be read as a ds9 region file: {exc}") from exc
+
+    _record_parse_warnings(caught, report)
+    return parsed
+
+
+def _record_parse_warnings(caught, report):
+    """Fold the library's warnings into `report`, re-raising anything that is not one of ours."""
+    messages = []
+    for warning in caught:
+        if not issubclass(warning.category, UserWarning):
+            # Not a complaint about this file — a deprecation, say. Do not swallow it.
+            warnings.warn_explicit(warning.message, warning.category, warning.filename,
+                                   warning.lineno)
+            continue
+        message = _WARNING_TAIL_RE.sub("", " ".join(str(warning.message).split()))
+        if message and message not in messages:
+            messages.append(message)
+
+    report.skipped += messages
+
+
+def _report_annotations(text, report):
+    """Note the `#`-prefixed ds9 annotations that nothing downstream will mention.
+
+    A `# compass(...)` or `# ruler(...)` reads as a plain comment to `regions`, so unlike an
+    unsupported *shape* it does not even produce a warning — it simply is not in the result. There
+    is no model region to put one in, but the user should still be told it was there.
+    """
+    for number, line in enumerate(text.splitlines(), start=1):
+        match = _ANNOTATION_RE.match(line)
+        if match:
+            report.skipped.append(
+                f"line {number}: a ds9 {match.group(1).lower()} annotation, which QuickLook 3 "
+                "cannot draw")
+
+
 def _extract_vectors(text, mapping, report):
     """Pull `vector(...)` lines out of `text`, returning `(arrows, text_without_them)`.
 
@@ -437,6 +595,10 @@ def _extract_vectors(text, mapping, report):
 
         match = _VECTOR_RE.match(line)
         if not match:
+            if _VECTOR_LOOSE_RE.match(line):
+                report.skipped.append(
+                    f"line {number}: a vector whose fields could not be read ({line.strip()})")
+                continue
             kept.append(line)
             continue
 
@@ -448,30 +610,63 @@ def _extract_vectors(text, mapping, report):
 
 
 def _arrow_from_match(match, frame, mapping, line_number, report):
-    x_raw, y_raw, length_raw, angle_raw = (float(match.group(i)) for i in range(1, 5))
+    x_text, y_text, length_text, angle_text = (match.group(i).strip() for i in range(1, 5))
     properties = match.group("properties") or ""
+
+    angle_raw = _as_float(angle_text)
+    if angle_raw is None:
+        report.skipped.append(f"line {line_number}: an arrow with an unreadable angle "
+                              f"({angle_text})")
+        return None
 
     if frame in _SKY_FRAMES:
         if not mapping.usable:
             report.skipped.append(
                 f"line {line_number}: an arrow in {frame} coordinates, but {mapping.reason}")
             return None
-        placed = mapping.from_sky(x_raw, y_raw)
+
+        tail = _sky_tail(x_text, y_text, frame)
+        if tail is None:
+            report.skipped.append(
+                f"line {line_number}: an arrow whose {frame} position could not be read "
+                f"({x_text},{y_text})")
+            return None
+
+        placed = mapping.from_skycoord(tail)
         if placed is None:
             report.skipped.append(
-                f"line {line_number}: an arrow at RA/Dec {x_raw:g},{y_raw:g} falls outside "
+                f"line {line_number}: an arrow at {frame} {x_text},{y_text} falls outside "
                 "this image")
             return None
         x, y = placed
-        length = mapping.arcsec_to_pixels(length_raw * 3600.0)
+
+        length = _length_in_pixels(length_text, frame, mapping)
         if length is None or length <= 0:
             report.skipped.append(
-                f"line {line_number}: an arrow whose length could not be converted to pixels")
+                f"line {line_number}: an arrow whose length could not be converted to pixels "
+                f"({length_text})")
             return None
+
         # A sky-frame angle is measured from the sky axes, so on a rotated field it is not the
-        # image-frame angle. The conversion is the library's own (see `sky_angle_to_pixel`).
-        angle = sky_angle_to_pixel(mapping, x_raw, y_raw, angle_raw)
+        # image-frame angle. The conversion is the library's own (see `sky_angle_to_pixel`), and
+        # it wants the tail as RA/Dec whatever frame the file wrote it in.
+        icrs = tail.icrs
+        angle = sky_angle_to_pixel(mapping, icrs.ra.deg, icrs.dec.deg, angle_raw)
+    elif frame not in _PIXEL_FRAMES:
+        # `wcsa`, `detector`, ... — the library refuses these for shapes, and guessing that the
+        # numbers are pixels would put the arrow somewhere arbitrary.
+        report.skipped.append(
+            f"line {line_number}: an arrow in {frame} coordinates, which cannot be placed on "
+            "this image")
+        return None
     else:
+        x_raw, y_raw = _as_float(x_text), _as_float(y_text)
+        length_raw = _length_in_pixels(length_text, frame, mapping)
+        if x_raw is None or y_raw is None or length_raw is None:
+            report.skipped.append(
+                f"line {line_number}: an arrow whose numbers could not be read "
+                f"({x_text},{y_text},{length_text})")
+            return None
         x, y = x_raw - 1.0, y_raw - 1.0     # ds9 counts pixels from 1
         length = length_raw
         angle = angle_raw
@@ -482,6 +677,54 @@ def _arrow_from_match(match, frame, mapping, line_number, report):
 
     return Arrow(x=x, y=y, length=length, angle=angle % 360.0,
                  **_attributes_from_properties(properties))
+
+
+def _as_float(text):
+    """`text` as a number, or None. ds9 allows a trailing `d` on a plain degree value."""
+    try:
+        return float(str(text).strip().rstrip("dD"))
+    except ValueError:
+        return None
+
+
+def _sky_tail(x_text, y_text, frame):
+    """An arrow's tail as a `SkyCoord` in the frame the file declared, or None.
+
+    ds9 writes an equatorial position either as degrees or as sexagesimal, and in sexagesimal the
+    longitude is in *hours* — `17:45:40` is 266.4°, not 17.8°. Galactic and ecliptic sexagesimal
+    is degrees throughout. Getting that wrong is a 15× error, which lands off the image rather
+    than merely off the target, so it is decided here from the frame rather than guessed.
+    """
+    astropy_frame = _SKY_FRAMES[frame]
+    sexagesimal = any(mark in x_text.lower() for mark in (":", "h"))
+    longitude_unit = (u.hourangle if sexagesimal and astropy_frame in _HOUR_ANGLE_FRAMES
+                      else u.deg)
+    try:
+        return SkyCoord(x_text, y_text, frame=astropy_frame, unit=(longitude_unit, u.deg))
+    except Exception:       # unparseable text, or a unit the coordinate string contradicts
+        return None
+
+
+def _length_in_pixels(text, frame, mapping):
+    """A ds9 `length` field as pixels, or None if it cannot be converted.
+
+    ds9 puts the unit in the value: `15"` is fifteen arcseconds, `15'` fifteen arcminutes, `15d`
+    fifteen degrees, `15p`/`15i` fifteen pixels. A bare number means degrees in a sky frame and
+    pixels in a pixel frame — which is why reading a sky arrow's `15"` as a bare degree value
+    made it 3600 times too long.
+    """
+    text = str(text).strip()
+    if not text:
+        return None
+
+    suffix = text[-1].lower() if text[-1] in ('"', "'", "d", "D", "p", "P", "i", "I") else ""
+    value = _as_float(text[:-1] if suffix else text)
+    if value is None:
+        return None
+
+    if suffix in ("p", "i") or (not suffix and frame in _PIXEL_FRAMES):
+        return value
+    return mapping.arcsec_to_pixels(value * _ARCSEC_PER.get(suffix, 3600.0))
 
 
 def _attributes_from_properties(properties):

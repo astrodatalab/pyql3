@@ -192,6 +192,32 @@ ds9-style annotations — circle, box, arrow, text — drawn over the image, sav
   "orig" means). Display coordinates exist only inside `region_layer.py`, between a `coords`
   call and a `setPos`. A region written to a file in display coordinates would move when the user
   flipped the view.
+- **A native file holds both frames, and `frame:` is always written.** The geometry is pixels and
+  the `sky` block is degrees, so a file saved with a WCS carries every region twice; `frame:` says
+  which is meant and is written even at its default (`regions_model.ALWAYS_WRITTEN`) so that
+  "absent" never has to be read as "pixels".
+- **The file records its own formatting in a `style:` block** — ds9's `global` line, in YAML. Every
+  file states the colour, line width, dashing and font size that an omitted key means
+  (`STYLE_FIELDS`, `default_style()`), and a region writes only what differs. Two reasons it is not
+  just left implicit: a region that took the defaults would otherwise have its appearance decided
+  by whatever this build defaults to when the file is read back, and editing the one block should
+  restyle everything that did not override it, as editing ds9's `global` does. `_style_from_dict()`
+  **raises** rather than collecting problems, unlike every other validator here — everything below
+  the block is read against it, so a bad one makes the rest meaningless.
+- **The `SkyAnchor` is read back, not just written.** `regions_io.placed_on_image()` places a
+  `frame: sky` region from its RA/Dec on load, so a set drawn on one dither lands on the same stars
+  in the next, as a ds9 `fk5` file does. Three consequences: the anchor is **recomputed** on save
+  rather than preserved (the pixels are what the user dragged, so an anchor carried in from a file
+  is stale the moment a region moves); a re-placement landing within `SAME_PLACE` of the stored
+  pixels keeps the *stored* numbers, so loading onto the image a file was drawn on is exact rather
+  than drifting by a WCS round trip per cycle; and `_from_sky_anchor()` is the inverse of
+  `sky_anchor_for()` and has to stay that way.
+- **When the two frames disagree, the user picks** — as ds9 asks. `load_regions(choose_frame=...)`
+  takes the hook, `MainWindow.choose_region_frame` is it, and it is passed **only when `announce`**
+  is set: a `--regions` startup takes the file's own frame rather than stopping on a modal. The
+  question is skipped when both frames place everything within `SAME_PLACE`, which is every file
+  loaded back onto its own image, and skipped when `frame=` names one outright. **A test that
+  reaches the hook must stub it**, like `confirm_cli_install` — `QMessageBox.exec` blocks the suite.
 - **Items are parented to the ImageItem**, so view rotation is inherited for free, and are
   removed with `ViewBox.removeItem()` — `setParentItem(None)` leaves them painted (`BUGS.md` B7).
 - **Colour names are kept, not resolved, in the model and in files.** `resolve_color()` maps them
@@ -252,6 +278,24 @@ Do not "simplify" the writer past any of these:
 - `regions` 0.12 **drops `vector(...)` silently on read** (a `UserWarning`, no error), which is
   why the arrow reader is ours. Its `PixCoord` is 0-based and it applies ds9's 1-based shift
   itself; do not shift again.
+- **`regions` refuses the `physical` frame, and refusing a frame there drops every shape after
+  it** — one word on line 4 of an ordinary GC region file cost all 29 regions (`BUGS.md` M20). The
+  reader rewrites `physical` to `image` before parsing; the two differ only through IRAF `LTV`/
+  `LTM` keywords, which no file we handle carries.
+- **Arrows are hand-parsed, so every convention the library handles for shapes has to be handled
+  again here** — and each one was wrong until it was tested (`BUGS.md` M21). ds9 declares seven
+  sky frame names, writes equatorial positions in **sexagesimal hours** (`17:45:40` is 266.4°, not
+  17.8°) but galactic and ecliptic sexagesimal in degrees, and puts the unit inside the length
+  (`15"`, `15'`, `15d`, `15p`). Reading a tail as ICRS degrees whatever the file said put a `fk4`
+  arrow 7000 px from the circle beside it. `_sky_tail()` and `_length_in_pixels()` own those
+  rules; `CelestialMap.from_skycoord()` does the frame conversion, through the same
+  `skycoord_to_pixel` the library uses, which is what keeps the two paths on one pixel.
+  `_SKY_FRAMES` mirrors `regions.io.ds9.core.ds9_frame_map` and a test asserts they stay equal.
+- **What the library refuses, it announces with `warnings.warn`** — invisible to a GUI user, and
+  shown once per process, so the second attempt at a bad file is silent. `_parse_shapes()` catches
+  those warnings into the `Report`; do not let a parse run outside it. A `#`-prefixed annotation
+  (`compass`, `ruler`, ...) is worse still — a plain comment to `regions`, so no region and no
+  warning — and is counted by `_report_annotations()` for the same reason.
 - ds9's `image` frame means FITS axes 1 and 2, which for an OSIRIS cube is not what is displayed
   — so export writes sky coordinates whenever image coordinates would not line up in ds9
   (`frame="auto"`; `"image"` and `"sky"` force it, and say so in the report). Anything that

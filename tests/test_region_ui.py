@@ -15,11 +15,13 @@ delivers a `bool` to a one-argument slot and has caught real bugs here before (`
 """
 from dataclasses import replace
 
+import numpy as np
 import pytest
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from pyql3.core.regions_io import load_regions, save_regions, suggested_filename, with_sky_anchors
 from pyql3.core.regions_model import Arrow, Box, Circle, RegionFormatError, Text
+from pyql3.core.sky import CelestialMap
 from pyql3.gui.main_window import MainWindow
 from pyql3.gui.tools.region_list import COL_ANGLE, COL_LABEL, COL_SIZE, COL_X, RegionListDialog
 
@@ -183,10 +185,13 @@ def test_saving_and_loading_a_round_trip_through_the_menu(window, some_regions, 
     restored = window.region_layer.regions
     assert len(restored) == len(some_regions)
     for before, after in zip(some_regions, restored, strict=True):
-        # The file gains a sky anchor on the way out — that is the point of saving — so the
-        # comparison is of everything else.
+        # The file gains a sky anchor and `frame: sky` on the way out — that is the point of
+        # saving — so the comparison is of everything else. The geometry must come back
+        # *exactly*: loading re-places a sky-anchored region, and on the image it was drawn on
+        # that has to be a no-op rather than a WCS round trip's worth of drift per cycle.
         assert after.sky is not None, f"{after.TYPE} lost its sky anchor"
-        assert replace(after, sky=None) == before
+        assert after.frame == "sky", f"{after.TYPE} was not recorded as a sky position"
+        assert replace(after, sky=None, frame=before.frame) == before
 
 
 def test_exporting_ds9_forces_the_reg_suffix(window, some_regions, tmp_path, monkeypatch):
@@ -315,6 +320,174 @@ def test_saving_records_the_sky_position_alongside_the_pixels(tmp_path, loaded_v
     assert original.sky is None
 
 
+def dithered(wcs, east_pixels=20.0):
+    """A copy of `wcs` pointed `east_pixels` away — the next frame of the same field.
+
+    Written against `wcs.wcs.lng`/`lat` rather than axes 1 and 2: the cube these tests use is an
+    OSIRIS one, whose celestial axes are 2 and 3.
+    """
+    moved = wcs.deepcopy()
+    lng, lat = wcs.wcs.lng, wcs.wcs.lat
+    crval = list(wcs.wcs.crval)
+    crval[lng] += east_pixels * abs(wcs.wcs.cdelt[lng]) / np.cos(np.radians(crval[lat]))
+    moved.wcs.crval = crval
+    return moved
+
+
+def field_rotated(wcs, degrees):
+    """A copy of `wcs` with its sky axes turned, as a different position angle would give."""
+    turned = wcs.deepcopy()
+    lng, lat = wcs.wcs.lng, wcs.wcs.lat
+    turn = np.radians(degrees)
+    pc = np.eye(wcs.naxis)
+    pc[lng, lng] = pc[lat, lat] = np.cos(turn)
+    pc[lng, lat], pc[lat, lng] = -np.sin(turn), np.sin(turn)
+    turned.wcs.pc = pc
+    return turned
+
+
+def test_regions_follow_their_sky_positions_onto_another_pointing(tmp_path, loaded_viewer):
+    """The whole point of the anchor, and what a ds9 file in fk5 does: land on the same stars."""
+    path = tmp_path / "regions.yml"
+    axes = loaded_viewer.display_axis_indices()
+    drawn = [Circle(x=10.0, y=9.0, radius=3.0), Box(x=12.0, y=8.0, width=4.0, height=2.0,
+                                                    angle=30.0)]
+    save_regions(path, drawn, wcs=loaded_viewer.wcs, axis_indices=axes)
+
+    moved_wcs = dithered(loaded_viewer.wcs)
+    loaded, report = load_regions(path, wcs=moved_wcs, axis_indices=axes)
+
+    here = CelestialMap(moved_wcs, *axes)
+    for before, after in zip(drawn, loaded.regions, strict=True):
+        assert (after.x, after.y) != pytest.approx((before.x, before.y), abs=1.0), \
+            "a dithered frame must move the region"
+        assert here.to_sky(after.x, after.y) == pytest.approx(
+            (after.sky.ra_deg, after.sky.dec_deg), abs=1e-9), "it must land on its own sky position"
+    assert any("sky positions" in note for note in report.notes), report.summary()
+
+
+def test_a_region_saved_in_pixels_stays_in_pixels(tmp_path, loaded_viewer):
+    """`frame: image` is for something fixed to the detector, and must not chase the sky."""
+    path = tmp_path / "regions.yml"
+    axes = loaded_viewer.display_axis_indices()
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=3.0)], wcs=loaded_viewer.wcs,
+                 axis_indices=axes, frame="image")
+
+    assert "frame: sky" not in path.read_text()
+
+    loaded, report = load_regions(path, wcs=dithered(loaded_viewer.wcs), axis_indices=axes)
+    circle, = loaded.regions
+    assert (circle.x, circle.y) == (10.0, 9.0)
+    # The sky position is still recorded alongside, so the file does hold both frames and the
+    # difference between them is worth a word — it just is not acted on.
+    assert any("kept at their saved pixel" in note for note in report.notes), report.summary()
+
+
+def both_frames_file(tmp_path, viewer, name="regions.yml"):
+    """A saved file holding one region in both frames, and the pointing it was not drawn on."""
+    path = tmp_path / name
+    axes = viewer.display_axis_indices()
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=3.0)], wcs=viewer.wcs, axis_indices=axes)
+    return path, dithered(viewer.wcs), axes
+
+
+def test_a_file_holding_both_frames_asks_which_one_to_use(tmp_path, loaded_viewer):
+    """ds9 asks the same question, and it is a real one: the two are 20 pixels apart here."""
+    path, elsewhere, axes = both_frames_file(tmp_path, loaded_viewer)
+    asked = []
+
+    loaded, _ = load_regions(path, wcs=elsewhere, axis_indices=axes,
+                             choose_frame=lambda offer: asked.append(offer) or "image")
+
+    assert len(asked) == 1, "the choice must be put exactly once, for the file"
+    assert asked[0].regions == 1
+    assert asked[0].furthest == pytest.approx(20.0, abs=0.5)
+    assert asked[0].saved == "sky"
+    circle, = loaded.regions
+    assert (circle.x, circle.y) == (10.0, 9.0), "the answer was image, so the pixels stand"
+
+
+def test_choosing_sky_places_the_regions_from_their_anchors(tmp_path, loaded_viewer):
+    path, elsewhere, axes = both_frames_file(tmp_path, loaded_viewer)
+
+    loaded, report = load_regions(path, wcs=elsewhere, axis_indices=axes,
+                                  choose_frame=lambda offer: "sky")
+
+    circle, = loaded.regions
+    assert (circle.x, circle.y) != pytest.approx((10.0, 9.0), abs=1.0)
+    assert any("sky positions" in note for note in report.notes), report.summary()
+
+
+def test_the_question_is_not_put_when_the_frames_agree(tmp_path, loaded_viewer):
+    """Loading a file back onto the image it was drawn on is not a decision."""
+    path = tmp_path / "regions.yml"
+    axes = loaded_viewer.display_axis_indices()
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=3.0)], wcs=loaded_viewer.wcs,
+                 axis_indices=axes)
+
+    def refuse(offer):
+        raise AssertionError(f"asked with nothing to choose between: {offer.summary()}")
+
+    loaded, report = load_regions(path, wcs=loaded_viewer.wcs, axis_indices=axes,
+                                  choose_frame=refuse)
+
+    assert (loaded.regions[0].x, loaded.regions[0].y) == (10.0, 9.0)
+    assert report is None
+
+
+def test_with_no_one_to_ask_the_saved_frame_wins(tmp_path, loaded_viewer):
+    """A headless load — a script, `--regions`, a test — must never block on a question."""
+    path, elsewhere, axes = both_frames_file(tmp_path, loaded_viewer)
+
+    loaded, _ = load_regions(path, wcs=elsewhere, axis_indices=axes)
+
+    assert (loaded.regions[0].x, loaded.regions[0].y) != pytest.approx((10.0, 9.0), abs=1.0), \
+        "the file was saved as frame: sky, so that is what an unattended load uses"
+
+
+def test_an_explicit_frame_is_not_second_guessed(tmp_path, loaded_viewer):
+    path, elsewhere, axes = both_frames_file(tmp_path, loaded_viewer)
+
+    def refuse(offer):
+        raise AssertionError("asked despite being told which frame to use")
+
+    loaded, _ = load_regions(path, wcs=elsewhere, axis_indices=axes, frame="image",
+                             choose_frame=refuse)
+
+    assert (loaded.regions[0].x, loaded.regions[0].y) == (10.0, 9.0)
+
+
+def test_a_sky_anchored_file_on_an_image_with_no_wcs_says_so(tmp_path, loaded_viewer):
+    """Falling back to the stored pixels is right; doing it in silence is not."""
+    path = tmp_path / "regions.yml"
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=3.0)], wcs=loaded_viewer.wcs,
+                 axis_indices=loaded_viewer.display_axis_indices())
+
+    loaded, report = load_regions(path, wcs=None)
+
+    circle, = loaded.regions
+    assert (circle.x, circle.y) == (10.0, 9.0)
+    assert any("no WCS" in note for note in report.notes), report.summary()
+
+
+def test_a_rotated_field_turns_a_sky_anchored_box_with_it(tmp_path, loaded_viewer):
+    """The angle is recorded against the sky, so a box keeps its orientation on the sky."""
+    path = tmp_path / "regions.yml"
+    axes = loaded_viewer.display_axis_indices()
+    save_regions(path, [Box(x=10.0, y=9.0, width=4.0, height=2.0, angle=30.0)],
+                 wcs=loaded_viewer.wcs, axis_indices=axes)
+
+    rotated = field_rotated(loaded_viewer.wcs, 25.0)
+    loaded, _ = load_regions(path, wcs=rotated, axis_indices=axes)
+
+    box, = loaded.regions
+    assert box.angle != pytest.approx(30.0, abs=1.0), "the box must turn with the field"
+    here = CelestialMap(rotated, *axes)
+    from pyql3.core.regions_io import pixel_angle_to_sky
+    assert pixel_angle_to_sky(here, box.x, box.y, box.angle) == pytest.approx(
+        box.sky.angle_deg, abs=0.01), "its angle on the sky must be the one that was saved"
+
+
 def test_sky_anchors_are_skipped_when_the_plane_has_no_sky(loaded_viewer):
     """Wavelength against declination is a fine thing to display and has no sky position."""
     anchored = with_sky_anchors([Circle(x=1.0, y=2.0, radius=3.0)], wcs=loaded_viewer.wcs,
@@ -322,13 +495,33 @@ def test_sky_anchors_are_skipped_when_the_plane_has_no_sky(loaded_viewer):
     assert anchored[0].sky is None
 
 
-def test_an_existing_sky_anchor_is_left_alone(loaded_viewer):
+def test_a_stale_sky_anchor_is_recomputed_from_the_pixels(loaded_viewer):
+    """The pixels are what the user dragged; an anchor carried in from a file may be stale.
+
+    Preserving it was harmless while nothing read anchors back. Now that loading places regions
+    from them, writing a stale one would put the region somewhere it has not been since it was
+    moved.
+    """
+    from pyql3.core.regions_model import SkyAnchor
+
+    stale = SkyAnchor(ra_deg=1.0, dec_deg=2.0)
+    anchored = with_sky_anchors([Circle(x=1.0, y=2.0, radius=3.0, sky=stale)],
+                                wcs=loaded_viewer.wcs,
+                                axis_indices=loaded_viewer.display_axis_indices())
+
+    mapping = CelestialMap(loaded_viewer.wcs, *loaded_viewer.display_axis_indices())
+    assert anchored[0].sky.ra_deg == pytest.approx(mapping.to_sky(1.0, 2.0)[0])
+    assert anchored[0].frame == "sky"
+
+
+def test_a_sky_anchor_is_kept_when_this_image_cannot_make_a_new_one(loaded_viewer):
+    """A file opened on a plane with no sky coordinates must not lose what it already knew."""
     from pyql3.core.regions_model import SkyAnchor
 
     kept = SkyAnchor(ra_deg=1.0, dec_deg=2.0)
     anchored = with_sky_anchors([Circle(x=1.0, y=2.0, radius=3.0, sky=kept)],
-                                wcs=loaded_viewer.wcs,
-                                axis_indices=loaded_viewer.display_axis_indices())
+                                wcs=loaded_viewer.wcs, axis_indices=(0, 1))
+
     assert anchored[0].sky is kept
 
 
@@ -582,6 +775,31 @@ def test_regions_saved_in_one_window_load_in_another(qapp, sample_3d_fits, tmp_p
 
 
 # ----------------------------------------------------------- the --regions flag
+
+def test_the_menu_asks_which_frame_but_the_command_line_does_not(window, tmp_path, monkeypatch):
+    """A startup flag must not stop on a modal; the menu is where a question belongs.
+
+    `choose_region_frame` is stubbed rather than exercised — a real `QMessageBox.exec` blocks the
+    suite until it times out (`AGENTS.md`).
+    """
+    path = tmp_path / "regions.yml"
+    axes = window.image_viewer.display_axis_indices()
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=3.0)], wcs=window.image_viewer.wcs,
+                 axis_indices=axes)
+
+    asked = []
+    monkeypatch.setattr(MainWindow, "choose_region_frame",
+                        lambda self, offer: asked.append(offer) or "image")
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    window.image_viewer.wcs = dithered(window.image_viewer.wcs)
+
+    assert window.load_regions_from(path, announce=False) is True
+    assert not asked, "a --regions load must take the file's own frame and get on with it"
+
+    assert window.load_regions_from(path, announce=True) is True
+    assert len(asked) == 1
+    assert window.region_layer.regions[0].x == pytest.approx(10.0), "the answer was image"
+
 
 def test_load_regions_from_reports_a_bad_file_without_a_dialog(window, tmp_path, capsys):
     """`--regions` is typed in a terminal, so a startup failure belongs on stderr, not in a modal."""

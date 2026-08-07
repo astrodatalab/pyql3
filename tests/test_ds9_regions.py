@@ -13,8 +13,10 @@ The `regions` package does most of the work, so these tests concentrate on the s
 The output rules being asserted here were checked against ds9 itself, not inferred; the
 provenance is in `TODO_regions.md` under "ds9 format check".
 """
+import astropy.units as u
 import numpy as np
 import pytest
+from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 
 from pyql3.core.ds9_regions import from_ds9, to_ds9
@@ -321,6 +323,81 @@ def test_a_zero_length_arrow_is_reported():
     assert any("zero length" in item for item in report.skipped), report.summary()
 
 
+# ------------------------------------------------- frames the library refuses
+
+PHYSICAL_FILE = """# Region file format: DS9 version 4.1
+global color=green width=1
+physical
+circle(11,21,5) # color=red
+box(31,41,8,4,20)
+# vector(51,61,40,45) vector=1
+"""
+
+
+def test_a_physical_frame_reads_as_image_coordinates():
+    """`physical` and `image` differ only through IRAF LTV/LTM keywords, which our files lack.
+
+    `regions` 0.12 refuses `physical` and, worse, clears the current frame when it does — so every
+    shape after that one line was dropped and a real GC region file loaded as nothing at all.
+    """
+    physical, report = from_ds9(PHYSICAL_FILE, axis_indices=IMAGE_AXES)
+    image, _ = from_ds9(PHYSICAL_FILE.replace("physical", "image"), axis_indices=IMAGE_AXES)
+
+    assert len(physical) == 3, report.summary()
+    assert physical.regions == image.regions
+    assert not report.skipped, report.summary()
+    assert any("physical" in note for note in report.notes), report.summary()
+
+
+def test_a_physical_frame_is_found_among_semicolon_separated_statements():
+    """ds9 takes several statements on one line, and a label may hold a semicolon of its own."""
+    regions, report = from_ds9(
+        "physical; circle(11,21,5) # text={a;b}; box(31,41,8,4,20)\n", axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 2, report.summary()
+    assert shapes_by_type(regions)["Circle"].text == "a;b"
+
+
+def test_a_frame_the_library_refuses_is_reported_rather_than_printed(recwarn):
+    """A warning on the terminal is invisible to a GUI user, and shown once per process at that.
+
+    `detector` is genuinely unmappable — unlike `physical` — so the regions really are lost. What
+    must not happen is losing them without a word.
+    """
+    regions, report = from_ds9("detector\ncircle(11,21,5)\n", axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 0
+    assert any("detector" in item for item in report.skipped), report.summary()
+    assert not recwarn.list, "the library's warnings belong in the report, not the terminal"
+
+
+def test_repeated_complaints_are_reported_once():
+    text = "image\n" + "".join(f"ruler({i},2,3,4)\n" for i in range(5))
+    _, report = from_ds9(text, axis_indices=IMAGE_AXES)
+
+    assert len([item for item in report.skipped if "ruler" in item]) == 1, report.summary()
+
+
+def test_a_ds9_annotation_is_reported_not_dropped_in_silence():
+    """A `#`-prefixed annotation is a plain comment to `regions`: no region, and no warning."""
+    regions, report = from_ds9(
+        "image\n# compass(1897,1787,66) compass=image {N} {W} 1 1\ncircle(11,21,5)\n",
+        axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 1
+    assert any("compass" in item for item in report.skipped), report.summary()
+
+
+def test_a_long_report_is_counted_rather_than_listed():
+    """One dropped region per line is one dialog line per line, up to a point."""
+    text = "image\n" + "".join(f"ellipse({i},2,3,4,5)\n" for i in range(30))
+    _, report = from_ds9(text, axis_indices=IMAGE_AXES)
+
+    assert len(report.skipped) == 30, "the list itself stays complete"
+    assert "...and 20 more" in report.summary()
+    assert report.summary().count("•") == 11
+
+
 # ------------------------------------------------------------- sky frames
 
 def test_sky_regions_are_placed_through_the_wcs():
@@ -370,6 +447,143 @@ def test_a_sky_arrow_is_placed_and_measured_through_the_wcs():
     assert (arrow.x, arrow.y) == pytest.approx((20.0, 10.0), abs=SUB_PIXEL)
     assert arrow.length == pytest.approx(6.0, rel=1e-3)
     assert not report.skipped, report.summary()
+
+
+#: Every sky frame ds9 will declare, and how to say the same position in it. The tuple is
+#: `(ds9 name, attribute chain onto a SkyCoord, longitude attribute, latitude attribute)`.
+SKY_FRAMES = [
+    ("icrs", "icrs", "ra", "dec"),
+    ("fk5", "fk5", "ra", "dec"),
+    ("j2000", "fk5", "ra", "dec"),
+    ("fk4", "fk4", "ra", "dec"),
+    ("b1950", "fk4", "ra", "dec"),
+    ("galactic", "galactic", "l", "b"),
+    ("ecliptic", "barycentricmeanecliptic", "lon", "lat"),
+]
+
+
+def in_frame(ra_deg, dec_deg, frame_attribute, lon_attribute, lat_attribute):
+    """One ICRS position written in another frame, as the pair of degrees ds9 would hold."""
+    coord = getattr(SkyCoord(ra_deg * u.deg, dec_deg * u.deg, frame="icrs"), frame_attribute)
+    return (getattr(coord, lon_attribute).deg, getattr(coord, lat_attribute).deg)
+
+
+def test_our_frame_table_matches_the_librarys():
+    """A hand-parsed arrow and a library-parsed circle must mean the same by `galactic`.
+
+    The two paths are independent — ours through `SkyCoord`, the library's through its own
+    `ds9_frame_map` — so the tables have to agree or an arrow drifts away from the shapes around
+    it. Asserted against the library's own table rather than a copy of it.
+    """
+    from regions.io.ds9.core import ds9_frame_map
+
+    from pyql3.core.ds9_regions import _SKY_FRAMES
+
+    theirs = {name: frame for name, frame in ds9_frame_map.items() if name != "image"}
+    assert _SKY_FRAMES == theirs
+
+
+@pytest.mark.parametrize("ds9_name,frame_attribute,lon,lat", SKY_FRAMES)
+def test_every_sky_frame_places_shapes_and_arrows_on_the_same_pixel(ds9_name, frame_attribute,
+                                                                    lon, lat):
+    """ds9 writes any of seven frame names, and a WCS is all that is needed to place them.
+
+    Arrows are ours to parse and used to be read as ICRS degrees whatever the file said, which
+    left a `fk4` arrow ~7000 px from the circle beside it and a `galactic` one off the image.
+    """
+    wcs = image_wcs()
+    mapping = CelestialMap(wcs, *IMAGE_AXES)
+    ra, dec = mapping.to_sky(31.0, 9.0)
+    x, y = in_frame(ra, dec, frame_attribute, lon, lat)
+    length_deg = mapping.pixels_to_arcsec(6.0) / 3600.0
+
+    text = (f"{ds9_name}\n"
+            f"circle({x:.9f},{y:.9f},0.0004)\n"
+            f"# vector({x:.9f},{y:.9f},{length_deg:.9f},45) vector=1\n")
+    regions, report = from_ds9(text, wcs=wcs, axis_indices=IMAGE_AXES)
+
+    found = shapes_by_type(regions)
+    assert len(regions) == 2, report.summary()
+    assert (found["Circle"].x, found["Circle"].y) == pytest.approx((31.0, 9.0), abs=SUB_PIXEL)
+    assert (found["Arrow"].x, found["Arrow"].y) == pytest.approx((31.0, 9.0), abs=SUB_PIXEL)
+    assert found["Arrow"].length == pytest.approx(6.0, rel=1e-3)
+    assert not report.skipped, report.summary()
+
+
+def test_a_sexagesimal_position_reads_as_hours_of_right_ascension():
+    """ds9's default equatorial output. `17:45:40` is 266.4°, not 17.8° — a 15× error."""
+    wcs = image_wcs()
+    mapping = CelestialMap(wcs, *IMAGE_AXES)
+    ra, dec = mapping.to_sky(31.0, 9.0)
+    # Written in fk5 because the file declares fk5: icrs and fk5 differ by ~0.02", which is
+    # small but not nothing at 0.36"/pixel.
+    sexagesimal = SkyCoord(ra * u.deg, dec * u.deg).fk5.to_string("hmsdms", sep=":").split()
+
+    text = (f"fk5\ncircle({sexagesimal[0]},{sexagesimal[1]},1\")\n"
+            f"# vector({sexagesimal[0]},{sexagesimal[1]},2\",45) vector=1\n")
+    regions, report = from_ds9(text, wcs=wcs, axis_indices=IMAGE_AXES)
+
+    found = shapes_by_type(regions)
+    assert len(regions) == 2, report.summary()
+    assert (found["Arrow"].x, found["Arrow"].y) == pytest.approx((31.0, 9.0), abs=SUB_PIXEL)
+
+
+def test_a_sexagesimal_galactic_position_is_degrees_not_hours():
+    """Only the equatorial frames put their longitude in hours."""
+    wcs = image_wcs()
+    mapping = CelestialMap(wcs, *IMAGE_AXES)
+    ra, dec = mapping.to_sky(31.0, 9.0)
+    galactic = SkyCoord(ra * u.deg, dec * u.deg).galactic.to_string("dms", sep=":").split()
+
+    regions, report = from_ds9(
+        f"galactic\n# vector({galactic[0]},{galactic[1]},0.001,45) vector=1\n",
+        wcs=wcs, axis_indices=IMAGE_AXES)
+
+    arrow, = regions
+    assert (arrow.x, arrow.y) == pytest.approx((31.0, 9.0), abs=SUB_PIXEL)
+
+
+@pytest.mark.parametrize("written,pixels", [
+    ('15"', 15.0 / 0.36),        # arcseconds — what ds9 writes for a sky vector
+    ("15'", 15.0 * 60 / 0.36),   # arcminutes
+    ("15d", 15.0 * 3600 / 0.36), # degrees, said explicitly
+    ("15", 15.0 * 3600 / 0.36),  # bare, which means degrees in a sky frame
+    ("15p", 15.0),               # physical pixels
+    ("15i", 15.0),               # image pixels
+])
+def test_an_arrow_length_carries_its_unit(written, pixels):
+    """`15"` read as 15 degrees is an arrow 3600 times too long."""
+    wcs = image_wcs()        # 0.36 arcsec/pixel
+    regions, report = from_ds9(
+        f"fk5\n# vector(266.41680000,-29.00780000,{written},45) vector=1\n",
+        wcs=wcs, axis_indices=IMAGE_AXES)
+
+    arrow, = regions
+    assert arrow.length == pytest.approx(pixels, rel=1e-6), report.summary()
+
+
+def test_a_bare_length_in_an_image_frame_is_pixels():
+    regions, _ = from_ds9("image\n# vector(50,50,15,45) vector=1\n", axis_indices=IMAGE_AXES)
+    arrow, = regions
+    assert arrow.length == pytest.approx(15.0)
+
+
+def test_an_arrow_in_a_frame_we_cannot_place_is_reported():
+    """Guessing that `wcsa` numbers are pixels would put the arrow somewhere arbitrary."""
+    regions, report = from_ds9("wcsa\n# vector(50,50,15,45) vector=1\n", wcs=image_wcs(),
+                               axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 0
+    assert any("wcsa" in item for item in report.skipped), report.summary()
+
+
+def test_an_unreadable_vector_is_reported_rather_than_vanishing():
+    """A `# vector(...)` line is a comment to `regions`: if our regex misses it, nothing says so."""
+    regions, report = from_ds9("image\n# vector(50,50,nonsense,45) vector=1\n",
+                               axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 0
+    assert any("vector" in item or "arrow" in item for item in report.skipped), report.summary()
 
 
 def rotated_wcs(rotation_deg=30.0):
@@ -522,6 +736,23 @@ def test_celestial_map_round_trips_a_position():
     mapping = CelestialMap(osiris_wcs(), *OSIRIS_AXES)
     sky = mapping.to_sky(12.5, 7.5)
     assert mapping.from_sky(*sky) == pytest.approx((12.5, 7.5), abs=1e-6)
+
+
+def test_celestial_map_converts_a_coordinate_from_another_frame():
+    """`from_sky` takes the WCS's own world numbers; `from_skycoord` takes any frame."""
+    mapping = CelestialMap(osiris_wcs(), *OSIRIS_AXES)
+    ra, dec = mapping.to_sky(12.5, 7.5)
+    galactic = SkyCoord(ra * u.deg, dec * u.deg, frame="icrs").galactic
+
+    assert mapping.from_skycoord(galactic) == pytest.approx((12.5, 7.5), abs=1e-6)
+    assert mapping.from_sky(galactic.l.deg, galactic.b.deg) != pytest.approx((12.5, 7.5),
+                                                                            abs=1.0)
+
+
+def test_celestial_map_without_a_wcs_places_no_coordinate():
+    mapping = CelestialMap(None)
+    assert mapping.from_skycoord(SkyCoord(266.4 * u.deg, 34.0 * u.deg)) is None
+    assert mapping.from_skycoord(None) is None
 
 
 def test_celestial_map_handles_swapped_display_axes():

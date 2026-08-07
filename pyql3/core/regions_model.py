@@ -58,6 +58,17 @@ COMMON_ORDER = ("text", "color", "line_width", "dash", "font_size", "tag", "visi
 
 VALID_FRAMES = ("image", "sky")
 
+#: Written to the file even when left at its default, because reading it back is a decision the
+#: user may be asked to make and "absent" is a bad way to say "pixels".
+ALWAYS_WRITTEN = ("frame",)
+
+#: The formatting a file records for itself, in the `style:` block — ds9's `global` line by
+#: another name. A region writes only what differs from it, so the appearance of every region is
+#: fixed by the file rather than by whatever this program's built-in defaults happen to be on the
+#: day it is read back. Editing the block restyles everything that did not override it, exactly as
+#: editing ds9's `global` line does.
+STYLE_FIELDS = ("color", "line_width", "dash", "font_size")
+
 #: ds9's own RGB for the colour names it uses, so a region looks the same in both applications.
 #:
 #: Only `green` actually differs, and it differs a lot: Qt reads the SVG palette, where `green` is
@@ -197,16 +208,26 @@ class Region:
     z_range: tuple | None = None
     sky: SkyAnchor | None = None
 
-    def to_dict(self):
-        """A plain dict for YAML, omitting anything left at its default."""
+    def to_dict(self, style=None):
+        """A plain dict for YAML, omitting anything left at its default.
+
+        `style` is the file's `style:` block, which overrides the built-in defaults for the
+        formatting fields — so a region writes `color:` only when it differs from what the file
+        says at the top, and never relies on this program's idea of green.
+
+        `frame` is written even when it is the default: the geometry above it is pixels and the
+        `sky` block below it is degrees, so a file can hold a region in both frames at once, and
+        which of the two is meant should never have to be inferred from a missing key.
+        """
         data = {"type": self.TYPE}
         for name in self.GEOMETRY:
             data[name] = float(getattr(self, name))
 
-        defaults = _defaults(type(self))
+        defaults = dict(_defaults(type(self)))
+        defaults.update(style or {})
         for name in COMMON_ORDER:
             value = getattr(self, name)
-            if value == defaults.get(name):
+            if value == defaults.get(name) and name not in ALWAYS_WRITTEN:
                 continue
             if name == "sky":
                 data[name] = value.to_dict()
@@ -304,6 +325,12 @@ def _defaults(cls):
     return {f.name: f.default for f in fields(cls) if f.default is not MISSING}
 
 
+def default_style():
+    """The formatting an omitted key means, taken from the model rather than restated here."""
+    defaults = _defaults(Region)
+    return {name: defaults[name] for name in STYLE_FIELDS}
+
+
 def _required(cls):
     """Field names with no default — the ones a file must supply."""
     return tuple(f.name for f in fields(cls)
@@ -312,11 +339,14 @@ def _required(cls):
 
 @dataclass
 class RegionList:
-    """A file's worth of regions, plus the provenance written into it."""
+    """A file's worth of regions, plus the provenance and formatting written into it."""
 
     regions: list = None
     written_by: str = ""
     source: str = ""
+    #: The file's `style:` block — what an omitted formatting key means. `None` writes the
+    #: built-in defaults, which is what a file saved from the viewer carries.
+    style: dict = None
 
     def __post_init__(self):
         if self.regions is None:
@@ -334,7 +364,11 @@ class RegionList:
             data["written_by"] = self.written_by
         if self.source:
             data["source"] = self.source
-        data["regions"] = [region.to_dict() for region in self.regions]
+
+        style = dict(default_style())
+        style.update(self.style or {})
+        data["style"] = style
+        data["regions"] = [region.to_dict(style) for region in self.regions]
         return data
 
     def to_yaml(self):
@@ -378,11 +412,13 @@ class RegionList:
 
         _check_format_marker(raw.get("format"), where)
 
-        unknown = set(raw) - {"format", "written_by", "source", "regions"}
+        unknown = set(raw) - {"format", "written_by", "source", "style", "regions"}
         if unknown:
             raise RegionFormatError(
                 f"{where} has unknown top-level key(s) {sorted(unknown)}; "
-                "expected 'format', 'written_by', 'source', 'regions'")
+                "expected 'format', 'written_by', 'source', 'style', 'regions'")
+
+        style = _style_from_dict(raw.get("style"), where)
 
         entries = raw.get("regions")
         if entries is None:
@@ -394,7 +430,7 @@ class RegionList:
         problems = []
         regions = []
         for index, entry in enumerate(entries):
-            region = _region_from_dict(entry, index, problems)
+            region = _region_from_dict(entry, index, problems, style)
             if region is not None:
                 regions.append(region)
 
@@ -404,7 +440,8 @@ class RegionList:
 
         return cls(regions=regions,
                    written_by=str(raw.get("written_by") or ""),
-                   source=str(raw.get("source") or ""))
+                   source=str(raw.get("source") or ""),
+                   style=style)
 
     @classmethod
     def load(cls, path):
@@ -462,7 +499,40 @@ def _check_format_marker(marker, where):
             "as a ds9 .reg file.")
 
 
-def _region_from_dict(entry, index, problems):
+def _style_from_dict(data, where):
+    """The file's `style:` block, validated, filled in from the built-in defaults.
+
+    Raises rather than collecting problems: everything below it is read against this block, so a
+    bad one makes every region's formatting meaningless and there is nothing useful to go on with.
+    """
+    style = dict(default_style())
+    if data is None:
+        return style
+
+    if not isinstance(data, dict):
+        raise RegionFormatError(
+            f"{where}: 'style' should be a mapping of {list(STYLE_FIELDS)}, "
+            f"found {type(data).__name__}")
+
+    unknown = set(data) - set(STYLE_FIELDS)
+    if unknown:
+        raise RegionFormatError(
+            f"{where}: 'style' has unknown key(s) {sorted(unknown)}; "
+            f"allowed: {list(STYLE_FIELDS)}")
+
+    problems = []
+    checked = _common_from_dict(data, Region, f"{where}: 'style'", problems)
+    if problems:
+        raise RegionFormatError(f"{where} could not be read:\n  " + "\n  ".join(problems))
+
+    if "color" in data and not str(data["color"]).strip():
+        raise RegionFormatError(f"{where}: 'style' color must not be blank")
+
+    style.update({name: value for name, value in checked.items() if name in STYLE_FIELDS})
+    return style
+
+
+def _region_from_dict(entry, index, problems, style=None):
     """Build one region, appending to `problems` instead of raising."""
     where = f"region {index}"
     if not isinstance(entry, dict):
@@ -519,6 +589,10 @@ def _region_from_dict(entry, index, problems):
     common = _common_from_dict(entry, cls, where, problems)
     if common is None:
         return None
+    # The file's own formatting stands in for whatever this region did not override, so a
+    # region's appearance is fixed by the file and not by this build's built-in defaults.
+    for name, value in (style or {}).items():
+        common.setdefault(name, value)
     values.update(common)
 
     if cls is Text and not values.get("text"):
