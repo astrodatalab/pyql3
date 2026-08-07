@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QMenu, QApplication, QInputDialog
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 import pyqtgraph as pg
 import astropy.io.ascii as ascii
 from astropy.io import fits
@@ -234,11 +234,23 @@ class PlotCatalogDialog(BaseToolDialog):
         self.layout.addWidget(style_group)
         
         # Search bar directly on top of table
+        search_row = QHBoxLayout()
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search catalog...")
         self.search_bar.setClearButtonEnabled(True)
         self.search_bar.textChanged.connect(self.filter_table)
-        self.layout.addWidget(self.search_bar)
+        search_row.addWidget(self.search_bar)
+
+        # Selecting a row highlights that source and recentres the view on it, and Qt's only way
+        # back out of a single-selection table is ctrl-clicking the selected row — which nobody
+        # discovers. Escape and this button are the ways out that can be found.
+        self.btn_clear_selection = QPushButton("Clear Selection")
+        self.btn_clear_selection.setToolTip(
+            "Remove the highlight from the image (or press Escape in the table)")
+        self.btn_clear_selection.setEnabled(False)
+        self.btn_clear_selection.clicked.connect(self.clear_selection)
+        search_row.addWidget(self.btn_clear_selection)
+        self.layout.addLayout(search_row)
         
         # Table
         self.table = QTableWidget()
@@ -249,6 +261,10 @@ class PlotCatalogDialog(BaseToolDialog):
         
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
+
+        clear_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self.table)
+        clear_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        clear_shortcut.activated.connect(self.clear_selection)
         
         self.layout.addWidget(self.table)
         
@@ -321,15 +337,25 @@ class PlotCatalogDialog(BaseToolDialog):
                         raise ascii_error from None
                     name = f"{os.path.basename(filepath)}  {ext_label}"
 
-            self.lbl_file.setText(name)
-            self.populate_table()
-            self.auto_assign_columns()
-            self.update_plot()
+            self.set_catalog_table(self.catalog_data, name)
         except Exception as e:
             # astropy's failed format guess is dozens of lines long; a QLabel gets one
             lines = [line for line in str(e).strip().splitlines() if line.strip()]
             msg = lines[0][:120] if lines else type(e).__name__
             self.lbl_file.setText(f"Error loading file: {msg}")
+
+    def set_catalog_table(self, table, name):
+        """Show a table that is already in memory, rather than reading one from a file.
+
+        The seam a caller needs to hand this tool a source list it built itself — the Region menu
+        sends the drawn regions here, where they gain the table, the search box and the row
+        highlighting that this tool has and the region overlay does not.
+        """
+        self.catalog_data = table
+        self.lbl_file.setText(name)
+        self.populate_table()
+        self.auto_assign_columns()
+        self.update_plot()
 
     def populate_table(self):
         if self.catalog_data is None:
@@ -713,11 +739,27 @@ class PlotCatalogDialog(BaseToolDialog):
                 view.addItem(txt)
                 self.text_items.append(txt)
         
+    def clear_selection(self):
+        """Drop the selected row and its highlight, leaving the view where it is.
+
+        Deliberately does not move the view back: the user may have panned since, and returning to
+        wherever the selection happened to leave things would be its own surprise.
+        """
+        self.table.clearSelection()
+        self.table.setCurrentItem(None)
+        if self.highlight_item is not None:
+            self.highlight_item.clear()
+            self.highlight_item.setVisible(False)
+        if hasattr(self, 'btn_clear_selection'):
+            self.btn_clear_selection.setEnabled(False)
+
     def on_table_selection(self):
         if self.highlight_item is None or self.catalog_data is None:
             return
             
         selected_rows = self.table.selectedItems()
+        if hasattr(self, 'btn_clear_selection'):
+            self.btn_clear_selection.setEnabled(bool(selected_rows))
         if not selected_rows:
             self.highlight_item.clear()
             self.highlight_item.setVisible(False)
@@ -758,38 +800,46 @@ class PlotCatalogDialog(BaseToolDialog):
                               yRange=(center_y - height/2, center_y + height/2), 
                               padding=0)
         
+    def build_context_menu(self, row_idx):
+        """The menu for one table row.
+
+        Built separately from being shown because `QMenu.exec` is modal and blocks until dismissed,
+        so a menu that is popped up cannot be inspected — the same split as
+        `MainWindow.build_region_menu`.
+        """
+        row_data = self.catalog_data[row_idx]
+
+        menu = QMenu(self)
+        menu.addAction("Copy Coordinates").triggered.connect(
+            lambda: self.copy_row_coordinates(row_data))
+        menu.addAction("Center on Source").triggered.connect(self.on_table_selection)
+        menu.addAction("Clear Selection").triggered.connect(self.clear_selection)
+        menu.addSeparator()
+        menu.addAction("Delete Marker").triggered.connect(lambda: self.delete_row(row_idx))
+        return menu
+
+    def copy_row_coordinates(self, row_data):
+        x_col = self.combo_x.currentText()
+        y_col = self.combo_y.currentText()
+        if x_col in self.catalog_data.colnames and y_col in self.catalog_data.colnames:
+            QApplication.clipboard().setText(
+                f"X: {row_data[x_col]}, Y: {row_data[y_col]}")
+
+    def delete_row(self, row_idx):
+        self.catalog_data.remove_row(row_idx)
+        self.populate_table()
+        self.auto_assign_columns()
+        self.update_plot()
+
     def show_context_menu(self, pos):
         selected_rows = self.table.selectedItems()
         if not selected_rows:
             return
-            
-        row_idx = selected_rows[0].row()
-        row_data = self.catalog_data[row_idx]
-        
-        menu = QMenu(self)
-        copy_action = menu.addAction("Copy Coordinates")
-        center_action = menu.addAction("Center on Source")
-        menu.addSeparator()
-        delete_action = menu.addAction("Delete Marker")
-        
-        action = menu.exec(self.table.viewport().mapToGlobal(pos))
-        
-        if action == copy_action:
-            x_col = self.combo_x.currentText()
-            y_col = self.combo_y.currentText()
-            if x_col in self.catalog_data.colnames and y_col in self.catalog_data.colnames:
-                coords = f"X: {row_data[x_col]}, Y: {row_data[y_col]}"
-                QApplication.clipboard().setText(coords)
-                
-        elif action == center_action:
-            # Trigger table selection to highlight and center
-            self.on_table_selection()
-            
-        elif action == delete_action:
-            self.catalog_data.remove_row(row_idx)
-            self.populate_table()
-            self.auto_assign_columns()
-            self.update_plot()
+
+        menu = self.build_context_menu(selected_rows[0].row())
+        # Held on self: a QMenu with no Python owner is deleted before it can be shown.
+        self._context_menu = menu
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def closeEvent(self, event):
         if getattr(self, '_range_connected', False) and self.image_viewer is not None:

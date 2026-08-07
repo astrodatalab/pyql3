@@ -26,7 +26,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, Signal
 
 from pyql3.core import coords
-from pyql3.core.regions_model import Arrow, Box, Circle, Region, Text
+from pyql3.core.regions_model import Arrow, Box, Circle, Region, Text, resolve_color
 
 #: Shapes `begin_draw` understands, by the name used in the file format.
 DRAWABLE = ("circle", "box", "arrow", "text")
@@ -35,8 +35,11 @@ DRAWABLE = ("circle", "box", "arrow", "text")
 #: zero-sized region that cannot be seen or grabbed again.
 MIN_SIZE = 1.0
 
-#: Handle size for a text region's anchor, in pixels.
-TEXT_HANDLE_SIZE = 9
+#: Size of a region created at a point rather than dragged out — from the right-click menu, or
+#: from a click with a shape tool armed. Big enough to see and to grab a handle on.
+DEFAULT_RADIUS = 5.0
+DEFAULT_BOX = (10.0, 10.0)
+DEFAULT_ARROW_LENGTH = 10.0
 
 #: Above this many regions the layer stops building one graphics item per region and draws the
 #: whole set as a few aggregate items instead.
@@ -64,6 +67,15 @@ LABEL_REDRAW_DELAY_MS = 200
 #: The visible rect is grown by this fraction before culling labels, so text just off the edge —
 #: which still paints into the view — is not dropped.
 LABEL_CULL_MARGIN = 0.1
+
+#: A ceiling on labels built at once, to stop an enormous set from locking the window up.
+#:
+#: This is a hang guard, not a judgement about readability: whether a crowd of labels is useful is
+#: the user's call, made with **Region ➔ Show Region Labels**, exactly as the catalogue tool offers
+#: a *Show Names* checkbox. Labels are culled to the visible rect and hidden while panning, so the
+#: cost of a large set falls on the redraw after the view settles — measured at ~0.18 ms per label,
+#: so this ceiling is about a second in the worst case.
+LABEL_SAFETY_LIMIT = 5000
 
 
 class _Entry:
@@ -122,7 +134,15 @@ class RegionItemInteraction:
             event.accept()
             return
 
-        super().mouseClickEvent(event)
+        # Not every base class has one. `pg.ROI` and `pg.TargetItem` define `mouseClickEvent`,
+        # but `pg.TextItem` — which a text region's own label subclasses — does not, so calling
+        # `super()` unconditionally raised `AttributeError` on any single left click, and
+        # pyqtgraph printed the traceback from inside its click dispatch.
+        inherited = getattr(super(), 'mouseClickEvent', None)
+        if inherited is None:
+            event.ignore()
+            return
+        inherited(event)
 
     def raiseContextMenu(self, event):
         if self._region is None or self._region_layer is None:
@@ -144,8 +164,56 @@ class RegionLineROI(RegionItemInteraction, pg.LineSegmentROI):
     pass
 
 
-class RegionTargetItem(RegionItemInteraction, pg.TargetItem):
-    pass
+class RegionTextItem(RegionItemInteraction, pg.TextItem):
+    """A label that is its own handle: click, drag or right-click the text itself.
+
+    A text region used to carry a separate crosshair to grab, and since both sat on the same anchor
+    the crosshair covered the very text it was there to move. A label is already a visible thing of
+    exactly the right size, so it makes a better handle than any marker added beside it.
+
+    `pg.TextItem` is a `GraphicsObject`, so it can take mouse events; it just has to say which
+    buttons it wants. The drag follows `pg.TargetItem`'s pattern, and `sigPositionChanged` is named
+    to match so the layer's existing wiring picks it up.
+    """
+
+    sigPositionChanged = Signal(object)
+
+    def __init__(self, *args, hover_pen=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._hover_pen = hover_pen
+        self._moving = False
+        self._offset = QPointF(0, 0)
+
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
+        self.setAcceptHoverEvents(True)
+        # Without a marker there is nothing to say the text can be moved, so the cursor says it.
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+
+    def mouseDragEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+        event.accept()
+
+        if event.isStart():
+            self._offset = self.pos() - self.mapToParent(event.buttonDownPos())
+            self._moving = True
+
+        if not self._moving:
+            return
+
+        self.setPos(self._offset + self.mapToParent(event.pos()))
+        self.sigPositionChanged.emit(self)
+
+        if event.isFinish():
+            self._moving = False
+
+    def hoverEvent(self, event):
+        """Outline the text on hover, so it is discoverable as something to grab."""
+        wanted = None if event.isExit() else self._hover_pen
+        if self.border != wanted:
+            self.border = pg.mkPen(wanted) if wanted is not None else pg.mkPen(None)
+            self.update()
 
 
 class RegionLayer(QObject):
@@ -169,6 +237,9 @@ class RegionLayer(QObject):
     #: Switched between per-region items and the aggregate overlay. Payload is `(bulk, count)`,
     #: so the window can say why regions stopped being draggable.
     render_mode_changed = Signal(bool, int)
+    #: Labels stopped or started being drawn because of how many are in view. Payload is the number
+    #: in view, or 0 when they are showing again, so the window can say why they vanished.
+    labels_suppressed = Signal(int)
 
     def __init__(self, image_viewer, parent=None):
         super().__init__(parent)
@@ -178,6 +249,8 @@ class RegionLayer(QObject):
         self._by_id = {}
         self._draw_kind = None
         self._draw_attributes = {}
+        #: Supplied by `begin_draw` for a text region; called after the click for its label.
+        self._ask_text = None
         self._draw_anchor = None
         self._draw_preview = None
         #: Set while items are being re-placed from the model, so their change signals are not
@@ -188,6 +261,12 @@ class RegionLayer(QObject):
         #: True while the whole set is drawn as a few aggregate items rather than one each.
         self._bulk = False
         self._bulk_items = []
+        #: Labels drawn over the aggregate overlay; rebuilt for whatever is in view.
+        self._bulk_labels = []
+        #: Whether labels are drawn at all. The user's choice, not the layer's.
+        self._labels_visible = True
+        #: True while the safety ceiling is suppressing labels.
+        self._labels_hidden_for_density = False
 
         #: Set while the view is being panned or zoomed, so labels stay hidden until it settles.
         self._panning = False
@@ -204,6 +283,7 @@ class RegionLayer(QObject):
             view = image_viewer.imv.getView()
             if view is not None:
                 view.sigRangeChanged.connect(self._on_view_range_changed)
+            image_viewer.imv.scene.sigMouseClicked.connect(self._on_scene_clicked)
 
     # ------------------------------------------------------------------ the model
 
@@ -393,17 +473,57 @@ class RegionLayer(QObject):
             return
         current = self._current_channel()
         rect = self._view_rect()
+        show_labels = self._labels_fit(self._labels_in_view(current, rect))
         for entry in self._entries:
-            self._apply_visibility(entry, current, rect)
+            self._apply_visibility(entry, current, rect, show_labels=show_labels)
+
+    def _labels_in_view(self, channel, rect):
+        """How many labels would be drawn right now, before the density rule is applied."""
+        return sum(1 for entry in self._entries
+                   if entry.label is not None
+                   and entry.region.visible
+                   and self._in_channel_range(entry.region, channel)
+                   and self._label_in_view(entry.label, rect, ignore_panning=True))
+
+    @property
+    def labels_visible(self):
+        """Whether region labels are drawn at all."""
+        return self._labels_visible
+
+    def set_labels_visible(self, visible):
+        """Turn labels on or off, as the catalogue tool's *Show Names* checkbox does."""
+        visible = bool(visible)
+        if visible == self._labels_visible:
+            return
+        self._labels_visible = visible
+        if self._bulk:
+            self._draw_bulk()
+        else:
+            self.update_channel_visibility()
+
+    def _labels_fit(self, count):
+        """True if `count` labels can be drawn, and tell the window when that answer changes.
+
+        Only the safety ceiling refuses here. How many labels are worth looking at is the user's
+        decision, made with the *Show Region Labels* toggle.
+        """
+        if not self._labels_visible:
+            return False
+        too_many = count > LABEL_SAFETY_LIMIT
+        if too_many != self._labels_hidden_for_density:
+            self._labels_hidden_for_density = too_many
+            self.labels_suppressed.emit(count if too_many else 0)
+        return not too_many
 
     # ------------------------------------------------------------ aggregate overlay
 
     def _clear_bulk_items(self):
         self._drop_retired()
-        for item in self._bulk_items:
+        for item in self._bulk_items + self._bulk_labels:
             self._remove_from_scene(item)
             self._retired.append(item)
         self._bulk_items = []
+        self._bulk_labels = []
         if self._retired:
             QTimer.singleShot(0, self._drop_retired)
 
@@ -414,8 +534,11 @@ class RegionLayer(QObject):
         thousands of *distinct* colours would end up back at one item each, and there is no way
         around that short of dropping the colours.
 
-        Labels are not drawn here — a `TextItem` cannot be batched, and one per region is exactly
-        the cost being avoided. Text regions are marked with a cross so they can still be seen.
+        Labels *are* drawn, for whatever is in view: a catalogue of named stars is mostly its
+        names, so leaving them out made the overlay far less useful than it looked. They cannot be
+        batched — one `TextItem` each — so the density rule in `_labels_fit` decides whether to draw
+        them at all, and only those inside the visible rect are built. Text regions also get a cross
+        so their positions show even when the labels do not.
         """
         self._clear_bulk_items()
         if self.viewer is None or not self._entries:
@@ -423,6 +546,7 @@ class RegionLayer(QObject):
 
         channel = self._current_channel()
         groups = {}
+        labelled = []
         for entry in self._entries:
             region = entry.region
             if not region.visible or not self._in_channel_range(region, channel):
@@ -430,6 +554,9 @@ class RegionLayer(QObject):
             placed = self._to_item(region.x, region.y)
             if placed is None:
                 continue
+
+            if region.text:
+                labelled.append((region, placed))
 
             group = groups.setdefault((region.color, region.line_width, region.dash),
                                       {"circles": [], "marks": [], "paths": []})
@@ -445,19 +572,39 @@ class RegionLayer(QObject):
                 group["marks"].append(placed)
 
         for (colour, width, dash), group in groups.items():
-            pen = pg.mkPen(colour, width=width,
+            pen = pg.mkPen(resolve_color(colour), width=width,
                            style=Qt.PenStyle.DashLine if dash else Qt.PenStyle.SolidLine)
             for item in _bulk_items_for(group, colour, pen):
                 item.setZValue(20)
                 self._add_to_scene(item)
                 self._bulk_items.append(item)
 
+        self._draw_bulk_labels(labelled)
+
+    def _draw_bulk_labels(self, labelled):
+        """Draw the labels of an aggregated set, for those in view and if there are few enough."""
+        if self._panning:
+            return
+
+        rect = self._view_rect()
+        in_view = [(region, place) for region, place in labelled
+                   if rect is None or rect.contains(QPointF(*place))]
+        if not self._labels_fit(len(in_view)):
+            return
+
+        for region, place in in_view:
+            label = _label_item(region, anchor=(0.5, 1.0))
+            label.setPos(place[0], place[1] + _label_offset(region))
+            label.setZValue(21)
+            self._add_to_scene(label)
+            self._bulk_labels.append(label)
+
     def _current_channel(self):
         if getattr(self.viewer, 'transposed_data', None) is None:
             return 0
         return self.viewer.current_z()
 
-    def _apply_visibility(self, entry, channel, view_rect=None):
+    def _apply_visibility(self, entry, channel, view_rect=None, show_labels=True):
         """Show or hide one entry's items. Per-entry so adding a region is not O(N).
 
         Adding used to end by refreshing *every* region's visibility, which made loading a
@@ -471,13 +618,14 @@ class RegionLayer(QObject):
         visible = entry.region.visible and self._in_channel_range(entry.region, channel)
         for item in entry.items:
             if item is entry.label:
-                item.setVisible(visible and self._label_in_view(item, view_rect))
+                item.setVisible(visible and show_labels
+                                and self._label_in_view(item, view_rect))
             else:
                 item.setVisible(visible)
 
-    def _label_in_view(self, label, view_rect=None):
+    def _label_in_view(self, label, view_rect=None, ignore_panning=False):
         """True if `label` is worth painting: not mid-pan, and inside the visible rect."""
-        if self._panning:
+        if self._panning and not ignore_panning:
             return False
         rect = view_rect if view_rect is not None else self._view_rect()
         if rect is None:
@@ -514,12 +662,17 @@ class RegionLayer(QObject):
         Panning with labels drawn costs 27% more per frame than without them, and every frame of a
         drag repaints all of them. `plot_catalog` does the same for catalogue labels.
         """
-        if self._bulk or self.viewer is None:
+        if self.viewer is None:
             return
-        if not any(entry.label is not None for entry in self._entries):
+
+        has_labels = bool(self._bulk_labels) or any(
+            entry.label is not None for entry in self._entries)
+        if not has_labels:
             return
 
         self._panning = True
+        for label in self._bulk_labels:
+            label.setVisible(False)
         for entry in self._entries:
             if entry.label is not None:
                 entry.label.setVisible(False)
@@ -593,9 +746,7 @@ class RegionLayer(QObject):
             roi.movePoint(handles[1], QPointF(*tip), finish=False)
             self._place_arrow_head(entry, (cx, cy), tip)
 
-        elif isinstance(region, Text):
-            entry.handle.setPos(QPointF(cx, cy))
-
+        # A text region's label *is* its handle, so `_place_label` positions it below.
         self._place_label(entry, (cx, cy))
 
     def _place_label(self, entry, centre):
@@ -616,10 +767,14 @@ class RegionLayer(QObject):
             offset = _label_offset(region)
             label.setPos(cx, cy + offset)
 
-        # A rotation is relative to the screen, and TextItem measures its own angle the same way,
-        # so the flip and 90° steps go through coords like every other angle.
-        label.setAngle(self._display_angle(getattr(region, 'angle', 0.0))
-                       - self._display_angle(0.0))
+        # Only a text region's angle turns its text. A box's angle rotates the *box* and an
+        # arrow's is its direction, so applying either to the label drew a shape's caption on its
+        # side — as ds9 does not, `textangle` there being a property of a text region alone.
+        if isinstance(region, Text):
+            turn = self._display_angle(region.angle) - self._display_angle(0.0)
+        else:
+            turn = 0.0
+        label.setAngle(turn)
 
     def _place_arrow_head(self, entry, tail, tip):
         """Point the arrow head along the line and put it at the far end."""
@@ -628,15 +783,15 @@ class RegionLayer(QObject):
             return
         direction = math.degrees(math.atan2(tip[1] - tail[1], tip[0] - tail[0]))
         head.setPos(*tip)
-        # ArrowItem's angle points from the tip back down the tail, as the PA compass also does.
-        head.setStyle(angle=(direction + 180.0) % 360.0)
+        head.setStyle(angle=_arrow_head_angle(direction))
 
     # ------------------------------------------------------------------- items
 
     def _pen(self, region, hover=False):
         style = Qt.PenStyle.DashLine if region.dash else Qt.PenStyle.SolidLine
         width = region.line_width + (2 if hover else 0)
-        return pg.mkPen(region.color, width=width, style=style)
+        # Resolved, not passed through: ds9's `green` is neon, Qt's is dark (see DS9_COLORS).
+        return pg.mkPen(resolve_color(region.color), width=width, style=style)
 
     def _add_to_scene(self, item):
         """Parent to the ImageItem so the view rotation is inherited for free."""
@@ -682,15 +837,15 @@ class RegionLayer(QObject):
         elif isinstance(region, Arrow):
             roi = RegionLineROI([[0, 0], [max(region.length, MIN_SIZE), 0]],
                                 pen=pen, hoverPen=hover_pen, removable=True)
-            head = pg.ArrowItem(angle=180, headLen=12, brush=region.color, pen=pen,
+            head = pg.ArrowItem(angle=180, headLen=12, brush=resolve_color(region.color),
+                                pen=pen,
                                 pxMode=True)
             entry.items, entry.handle, entry.head = [roi, head], roi, head
 
         elif isinstance(region, Text):
-            label = _label_item(region, anchor=(0.5, 0.5))
-            handle = RegionTargetItem(pos=(0, 0), size=TEXT_HANDLE_SIZE, symbol='crosshair',
-                                      pen=pen, movable=True)
-            entry.items, entry.handle, entry.label = [label, handle], handle, label
+            # The label is the handle: one item, nothing drawn on top of the text.
+            label = _label_item(region, anchor=(0.5, 0.5), hover_pen=hover_pen)
+            entry.items, entry.handle, entry.label = [label], label, label
 
         else:
             entry.items, entry.handle = [], None
@@ -802,11 +957,6 @@ class RegionLayer(QObject):
             if moved is None:
                 return
             region.x, region.y = moved
-            self._placing = True
-            try:
-                entry.items[0].setPos(position.x(), position.y())
-            finally:
-                self._placing = False
 
         self.regions_changed.emit()
 
@@ -847,10 +997,10 @@ class RegionLayer(QObject):
                 item.hoverPen = hover_pen
 
         if entry.head is not None:
-            entry.head.setStyle(brush=region.color, pen=pen)
+            entry.head.setStyle(brush=resolve_color(region.color), pen=pen)
 
         if entry.label is not None:
-            entry.label.setText(region.text, color=region.color)
+            entry.label.setText(region.text, color=resolve_color(region.color))
             entry.label.setFont(_font_of_size(region.font_size))
 
         self._placing = True
@@ -866,12 +1016,22 @@ class RegionLayer(QObject):
     def drawing(self):
         return self._draw_kind is not None
 
-    def begin_draw(self, kind, **attributes):
+    @property
+    def draw_kind(self):
+        """The shape a drag would draw, or None. Lets a toolbar show which tool is armed."""
+        return self._draw_kind
+
+    def begin_draw(self, kind, ask_text=None, **attributes):
         """Enter drawing mode for `kind`, applying `attributes` to whatever is drawn.
 
-        A circle, box or arrow is dragged out; a text region is placed with a single click, since
-        there is nothing to drag. `attributes` is how the caller supplies the label, colour and
-        so on — this class does not put UI on screen.
+        A circle, box or arrow is dragged out. A text region is *clicked* into place: there is
+        nothing to drag, since a label is drawn horizontally, and a drag would only suggest
+        otherwise.
+
+        `ask_text` is called once the click has landed, with the position in orig coordinates, and
+        returns the label — or something empty to place nothing. Asking afterwards puts the two
+        steps in the order the user thinks in: point at the thing, then say what it is called.
+        Keeping it a callback is what lets this class stay free of dialogs.
         """
         if kind not in DRAWABLE:
             raise ValueError(f"cannot draw {kind!r}; expected one of {list(DRAWABLE)}")
@@ -880,6 +1040,7 @@ class RegionLayer(QObject):
 
         self._draw_kind = kind
         self._draw_attributes = dict(attributes)
+        self._ask_text = ask_text
         self._draw_anchor = None
         self.viewer.begin_exclusive_drag(self, self._drag_event, on_revoked=self._draw_revoked)
         self.draw_mode_changed.emit(True)
@@ -889,6 +1050,7 @@ class RegionLayer(QObject):
             return
         self._clear_preview()
         self._draw_kind = None
+        self._ask_text = None
         self._draw_anchor = None
         if self.viewer is not None:
             self.viewer.end_exclusive_drag(self)
@@ -898,26 +1060,78 @@ class RegionLayer(QObject):
         """Something else took the drag; drop out of drawing mode without fighting for it."""
         self._clear_preview()
         self._draw_kind = None
+        self._ask_text = None
         self._draw_anchor = None
         self.draw_mode_changed.emit(False)
 
     def place_at(self, item_x, item_y):
         """Create the pending region at one point, for shapes with nothing to drag."""
+        return self.place(self._draw_kind, item_x, item_y, ask_text=self._ask_text,
+                          **self._draw_attributes)
+
+    def place(self, kind, item_x, item_y, ask_text=None, **attributes):
+        """Create a default-sized region of `kind` at one point, without drawing it out.
+
+        This is what the right-click menu uses: pointing at a feature and getting a region there is
+        quicker than dragging one out, and a default size is easy to adjust afterwards. `ask_text`
+        is called for a text region's label, as in `begin_draw`.
+        """
+        if kind not in DRAWABLE:
+            raise ValueError(f"cannot place {kind!r}; expected one of {list(DRAWABLE)}")
+
         origin = self._from_item(item_x, item_y)
         if origin is None:
             return None
-        attributes = dict(self._draw_attributes)
-        if self._draw_kind == "text":
-            region = Text(x=origin[0], y=origin[1], **{"text": "Label", **attributes})
-        elif self._draw_kind == "circle":
-            region = Circle(x=origin[0], y=origin[1], radius=5.0, **attributes)
-        elif self._draw_kind == "box":
-            region = Box(x=origin[0], y=origin[1], width=10.0, height=10.0, **attributes)
+
+        attributes = dict(attributes)
+        if kind == "text":
+            label = attributes.pop("text", "")
+            if not label and ask_text is not None:
+                label = (ask_text(*origin) or "").strip()
+                if not label:
+                    return None        # the user declined; a text region needs text
+            region = Text(x=origin[0], y=origin[1], text=label or "Label", **attributes)
+        elif kind == "circle":
+            region = Circle(x=origin[0], y=origin[1], radius=DEFAULT_RADIUS, **attributes)
+        elif kind == "box":
+            region = Box(x=origin[0], y=origin[1], width=DEFAULT_BOX[0],
+                         height=DEFAULT_BOX[1], **attributes)
         else:
-            region = Arrow(x=origin[0], y=origin[1], length=10.0, angle=0.0, **attributes)
+            region = Arrow(x=origin[0], y=origin[1], length=DEFAULT_ARROW_LENGTH, angle=0.0,
+                           **attributes)
+        return self._drawn(region)
+
+    def _drawn(self, region):
+        """Add a region the user has just drawn, and announce it exactly once.
+
+        Both the drag and the click paths end here. They each used to emit `region_drawn`
+        themselves *and* call `place_at`, which emitted too, so a click-sized drag announced the
+        same region twice.
+        """
         self.add(region)
         self.region_drawn.emit(region)
         return region
+
+    def _on_scene_clicked(self, event):
+        """Place a text region where the user clicked.
+
+        A click without movement never reaches `mouseDragEvent`, so text used to need a small drag
+        to appear at all. This listens for the click itself, and does nothing unless the text tool
+        is the one armed.
+        """
+        if self._draw_kind != "text" or self.viewer is None:
+            return
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        image_item = self.viewer.imv.getImageItem()
+        if image_item is None:
+            return
+
+        position = image_item.mapFromScene(event.scenePos())
+        self.place_at(position.x(), position.y())
+        self.cancel_draw()
+        event.accept()
 
     def _drag_event(self, event):
         """The view's drag handler while drawing. Runs on the GUI thread."""
@@ -928,6 +1142,12 @@ class RegionLayer(QObject):
         image_item = self.viewer.imv.getImageItem()
         if image_item is None:
             event.ignore()
+            return
+
+        if self._draw_kind == "text":
+            # Placed by `_on_scene_clicked`. Swallowing the drag here means dragging draws no
+            # misleading rubber-band line for something that is only ever a point.
+            event.accept()
             return
 
         position = image_item.mapFromScene(event.scenePos())
@@ -942,12 +1162,10 @@ class RegionLayer(QObject):
             return
 
         if event.isFinish():
-            region = self._finish_draw(self._draw_anchor, (position.x(), position.y()))
+            self._finish_draw(self._draw_anchor, (position.x(), position.y()))
             self._clear_preview()
             self._draw_anchor = None
             self.cancel_draw()
-            if region is not None:
-                self.region_drawn.emit(region)
             event.accept()
             return
 
@@ -967,14 +1185,15 @@ class RegionLayer(QObject):
             tip = self._from_item(*end)
             if tail is None or tip is None:
                 return None
-            return self.add(Arrow.from_points(tail[0], tail[1], tip[0], tip[1], **attributes))
+            return self._drawn(Arrow.from_points(tail[0], tail[1], tip[0], tip[1],
+                                               **attributes))
 
         if kind == "circle":
             centre = self._from_item(*start)
             if centre is None:
                 return None
             radius = math.hypot(dx, dy)
-            return self.add(Circle(x=centre[0], y=centre[1], radius=radius, **attributes))
+            return self._drawn(Circle(x=centre[0], y=centre[1], radius=radius, **attributes))
 
         if kind == "box":
             middle = self._from_item((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
@@ -982,8 +1201,8 @@ class RegionLayer(QObject):
                 return None
             # The drag is axis-aligned on screen, so the box's angle in orig space is whatever
             # angle appears as zero on screen under the current flip and rotation.
-            return self.add(Box(x=middle[0], y=middle[1], width=abs(dx), height=abs(dy),
-                                angle=self._orig_angle(0.0), **attributes))
+            return self._drawn(Box(x=middle[0], y=middle[1], width=abs(dx), height=abs(dy),
+                                   angle=self._orig_angle(0.0), **attributes))
 
         return self.place_at(*start)
 
@@ -1031,6 +1250,24 @@ def _font_of_size(point_size):
     return font
 
 
+def _arrow_head_angle(direction_deg):
+    """The `ArrowItem` angle that makes a head point along `direction_deg` on screen.
+
+    Two conversions collapse into one subtraction, and getting it wrong left the head pointing
+    somewhere other than its own line for anything but a horizontal arrow:
+
+    - `ArrowItem` points *opposite* its `angle` option — measured: `head = angle + 180`.
+    - The head is `pxMode=True`, which sets `ItemIgnoresTransformations`, so it is painted in raw
+      screen coordinates where **y increases downward** — while the view, and therefore
+      `direction_deg`, has y upward. The vertical component has to be mirrored.
+
+    Hence `180 - direction` rather than `direction + 180`; the two agree only at 0° and 180°, which
+    is why a horizontal arrow looked right. The PA compass uses `angle + 180` correctly because its
+    arrows are `pxMode=False` and so *are* transformed with the view.
+    """
+    return (180.0 - float(direction_deg)) % 360.0
+
+
 def _box_outline(centre, width, height, angle_deg):
     """The four corners of a rotated box, closed, as `[(x, y), ...]` in ImageItem coordinates."""
     cx, cy = centre
@@ -1071,7 +1308,8 @@ def _bulk_items_for(group, colour, pen):
                                         brush=None, pxMode=False))
     if group["marks"]:
         xs, ys = (np.array(values, dtype=float) for values in zip(*group["marks"], strict=True))
-        items.append(pg.ScatterPlotItem(x=xs, y=ys, size=8, symbol='+', pen=pen, brush=colour,
+        items.append(pg.ScatterPlotItem(x=xs, y=ys, size=8, symbol='+', pen=pen,
+                                        brush=resolve_color(colour),
                                         pxMode=True))
     if group["paths"]:
         # One polyline per shape in a single item, separated by NaN, which `connect='finite'`
@@ -1086,9 +1324,20 @@ def _bulk_items_for(group, colour, pen):
     return items
 
 
-def _label_item(region, anchor):
-    """A `TextItem` for `region.text`, in the region's own colour and font size."""
-    label = pg.TextItem(region.text, color=region.color, anchor=anchor)
+def _label_item(region, anchor, hover_pen=None):
+    """A label for `region.text`, in the region's own colour and font size.
+
+    A text region's label is interactive — it is the region — while a shape's caption is not: a box
+    is grabbed by its own outline, and a caption that swallowed clicks would just be in the way.
+    """
+    if hover_pen is not None:
+        label = RegionTextItem(region.text, color=resolve_color(region.color), anchor=anchor,
+                               hover_pen=hover_pen)
+    else:
+        label = pg.TextItem(region.text, color=resolve_color(region.color), anchor=anchor)
+        # A QGraphicsItem accepts every mouse button by default, so a caption would otherwise sit
+        # in front of the shape it belongs to and swallow presses meant for it or for panning.
+        label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
     label.setFont(_font_of_size(region.font_size))
     return label
 

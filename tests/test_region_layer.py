@@ -312,15 +312,71 @@ def test_rotating_a_box_writes_an_orig_angle_back(loaded_viewer, layer):
     assert region.angle == pytest.approx(expected % 360.0, abs=1e-6)
 
 
-def test_dragging_a_text_handle_moves_the_label_with_it(loaded_viewer, layer):
+def test_the_text_itself_is_the_handle(loaded_viewer, layer):
+    """No marker beside the label: a crosshair on the same anchor covered the text it moved."""
     region = layer.add(Text(x=8.0, y=6.0, text="knot"))
-    handle = layer.item_for(region)
-    label = [item for item in _items_of(layer, region) if hasattr(item, 'setText')][0]
 
-    handle.setPos(QPointF(2.5, 3.5))
+    assert layer.item_for(region) is layer.label_for(region), "the label should be the handle"
+    assert len(_items_of(layer, region)) == 1, "something is drawn as well as the text"
+
+
+def test_dragging_the_text_moves_the_region(loaded_viewer, layer):
+    region = layer.add(Text(x=8.0, y=6.0, text="knot"))
+    label = layer.item_for(region)
+
+    label.setPos(QPointF(2.5, 3.5))
+    label.sigPositionChanged.emit(label)
 
     assert (region.x, region.y) == pytest.approx(loaded_viewer.display_to_orig(2.0, 3.0))
     assert (label.pos().x(), label.pos().y()) == pytest.approx((2.5, 3.5))
+
+
+def test_the_text_accepts_the_mouse_buttons_it_needs(loaded_viewer, layer):
+    """Clicking the text has to reach it: a `GraphicsObject` must say which buttons it wants."""
+    region = layer.add(Text(x=8.0, y=6.0, text="knot"))
+    label = layer.item_for(region)
+
+    accepted = label.acceptedMouseButtons()
+    assert accepted & Qt.MouseButton.LeftButton, "cannot be clicked or dragged"
+    assert accepted & Qt.MouseButton.RightButton, "cannot be right-clicked for its menu"
+    assert label.acceptHoverEvents(), "no hover feedback to show it can be grabbed"
+
+
+def test_the_text_covers_its_own_glyphs_for_hit_testing(loaded_viewer, layer):
+    """Clicking anywhere on the text should count, so its bounding rect must span the words."""
+    short = layer.add(Text(x=4.0, y=4.0, text="a"))
+    long = layer.add(Text(x=9.0, y=9.0, text="a much longer label"))
+
+    narrow = layer.item_for(short).boundingRect().width()
+    wide = layer.item_for(long).boundingRect().width()
+    assert wide > narrow * 3, f"the hit area does not follow the text ({narrow} vs {wide})"
+
+
+def test_hovering_the_text_outlines_it(loaded_viewer, layer):
+    region = layer.add(Text(x=8.0, y=6.0, text="knot"))
+    label = layer.item_for(region)
+
+    class _Hover:
+        def __init__(self, exit):
+            self._exit = exit
+
+        def isExit(self):
+            return self._exit
+
+    label.hoverEvent(_Hover(exit=False))
+    assert label.border.style() != Qt.PenStyle.NoPen, "no outline on hover"
+
+    label.hoverEvent(_Hover(exit=True))
+    assert label.border.style() == Qt.PenStyle.NoPen, "the outline stayed after leaving"
+
+
+def test_a_shape_caption_is_not_interactive(loaded_viewer, layer):
+    """A box is grabbed by its outline; a caption that swallowed clicks would be in the way."""
+    region = layer.add(Circle(x=6.0, y=6.0, radius=3.0, text="src A"))
+
+    caption = layer.label_for(region)
+    assert caption is not layer.item_for(region)
+    assert not caption.acceptedMouseButtons(), "a caption should not take clicks"
 
 
 def test_an_edit_announces_itself(layer):
@@ -799,6 +855,21 @@ def test_bulk_geometry_helpers():
     assert arrow[1] == pytest.approx((10.0, 0.0))
     assert len(arrow) == 5, "tail, tip and two barbs drawn in one stroke"
 
+    # The aggregate overlay draws its own arrowheads as part of the polyline, so it is a second
+    # implementation of the same picture and needs its own check: the barbs must fall *behind* the
+    # tip and straddle the line, or the head points the wrong way here too.
+    tip, barb_left, barb_right = arrow[1], arrow[2], arrow[4]
+    assert barb_left[0] < tip[0] and barb_right[0] < tip[0], "barbs are ahead of the tip"
+    assert barb_left[1] > tip[1] > barb_right[1], "barbs do not straddle the line"
+
+    for angle in (30.0, 90.0, 200.0, 315.0):
+        outline = _arrow_outline((0.0, 0.0), 10.0, angle)
+        tip = outline[1]
+        assert math.degrees(math.atan2(tip[1], tip[0])) % 360 == pytest.approx(angle, abs=1e-6)
+        for barb in (outline[2], outline[4]):
+            # A barb points back from the tip, so it is nearer the tail than the tip is.
+            assert math.hypot(*barb) < math.hypot(*tip)
+
 
 # ---------------------------------------------- labels during pan and zoom
 
@@ -885,11 +956,342 @@ def test_panning_is_harmless_with_no_labels(loaded_viewer, layer):
     assert not layer._label_timer.isActive(), "no labels, so nothing to debounce"
 
 
-def test_panning_is_harmless_in_the_aggregate_overlay(loaded_viewer, layer):
+def test_panning_hides_the_overlays_labels_too(loaded_viewer, layer):
     layer.interactive_limit = 2
     layer.set_regions([Circle(x=float(i), y=1.0, radius=1.0, text=f"s{i}") for i in range(6)])
-    assert layer.bulk is True
+    look_at(loaded_viewer)
+    layer._labels_settled()
+    assert layer._bulk_labels, "the overlay drew no labels to hide"
 
     pan(loaded_viewer)
 
-    assert not layer._label_timer.isActive(), "the overlay draws no labels to hide"
+    assert all(not label.isVisible() for label in layer._bulk_labels)
+    assert layer._label_timer.isActive()
+
+    layer._labels_settled()
+    assert layer._bulk_labels and all(label.isVisible() for label in layer._bulk_labels)
+
+
+def test_the_overlay_draws_the_labels_it_has(loaded_viewer, layer):
+    """A catalogue of named stars is mostly its names; the overlay used to draw none of them."""
+    layer.interactive_limit = 2
+    layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.8, text=f"star {i}")
+                       for i in range(20)])
+    look_at(loaded_viewer, (-2, 12), (-2, 12))
+    layer._labels_settled()
+
+    assert layer.bulk is True
+    assert len(layer._bulk_labels) == 20, "the aggregated set drew no labels"
+    assert {label.toPlainText() for label in layer._bulk_labels} >= {"star 0", "star 19"}
+
+
+def test_the_overlay_labels_only_what_is_in_view(loaded_viewer, layer):
+    layer.interactive_limit = 2
+    layer.set_regions([Circle(x=2.0, y=2.0, radius=1.0, text="near"),
+                       Circle(x=400.0, y=400.0, radius=1.0, text="far"),
+                       Circle(x=3.0, y=3.0, radius=1.0, text="also near")])
+
+    look_at(loaded_viewer, (0, 10), (0, 10))
+    layer._labels_settled()
+
+    drawn = {label.toPlainText() for label in layer._bulk_labels}
+    assert drawn == {"near", "also near"}, drawn
+
+
+def test_labels_can_be_turned_off(loaded_viewer, layer):
+    """Whether a crowd of labels helps is the user's call, as the catalogue tool's Show Names is."""
+    layer.interactive_limit = 2
+    layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.5, text=f"s{i}")
+                       for i in range(12)])
+    look_at(loaded_viewer, (-2, 12), (-2, 12))
+    layer._labels_settled()
+    assert layer._bulk_labels, "nothing drawn to turn off"
+
+    layer.set_labels_visible(False)
+    assert layer._bulk_labels == []
+    assert layer._bulk_items, "the shapes should stay when the labels go"
+
+    layer.set_labels_visible(True)
+    layer._labels_settled()
+    assert layer._bulk_labels
+
+
+def test_labels_can_be_turned_off_for_individual_regions_too(loaded_viewer, layer):
+    """One switch for both render paths."""
+    layer.set_regions([Circle(x=float(i), y=2.0, radius=0.5, text=f"s{i}") for i in range(5)])
+    look_at(loaded_viewer)
+    layer._labels_settled()
+    assert any(layer.label_for(region).isVisible() for region in layer)
+
+    layer.set_labels_visible(False)
+    assert all(not layer.label_for(region).isVisible() for region in layer)
+    assert all(layer.item_for(region).isVisible() for region in layer), "shapes went too"
+
+
+def test_an_enormous_number_of_labels_is_refused_as_a_hang_guard(loaded_viewer, layer,
+                                                                 monkeypatch):
+    """Not a readability rule — a ceiling so a huge set cannot lock the window up."""
+    from pyql3.gui.viewers import region_layer as module
+
+    monkeypatch.setattr(module, "LABEL_SAFETY_LIMIT", 5)
+    told = []
+    layer.labels_suppressed.connect(told.append)
+    layer.interactive_limit = 2
+
+    layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.5, text=f"s{i}")
+                       for i in range(12)])
+    look_at(loaded_viewer, (-2, 12), (-2, 12))
+    layer._labels_settled()
+
+    assert layer._bulk_labels == []
+    assert told and told[-1] == 12, f"the count was not reported: {told}"
+
+    look_at(loaded_viewer, (-0.5, 1.5), (-0.5, 0.5))
+    layer._labels_settled()
+    assert layer._bulk_labels, "labels did not come back once few enough were in view"
+    assert told[-1] == 0
+
+
+def test_a_ds9_catalogue_of_named_stars_draws_its_names(loaded_viewer, layer):
+    """The reported case: 2,000 labelled circles from a .reg file drew no text at all."""
+    from pyql3.core.ds9_regions import from_ds9
+
+    lines = ["# Region file format: DS9 version 4.1", "image"]
+    lines += [f"circle({i % 40 + 1},{i // 40 + 1},1) # text={{star {i}}}" for i in range(2000)]
+    regions, report = from_ds9("\n".join(lines) + "\n", axis_indices=(0, 1))
+    assert len(regions) == 2000 and not report.skipped
+
+    layer.set_regions(regions.regions)
+    assert layer.bulk is True, "2,000 regions should be aggregated"
+
+    # All of them in view: the names are drawn, as the catalogue tool draws its own.
+    look_at(loaded_viewer, (-5, 60), (-5, 60))
+    layer._labels_settled()
+    assert len(layer._bulk_labels) == 2000, \
+        f"only {len(layer._bulk_labels)} of 2,000 names drawn"
+    assert all(label.toPlainText().startswith("star ") for label in layer._bulk_labels)
+
+    # Zoomed into a corner, only the names in view are built.
+    look_at(loaded_viewer, (0, 6), (0, 4))
+    layer._labels_settled()
+    assert 0 < len(layer._bulk_labels) < 2000
+# ------------------------------------------------------------- arrow heads
+
+def head_direction(head):
+    """Where an arrow head points, as an angle in the view's own (y-up) convention.
+
+    Measured from the painted path rather than from the angle option, so this cannot agree with a
+    wrong formula. The tip sits at the path's origin and the base corners straddle the axis, so
+    their mean is behind the tip; the head points from there to the tip. The path is in the item's
+    coordinates, which for a `pxMode=True` item are screen coordinates with y downward, so the
+    result is negated to compare with a data-space angle.
+    """
+    path = head.path
+    points = [(path.elementAt(i).x, path.elementAt(i).y) for i in range(path.elementCount())]
+    behind = [point for point in points if math.hypot(*point) > 1e-9]
+    mean_x = sum(point[0] for point in behind) / len(behind)
+    mean_y = sum(point[1] for point in behind) / len(behind)
+    # From the base mean toward the tip is `(-mean_x, -mean_y)` in item coordinates; flipping the
+    # y sign expresses it the way the view does, with y upward.
+    return math.degrees(math.atan2(mean_y, -mean_x)) % 360.0
+
+
+def arrow_head_of(layer, region):
+    for entry in layer._entries:
+        if entry.region is region:
+            return entry.head
+    return None
+
+
+@pytest.mark.parametrize("angle", [0, 30, 45, 90, 135, 180, 225, 270, 315])
+def test_the_arrow_head_points_along_its_own_line(loaded_viewer, layer, angle):
+    """Reported from use: the head did not point the same way as the line.
+
+    It was rotated with `direction + 180`, which is right for a `pxMode=False` item like the PA
+    compass but not for this one: `pxMode=True` ignores the view transform, so the head is painted
+    with y downward while the line's angle has y upward. The two agree only at 0° and 180°, so a
+    horizontal arrow looked correct and every other one did not.
+    """
+    region = layer.add(Arrow(x=8.0, y=8.0, length=5.0, angle=float(angle)))
+
+    head = arrow_head_of(layer, region)
+    assert head is not None
+    assert_same_direction(head_direction(head), angle,
+                          f"an arrow drawn at {angle}° has a head pointing "
+                          f"{head_direction(head):.1f}°")
+
+
+@pytest.mark.parametrize("flip,rot", COMBINATIONS, ids=COMBINATION_IDS)
+def test_the_arrow_head_follows_the_line_through_every_transform(loaded_viewer, layer, flip, rot):
+    from pyql3.core import coords
+
+    region = layer.add(Arrow(x=8.0, y=8.0, length=5.0, angle=40.0))
+    loaded_viewer.flip = flip
+    loaded_viewer.rot_angle = rot
+    loaded_viewer.refresh_display()
+
+    expected = coords.orig_angle_to_display(40.0, flip=flip, rot_angle=rot)
+    assert_same_direction(head_direction(arrow_head_of(layer, region)), expected)
+
+
+def test_the_head_sits_at_the_tip_of_the_line(loaded_viewer, layer):
+    region = layer.add(Arrow(x=4.0, y=4.0, length=6.0, angle=90.0))
+
+    head = arrow_head_of(layer, region)
+    tip = loaded_viewer.orig_to_display(*region.end)
+    assert (head.pos().x(), head.pos().y()) == pytest.approx((tip[0] + 0.5, tip[1] + 0.5),
+                                                            abs=1e-6)
+
+
+def test_the_head_follows_a_dragged_endpoint(loaded_viewer, layer):
+    region = layer.add(Arrow(x=4.0, y=4.0, length=6.0, angle=0.0))
+    roi = layer.item_for(region)
+
+    # Drag the head handle somewhere else entirely.
+    roi.movePoint(roi.getHandles()[1], QPointF(4.5, 12.5), finish=True)
+
+    assert_same_direction(head_direction(arrow_head_of(layer, region)),
+                          coords_display_angle(loaded_viewer, region))
+
+
+def coords_display_angle(viewer, region):
+    from pyql3.core import coords
+
+    return coords.orig_angle_to_display(region.angle, flip=viewer.flip,
+                                        rot_angle=viewer.rot_angle)
+
+
+def assert_same_direction(got, expected, message=""):
+    """Compare angles as directions, so 0° and 360° are the same."""
+    difference = (float(got) - float(expected)) % 360.0
+    assert min(difference, 360.0 - difference) < 1.0, \
+        message or f"{got}° and {expected}° are different directions"
+
+
+def test_only_a_text_regions_angle_turns_its_label(loaded_viewer, layer):
+    """A box's angle rotates the box and an arrow's is its heading; neither is a text angle.
+
+    Spotted by rendering the window: an arrow's caption was drawn on its side, at the arrow's own
+    55°. ds9 treats `textangle` as a property of a text region alone.
+    """
+    box = layer.add(Box(x=6.0, y=6.0, width=4.0, height=3.0, angle=20.0, text="slit"))
+    arrow = layer.add(Arrow(x=3.0, y=3.0, length=5.0, angle=55.0, text="outflow"))
+    label = layer.add(Text(x=9.0, y=9.0, text="knot", angle=30.0))
+
+    assert layer.label_for(box).angle == 0.0, "a rotated box tipped its caption over"
+    assert layer.label_for(arrow).angle == 0.0, "an arrow's heading rotated its caption"
+    assert layer.label_for(label).angle == pytest.approx(30.0), "a text region should turn"
+
+
+@pytest.mark.parametrize("flip,rot", COMBINATIONS, ids=COMBINATION_IDS)
+def test_a_shape_caption_stays_upright_through_every_transform(loaded_viewer, layer, flip, rot):
+    region = layer.add(Box(x=6.0, y=6.0, width=4.0, height=3.0, angle=20.0, text="slit"))
+
+    loaded_viewer.flip = flip
+    loaded_viewer.rot_angle = rot
+    loaded_viewer.refresh_display()
+
+    assert layer.label_for(region).angle == 0.0
+
+
+# ------------------------------------------------- placing text with a click
+
+def scene_click(viewer, item_x, item_y, click_event):
+    """Deliver a left click at an ImageItem position, the way the scene would."""
+    scene_pos = viewer.imv.getImageItem().mapToScene(QPointF(item_x, item_y))
+    event = click_event(button=Qt.MouseButton.LeftButton,
+                        scene_pos=(scene_pos.x(), scene_pos.y()))
+    viewer.imv.scene.sigMouseClicked.emit(event)
+    return event
+
+
+def test_a_click_places_a_text_region(loaded_viewer, layer, click_event):
+    """A click without movement never reaches `mouseDragEvent`, so text needed a drag to appear."""
+    asked = []
+    layer.begin_draw("text", ask_text=lambda x, y: asked.append((x, y)) or "knot")
+
+    scene_click(loaded_viewer, 6.5, 4.5, click_event)
+
+    region, = layer.regions
+    assert isinstance(region, Text)
+    assert region.text == "knot"
+    assert (region.x, region.y) == pytest.approx(loaded_viewer.display_to_orig(6.0, 4.0))
+    assert not layer.drawing, "the tool should disarm once the label is placed"
+
+
+def test_the_label_is_asked_for_after_the_click_and_told_where(loaded_viewer, layer, click_event):
+    asked = []
+    layer.begin_draw("text", ask_text=lambda x, y: asked.append((x, y)) or "knot")
+    assert asked == [], "asked before the click landed"
+
+    scene_click(loaded_viewer, 6.5, 4.5, click_event)
+
+    assert len(asked) == 1
+    assert asked[0] == pytest.approx(loaded_viewer.display_to_orig(6.0, 4.0)), \
+        "the prompt was not told where the label goes"
+
+
+def test_declining_the_label_places_nothing(loaded_viewer, layer, click_event):
+    layer.begin_draw("text", ask_text=lambda x, y: "")
+
+    scene_click(loaded_viewer, 6.5, 4.5, click_event)
+
+    assert len(layer) == 0
+    assert not layer.drawing
+
+
+def test_dragging_in_text_mode_draws_no_rubber_band(loaded_viewer, layer):
+    """A label is horizontal by nature, so a drag would only suggest an orientation it cannot have."""
+    layer.begin_draw("text", ask_text=lambda x, y: "knot")
+
+    _drag(loaded_viewer, layer, (2.5, 2.5), (9.5, 7.5))
+
+    assert layer._draw_preview is None, "a rubber band was drawn for a point"
+    assert len(layer) == 0, "a drag placed the label instead of leaving it to the click"
+    assert layer.drawing, "the text tool should still be armed, waiting for a click"
+    layer.cancel_draw()
+
+
+def test_a_click_is_ignored_when_no_text_tool_is_armed(loaded_viewer, layer, click_event):
+    scene_click(loaded_viewer, 6.5, 4.5, click_event)
+    assert len(layer) == 0
+
+    layer.begin_draw("circle")
+    scene_click(loaded_viewer, 6.5, 4.5, click_event)
+    assert len(layer) == 0, "a click placed something while the circle tool was armed"
+    layer.cancel_draw()
+
+
+def test_a_region_is_announced_once_when_drawn(loaded_viewer, layer, click_event):
+    """`place_at` and the drag handler both used to emit, so a click-sized drag announced twice."""
+    drawn = []
+    layer.region_drawn.connect(drawn.append)
+
+    layer.begin_draw("text", ask_text=lambda x, y: "knot")
+    scene_click(loaded_viewer, 6.5, 4.5, click_event)
+    assert len(drawn) == 1, f"a placed label was announced {len(drawn)} times"
+
+    drawn.clear()
+    layer.begin_draw("circle")
+    _drag(loaded_viewer, layer, (5.5, 5.5), (5.6, 5.5))     # a click-sized drag
+    assert len(drawn) == 1, f"a click-sized drag announced the region {len(drawn)} times"
+
+
+@pytest.mark.parametrize("region", [
+    Circle(x=5.0, y=5.0, radius=2.0),
+    Box(x=5.0, y=5.0, width=4.0, height=3.0),
+    Arrow(x=3.0, y=3.0, length=5.0, angle=0.0),
+    Text(x=6.0, y=6.0, text="knot"),
+])
+@pytest.mark.parametrize("button", ["left", "middle"])
+def test_an_ordinary_click_on_any_region_does_not_raise(layer, click_event, region, button):
+    """`pg.TextItem` has no `mouseClickEvent`, so calling `super()` blindly raised on every click.
+
+    pyqtgraph catches it inside its own dispatch and prints the traceback, so the symptom was a
+    terminal full of `AttributeError: 'super' object has no attribute 'mouseClickEvent'` rather
+    than a crash.
+    """
+    layer.add(region)
+    buttons = {"left": Qt.MouseButton.LeftButton, "middle": Qt.MouseButton.MiddleButton}
+
+    layer.item_for(region).mouseClickEvent(click_event(button=buttons[button]))

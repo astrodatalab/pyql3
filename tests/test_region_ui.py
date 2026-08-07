@@ -80,23 +80,43 @@ def test_new_shape_actions_enter_drawing_mode(window, label, kind):
     window.region_layer.cancel_draw()
 
 
-def test_new_text_asks_for_a_label_first(window, monkeypatch):
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("knot", True)))
+def test_new_text_asks_for_its_label_after_the_click(window, monkeypatch):
+    """Point at the feature, then say what it is called — not the other way round."""
+    asked = []
+
+    def fake_prompt(parent, title, label, *args, **kwargs):
+        asked.append(label)
+        return ("knot", True)
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(fake_prompt))
 
     menu_action(window, "region_menu", "New Text...").trigger()
-    assert window.region_layer.drawing
+    assert window.region_layer.drawing, "should be waiting for a click"
+    assert asked == [], "asked for the label before knowing where it goes"
 
     region = window.region_layer.place_at(5.5, 5.5)
+
+    assert asked, "never asked for the label"
+    assert "5.0" in asked[0], f"the prompt should say where the label lands: {asked[0]!r}"
     assert isinstance(region, Text)
     assert region.text == "knot"
 
 
-def test_cancelling_the_text_prompt_draws_nothing(window, monkeypatch):
+def test_cancelling_the_label_prompt_places_nothing(window, monkeypatch):
     monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False)))
 
     menu_action(window, "region_menu", "New Text...").trigger()
+    assert window.region_layer.place_at(5.5, 5.5) is None
 
-    assert not window.region_layer.drawing
+    assert len(window.region_layer) == 0, "a region was placed despite the prompt being cancelled"
+
+
+def test_an_empty_label_places_nothing(window, monkeypatch):
+    """A text region with no text draws nothing, so there would be no way to find it again."""
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("   ", True)))
+
+    menu_action(window, "region_menu", "New Text...").trigger()
+    assert window.region_layer.place_at(5.5, 5.5) is None
     assert len(window.region_layer) == 0
 
 
@@ -553,3 +573,271 @@ def test_every_command_line_path_expands_a_home_directory():
     source = _pathlib.Path("main.py").read_text()
     for flag in ("poll_dir", "catalog", "regions"):
         assert f"os.path.expanduser(args.{flag})" in source, f"--{flag} does not expand ~"
+
+
+def test_the_show_labels_toggle_reaches_the_layer(window):
+    """Mirrors the catalogue tool's Show Names checkbox."""
+    window.region_layer.set_regions([Circle(x=2.0, y=2.0, radius=1.0, text="src")])
+    assert window.region_layer.labels_visible is True
+
+    menu_action(window, "region_menu", "Show Region Labels").setChecked(False)
+    assert window.region_layer.labels_visible is False
+    assert window.config.get("region_labels") is False
+
+    menu_action(window, "region_menu", "Show Region Labels").setChecked(True)
+    assert window.region_layer.labels_visible is True
+
+
+def test_labels_are_on_unless_turned_off(qapp, isolated_settings):
+    isolated_settings.config.pop("region_labels", None)
+    win = MainWindow()
+    try:
+        assert win.region_labels_action.isChecked() is True
+        assert win.region_layer.labels_visible is True
+    finally:
+        win.close()
+
+
+def test_a_remembered_labels_off_choice_is_restored(qapp, isolated_settings):
+    isolated_settings.set("region_labels", False)
+    win = MainWindow()
+    try:
+        assert win.region_labels_action.isChecked() is False
+        assert win.region_layer.labels_visible is False
+    finally:
+        win.close()
+        isolated_settings.set("region_labels", True)
+
+
+# --------------------------------------------------- handing regions to the catalog
+
+def test_regions_can_be_sent_to_the_plot_catalog(window, some_regions):
+    """The catalogue tool has a table, a search box and row highlighting; regions do not."""
+    window.region_layer.set_regions(some_regions)
+
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+
+    catalog = window._plot_catalog_dialog
+    assert catalog.isVisible()
+    assert catalog.catalog_data is not None
+    assert len(catalog.catalog_data) == len(some_regions)
+    assert set(catalog.catalog_data.colnames) >= {"name", "x", "y", "type", "size"}
+
+
+def test_the_catalog_lands_on_the_same_pixels_as_the_regions(window, some_regions):
+    """Regions are stored in orig coordinates, which the catalogue calls *FITS Pixels*."""
+    window.region_layer.set_regions(some_regions)
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+    catalog = window._plot_catalog_dialog
+
+    assert catalog.combo_coord_type.currentText() == "FITS Pixels", \
+        "the wrong coordinate type would put every source somewhere else"
+    assert catalog.combo_x.currentText() == "x"
+    assert catalog.combo_y.currentText() == "y"
+
+    # The catalogue's own mapping of row 0 must agree with where the region is drawn.
+    first = some_regions[0]
+    placed = catalog._row_to_display(catalog.catalog_data[0])
+    assert placed == pytest.approx(window.image_viewer.orig_to_display(first.x, first.y))
+
+
+def test_unlabelled_regions_still_get_a_searchable_name(window):
+    window.region_layer.set_regions([Circle(x=1.0, y=1.0, radius=1.0),
+                                     Circle(x=2.0, y=2.0, radius=1.0, text="src A")])
+
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+
+    names = list(window._plot_catalog_dialog.catalog_data["name"])
+    assert names == ["circle 1", "src A"]
+
+
+def test_sending_a_catalogue_sized_set_works(window):
+    """The case this exists for: too many regions to edit individually, but a fine source list."""
+    window.region_layer.set_regions([Circle(x=float(i % 40), y=float(i // 40), radius=0.5,
+                                            text=f"star {i}") for i in range(2000)])
+    assert window.region_layer.bulk is True
+
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+
+    assert len(window._plot_catalog_dialog.catalog_data) == 2000
+
+
+def test_sending_nothing_says_so(window, monkeypatch):
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a)))
+
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+
+    assert shown
+    assert not hasattr(window, "_plot_catalog_dialog") or \
+        window._plot_catalog_dialog.catalog_data is None
+
+
+def test_the_transfer_is_a_copy_not_a_link(window, some_regions):
+    """Stated in the status bar, and asserted here so it stays true."""
+    window.region_layer.set_regions(some_regions)
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+    catalog = window._plot_catalog_dialog
+
+    some_regions[0].x = 99.0
+
+    assert catalog.catalog_data["x"][0] != 99.0
+
+
+# ----------------------------------------------- spawning from the right-click menu
+
+def viewer_menu_action(window, label, submenu=None):
+    """An entry of the viewer's own right-click menu."""
+    menu = window.image_viewer.new_region_menu if submenu == "region" else \
+        window.image_viewer.imv.getView().menu
+    for entry in menu.actions():
+        if entry.text() == label:
+            return entry
+    raise AssertionError(f"no {label!r} in the viewer menu")
+
+
+def test_the_viewer_right_click_menu_offers_every_region(window):
+    assert window.image_viewer.new_region_menu.title() == "New Region"
+    labels = [entry.text() for entry in window.image_viewer.new_region_menu.actions()]
+    assert labels == ["Circle", "Box", "Arrow", "Text..."]
+
+
+@pytest.mark.parametrize("label,kind,attribute,size", [
+    ("Circle", "circle", "radius", 5.0),
+    ("Box", "box", "width", 10.0),
+    ("Arrow", "arrow", "length", 10.0),
+])
+def test_right_clicking_spawns_a_default_sized_region(window, label, kind, attribute, size):
+    """No drawing: point at a feature and a region appears there, ready to adjust."""
+    window.image_viewer.last_right_click_pixel_pos = (7, 4)
+
+    viewer_menu_action(window, label, submenu="region").trigger()
+
+    region, = window.region_layer.regions
+    assert region.TYPE == kind
+    assert (region.x, region.y) == pytest.approx(
+        window.image_viewer.display_to_orig(7.0, 4.0))
+    assert getattr(region, attribute) == size
+    assert not window.region_layer.drawing, "spawning should not leave a tool armed"
+
+
+def test_a_spawned_text_region_asks_for_its_label_at_that_point(window, monkeypatch):
+    asked = []
+
+    def prompt(parent, title, label, *args, **kwargs):
+        asked.append(label)
+        return ("knot", True)
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(prompt))
+    window.image_viewer.last_right_click_pixel_pos = (6, 3)
+
+    viewer_menu_action(window, "Text...", submenu="region").trigger()
+
+    region, = window.region_layer.regions
+    assert isinstance(region, Text)
+    assert region.text == "knot"
+    assert asked, "never asked for the label"
+
+
+def test_declining_a_spawned_labels_prompt_places_nothing(window, monkeypatch):
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False)))
+    window.image_viewer.last_right_click_pixel_pos = (6, 3)
+
+    viewer_menu_action(window, "Text...", submenu="region").trigger()
+
+    assert len(window.region_layer) == 0
+
+
+def test_spawning_without_a_click_position_does_nothing(window):
+    window.image_viewer.last_right_click_pixel_pos = None
+    assert window.spawn_region_at("circle", None) is None
+    assert len(window.region_layer) == 0
+
+
+def test_spawning_without_data_explains_itself(qapp, monkeypatch, isolated_settings):
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a)))
+    win = MainWindow()
+    try:
+        assert win.spawn_region_at("circle", (2, 2)) is None
+        assert shown
+    finally:
+        win.close()
+
+
+def test_a_spawned_region_lands_on_the_pixel_that_was_clicked(window):
+    """Through every transform: the region belongs on the pixel under the cursor."""
+    from pyql3.core import coords
+
+    for flip, rot in [(False, 0), (True, 90), (False, 270)]:
+        window.region_layer.clear()
+        window.image_viewer.flip, window.image_viewer.rot_angle = flip, rot
+        window.image_viewer.refresh_display()
+
+        window.image_viewer.last_right_click_pixel_pos = (5, 3)
+        window.spawn_region_at("circle", (5, 3))
+
+        region, = window.region_layer.regions
+        assert (region.x, region.y) == pytest.approx(
+            coords.display_to_orig(5.0, 3.0, *window.image_viewer.orig_spatial_dims(),
+                                   flip=flip, rot_angle=rot)), f"flip={flip} rot={rot}"
+
+
+# ------------------------------------------------ dialogs opening on the screen
+
+def test_a_dialog_opened_off_screen_is_brought_back(window):
+    """The Region List is wider than the main window, so Qt centred it off the left edge.
+
+    The symptom was `qt.qpa.window: Window position ... outside any known screen` and the dialog
+    appearing somewhere unrelated to where the user was working.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    from pyql3.gui.tools.base_tool import keep_on_screen
+
+    dialog = RegionListDialog(window, window.image_viewer)
+    try:
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        dialog.move(available.left() - 400, available.top() - 300)
+
+        keep_on_screen(dialog)
+
+        frame = dialog.frameGeometry()
+        assert frame.left() >= available.left()
+        assert frame.top() >= available.top()
+    finally:
+        dialog.close()
+
+
+def test_a_dialog_already_on_screen_is_left_alone(window):
+    from PySide6.QtGui import QGuiApplication
+
+    from pyql3.gui.tools.base_tool import keep_on_screen
+
+    dialog = RegionListDialog(window, window.image_viewer)
+    try:
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        # Somewhere the whole frame genuinely fits — the dialog is wide, so that is not far in.
+        frame = dialog.frameGeometry()
+        dialog.move(available.left() + max(0, (available.width() - frame.width()) // 2),
+                    available.top() + max(0, (available.height() - frame.height()) // 2))
+        before = dialog.pos()
+
+        keep_on_screen(dialog)
+
+        assert dialog.pos() == before, "a dialog that was fine got moved anyway"
+    finally:
+        dialog.close()
+
+
+def test_the_region_list_opens_on_screen(window):
+    """End to end, through the menu, with the window pushed against the left edge."""
+    from PySide6.QtGui import QGuiApplication
+
+    available = QGuiApplication.primaryScreen().availableGeometry()
+    window.move(available.left(), available.top() + 20)
+
+    menu_action(window, "region_menu", "Region List...").trigger()
+
+    frame = window._region_list_dialog.frameGeometry()
+    assert frame.left() >= available.left(), f"opened at x={frame.left()}"

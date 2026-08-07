@@ -415,3 +415,135 @@ def test_read_fits_table_rejects_an_extension_that_is_not_a_table(fits_catalog_f
             read_fits_table(fits_catalog_file, bad_hdu)
     with pytest.raises(ValueError, match="no table extension named"):
         read_fits_table(fits_catalog_file, 'NOSUCHNAME')
+
+
+# ------------------------------------------------- clearing a row selection
+
+def catalog_with_rows(qapp, loaded_viewer, count=3):
+    """A catalog dialog holding a few sources, in pixel coordinates."""
+    from astropy.table import Table
+
+    from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
+
+    dialog = PlotCatalogDialog(None, loaded_viewer)
+    dialog.set_catalog_table(Table({
+        "name": [f"src {i}" for i in range(count)],
+        "x": [float(i + 2) for i in range(count)],
+        "y": [float(i + 2) for i in range(count)],
+    }), "test")
+    return dialog
+
+
+def test_selecting_a_row_highlights_a_source(qapp, loaded_viewer):
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        dialog.table.selectRow(1)
+        assert dialog.highlight_item.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_a_selection_can_be_cleared(qapp, loaded_viewer):
+    """Qt's only built-in way out of a single-selection table is ctrl-clicking the selected row."""
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        dialog.table.selectRow(1)
+        assert dialog.highlight_item.isVisible()
+
+        dialog.clear_selection()
+
+        assert not dialog.highlight_item.isVisible(), "the highlight stayed on the image"
+        assert dialog.table.selectedItems() == []
+        assert dialog.table.currentItem() is None, "the row still reads as current"
+    finally:
+        dialog.close()
+
+
+def test_the_clear_button_follows_whether_anything_is_selected(qapp, loaded_viewer):
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        assert not dialog.btn_clear_selection.isEnabled(), "enabled with nothing selected"
+
+        dialog.table.selectRow(0)
+        assert dialog.btn_clear_selection.isEnabled()
+
+        dialog.btn_clear_selection.click()
+        assert not dialog.btn_clear_selection.isEnabled()
+        assert not dialog.highlight_item.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_clearing_leaves_the_view_where_it_is(qapp, loaded_viewer):
+    """Selecting recentres the view; un-selecting should not go wandering back."""
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        dialog.table.selectRow(2)
+        before = loaded_viewer.imv.getView().viewRect()
+
+        dialog.clear_selection()
+
+        after = loaded_viewer.imv.getView().viewRect()
+        assert (after.center().x(), after.center().y()) == \
+            pytest.approx((before.center().x(), before.center().y()))
+    finally:
+        dialog.close()
+
+
+def test_clearing_an_empty_selection_is_harmless(qapp, loaded_viewer):
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        dialog.clear_selection()
+        dialog.clear_selection()
+        assert not dialog.highlight_item.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_escape_in_the_table_clears_the_selection(qapp, loaded_viewer):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeySequence, QShortcut
+
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        dialog.table.selectRow(1)
+        shortcuts = [child for child in dialog.table.findChildren(QShortcut)]
+        escapes = [s for s in shortcuts if s.key() == QKeySequence(Qt.Key.Key_Escape)]
+        assert escapes, "no Escape shortcut on the table"
+
+        escapes[0].activated.emit()
+        assert not dialog.highlight_item.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_the_context_menu_offers_clear_selection(qapp, loaded_viewer):
+    """Built rather than shown: `QMenu.exec` is modal and would block the suite forever."""
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        dialog.table.selectRow(1)
+        menu = dialog.build_context_menu(1)
+
+        labels = [action.text() for action in menu.actions()]
+        assert "Clear Selection" in labels, labels
+
+        next(a for a in menu.actions() if a.text() == "Clear Selection").trigger()
+        assert not dialog.highlight_item.isVisible()
+    finally:
+        dialog.close()
+
+
+def test_the_context_menu_still_copies_and_deletes(qapp, loaded_viewer):
+    """The menu was rebuilt to be testable; its existing actions must still work."""
+    dialog = catalog_with_rows(qapp, loaded_viewer)
+    try:
+        menu = dialog.build_context_menu(1)
+        next(a for a in menu.actions() if a.text() == "Copy Coordinates").trigger()
+        assert "X: 3.0" in qapp.clipboard().text()
+
+        before = len(dialog.catalog_data)
+        next(a for a in dialog.build_context_menu(1).actions()
+             if a.text() == "Delete Marker").trigger()
+        assert len(dialog.catalog_data) == before - 1
+    finally:
+        dialog.close()

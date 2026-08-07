@@ -58,6 +58,35 @@ COMMON_ORDER = ("text", "color", "line_width", "dash", "font_size", "tag", "visi
 
 VALID_FRAMES = ("image", "sky")
 
+#: ds9's own RGB for the colour names it uses, so a region looks the same in both applications.
+#:
+#: Only `green` actually differs, and it differs a lot: Qt reads the SVG palette, where `green` is
+#: the dark `#008000`, while ds9 draws the neon `#00ff00`. A file saying `color=green` — which is
+#: ds9's default, so most files — was being drawn in a colour ds9 never uses. The rest are listed
+#: so the set is explicit rather than a single mysterious exception.
+DS9_COLORS = {
+    "green": "#00ff00",
+    "red": "#ff0000",
+    "blue": "#0000ff",
+    "cyan": "#00ffff",
+    "magenta": "#ff00ff",
+    "yellow": "#ffff00",
+    "white": "#ffffff",
+    "black": "#000000",
+}
+
+#: What a new region is drawn in, matching ds9's default.
+DEFAULT_COLOR = "green"
+
+
+def resolve_color(name):
+    """A colour string Qt will draw the way ds9 does.
+
+    ds9 colour *names* are kept in the model and in saved files, so what is written stays
+    idiomatic and round-trips; they are resolved to RGB only for painting.
+    """
+    return DS9_COLORS.get(str(name).strip().lower(), name)
+
 
 class _InlineList(list):
     """A list YAML writes on one line, so a channel range reads as `z_range: [120, 180]`.
@@ -158,7 +187,7 @@ class Region:
     x: float
     y: float
     text: str = ""
-    color: str = "green"
+    color: str = DEFAULT_COLOR
     line_width: int = 2
     dash: bool = False
     font_size: int = 12
@@ -254,6 +283,20 @@ class Text(Region):
 
 #: Every shape, by the name used in the file.
 REGION_TYPES = {cls.TYPE: cls for cls in (Circle, Box, Arrow, Text)}
+
+
+def sizes_of(region):
+    """`(size, size2)` for a region: whatever its shape calls its dimensions, or None.
+
+    A circle has a radius, a box a width and a height, an arrow a length, a label neither.
+    """
+    if isinstance(region, Circle):
+        return region.radius, None
+    if isinstance(region, Box):
+        return region.width, region.height
+    if isinstance(region, Arrow):
+        return region.length, None
+    return None, None
 
 
 def _defaults(cls):

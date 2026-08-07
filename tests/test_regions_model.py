@@ -360,3 +360,47 @@ def test_shapes_are_keyword_only():
 
 def test_the_base_class_is_not_a_usable_shape():
     assert Region.TYPE is None
+
+
+# --------------------------------------------------------------- ds9 colours
+
+def test_ds9_green_is_neon_not_qt_green():
+    """Qt reads the SVG palette, where `green` is the dark #008000; ds9 draws #00ff00.
+
+    A ds9 file saying `color=green` — its default, so most files — was being drawn in a colour ds9
+    never uses.
+    """
+    from pyql3.core.regions_model import resolve_color
+
+    assert resolve_color("green") == "#00ff00"
+    assert resolve_color("GREEN") == "#00ff00", "ds9 colour names are not case sensitive"
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("red", "#ff0000"), ("blue", "#0000ff"), ("cyan", "#00ffff"),
+    ("magenta", "#ff00ff"), ("yellow", "#ffff00"), ("white", "#ffffff"),
+])
+def test_the_other_ds9_names_resolve_to_the_same_colours_qt_uses(name, expected):
+    from pyql3.core.regions_model import resolve_color
+
+    assert resolve_color(name) == expected
+
+
+def test_an_unknown_colour_is_passed_through(qapp=None):
+    """Hex values and any other Qt-readable name are left alone."""
+    from pyql3.core.regions_model import resolve_color
+
+    assert resolve_color("#ff8800") == "#ff8800"
+    assert resolve_color("orange") == "orange"
+
+
+def test_a_new_region_is_ds9_green():
+    assert Circle(x=1.0, y=2.0, radius=3.0).color == "green"
+    from pyql3.core.regions_model import resolve_color
+    assert resolve_color(Circle(x=1.0, y=2.0, radius=3.0).color) == "#00ff00"
+
+
+def test_the_colour_name_is_what_gets_saved():
+    """Names stay in the file so it reads as a ds9 file would, and round-trips unchanged."""
+    text = RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0, color="green")]).to_yaml()
+    assert "#00ff00" not in text, "the resolved RGB leaked into the saved file"

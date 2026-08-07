@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pyql3.core.regions_model import Arrow, Box, Circle, Text
+from pyql3.core.regions_model import Arrow, Box, Circle, Text, resolve_color, sizes_of
 from pyql3.gui.tools.base_tool import BaseToolDialog
 
 #: Column order. "Size" is a radius for a circle, a width for a box, a length for an arrow; only
@@ -126,7 +126,7 @@ class RegionListDialog(BaseToolDialog):
                 "Double-click the Type cell for properties; edit any other cell in place.")
 
     def _fill_row(self, row, region):
-        size, size2 = _sizes_of(region)
+        size, size2 = sizes_of(region)
         angle = getattr(region, 'angle', None)
 
         self._set_cell(row, COL_TYPE, region.TYPE, editable=False)
@@ -142,7 +142,7 @@ class RegionListDialog(BaseToolDialog):
 
         colour = QTableWidgetItem(region.color)
         colour.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-        swatch = QColor(region.color)
+        swatch = QColor(resolve_color(region.color))
         if swatch.isValid():
             colour.setBackground(swatch)
             # Keep the name readable against its own colour.
@@ -240,7 +240,8 @@ class RegionListDialog(BaseToolDialog):
         self.layer.update_channel_visibility()
 
     def choose_colour(self, region):
-        chosen = QColorDialog.getColor(QColor(region.color), self, "Region Colour")
+        chosen = QColorDialog.getColor(QColor(resolve_color(region.color)), self,
+                                       "Region Colour")
         if chosen.isValid():
             region.color = chosen.name()
             self.layer.restyle(region)
@@ -274,7 +275,7 @@ class RegionListDialog(BaseToolDialog):
         if placed is None:
             return
 
-        size, size2 = _sizes_of(region)
+        size, size2 = sizes_of(region)
         extent = max(size or 0.0, size2 or 0.0, 3.0) * ZOOM_MARGIN
         view = self.image_viewer.imv.getView()
         view.setRange(xRange=(placed[0] - extent, placed[0] + extent),
@@ -326,17 +327,6 @@ class RegionListDialog(BaseToolDialog):
         menu.addSeparator()
         menu.addAction("Delete").triggered.connect(lambda: self.layer.remove(region))
         menu.exec(self.table.viewport().mapToGlobal(position))
-
-
-def _sizes_of(region):
-    """`(size, size2)` for the table: whatever the shape's dimensions are, or None."""
-    if isinstance(region, Circle):
-        return region.radius, None
-    if isinstance(region, Box):
-        return region.width, region.height
-    if isinstance(region, Arrow):
-        return region.length, None
-    return None, None
 
 
 def _set_size(region, value):

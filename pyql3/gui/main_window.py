@@ -13,7 +13,7 @@ from pyql3.gui.window_manager import get_window_manager
 from pyql3.services.poller import DirectoryPoller, watcher_of
 from pyql3.gui.dialogs.polling import PollingDialog
 from pyql3.services.config import get_config
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 import pyql3
 from pyql3 import get_resource_path
 
@@ -84,16 +84,22 @@ class MainWindow(QMainWindow):
         # Connect viewer context menu requests
         self.image_viewer.request_depth_plot.connect(self.open_depth_plot)
         self.image_viewer.request_gaussian_fit.connect(self.open_gaussian_fit)
+        self.image_viewer.request_new_region.connect(self.spawn_region_at)
 
         # The region layer draws no dialogs itself; it asks, and this answers.
         self.image_viewer.region_layer.region_activated.connect(self.open_region_properties)
         self.image_viewer.region_layer.region_menu_requested.connect(self.show_region_menu)
         self.image_viewer.region_layer.render_mode_changed.connect(self.on_region_render_mode)
+        self.image_viewer.region_layer.labels_suppressed.connect(self.on_region_labels_suppressed)
         #: Open property dialogs, keyed by id() of the region, so double-clicking the same
         #: region twice raises the dialog it already has rather than stacking another.
         self._region_property_dialogs = {}
+        #: Built on demand by `show_region_toolbar`; None until then.
+        self.region_toolbar = None
         
         self.create_menus()
+        self.restore_region_toolbar()
+        self.restore_region_labels()
 
     def create_menus(self):
         menubar = self.menuBar()
@@ -270,8 +276,26 @@ class MainWindow(QMainWindow):
 
         self.region_menu.addSeparator()
 
+        self.region_toolbar_action = self.region_menu.addAction("Region Toolbar")
+        self.region_toolbar_action.setCheckable(True)
+        self.region_toolbar_action.setToolTip(
+            "Show a small vertical bar of region tools beside the image")
+        self.region_toolbar_action.toggled.connect(self.show_region_toolbar)
+
+        self.region_labels_action = self.region_menu.addAction("Show Region Labels")
+        self.region_labels_action.setCheckable(True)
+        self.region_labels_action.setChecked(True)
+        self.region_labels_action.setToolTip(
+            "Draw each region's text beside it. Turn off for a crowded field.")
+        self.region_labels_action.toggled.connect(self.show_region_labels)
+
         region_list_action = self.region_menu.addAction("Region List...")
         region_list_action.triggered.connect(self.open_region_list)
+
+        send_to_catalog_action = self.region_menu.addAction("Send Regions to Plot Catalog...")
+        send_to_catalog_action.setToolTip(
+            "Copy the regions into the Plot Catalog tool, which can search and list them")
+        send_to_catalog_action.triggered.connect(self.send_regions_to_catalog)
 
         self.region_menu.addSeparator()
 
@@ -862,6 +886,55 @@ class MainWindow(QMainWindow):
     def region_layer(self):
         return getattr(self.image_viewer, 'region_layer', None)
 
+    #: Settings key for whether the region toolbar is shown. Remembered because it is a standing
+    #: preference about the window's shape, not a per-file choice.
+    REGION_TOOLBAR_SETTING = "region_toolbar"
+
+    def show_region_toolbar(self, visible):
+        """Show or hide the vertical bar of region tools, and remember the choice.
+
+        Built the first time it is asked for: a window that never shows it should not pay for four
+        painted icons.
+        """
+        from pyql3.gui.region_toolbar import RegionToolBar
+
+        if visible and getattr(self, 'region_toolbar', None) is None:
+            self.region_toolbar = RegionToolBar(self)
+            self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.region_toolbar)
+
+        if getattr(self, 'region_toolbar', None) is not None:
+            self.region_toolbar.setVisible(bool(visible))
+
+        if self.region_toolbar_action.isChecked() != bool(visible):
+            self.region_toolbar_action.setChecked(bool(visible))
+        self.config.set(self.REGION_TOOLBAR_SETTING, bool(visible))
+
+    #: Settings key for whether region labels are drawn.
+    REGION_LABELS_SETTING = "region_labels"
+
+    def show_region_labels(self, visible):
+        """Draw or hide every region's text, and remember the choice.
+
+        The catalogue tool offers the same switch for source names: with a few thousand labelled
+        regions, whether the text helps or gets in the way is the user's call to make.
+        """
+        if self.region_layer is not None:
+            self.region_layer.set_labels_visible(visible)
+        if self.region_labels_action.isChecked() != bool(visible):
+            self.region_labels_action.setChecked(bool(visible))
+        self.config.set(self.REGION_LABELS_SETTING, bool(visible))
+
+    def restore_region_labels(self):
+        """Apply the remembered label preference. Labels are on unless turned off."""
+        if not self.config.get(self.REGION_LABELS_SETTING, True):
+            self.region_labels_action.setChecked(False)
+
+    def restore_region_toolbar(self):
+        """Apply the remembered toolbar preference. Called once the window is built."""
+        if self.config.get(self.REGION_TOOLBAR_SETTING, False):
+            # setChecked drives show_region_toolbar through the toggled signal.
+            self.region_toolbar_action.setChecked(True)
+
     def open_region_list(self):
         from pyql3.gui.tools.region_list import RegionListDialog
         if not hasattr(self, '_region_list_dialog') or not self._region_list_dialog.isVisible():
@@ -916,6 +989,18 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(
                 f"{count:,} regions: individually editable again.", 6000)
+
+    def on_region_labels_suppressed(self, count):
+        """Say why the labels went away, rather than leaving it looking like they were lost."""
+        from pyql3.gui.viewers.region_layer import LABEL_SAFETY_LIMIT
+
+        if count:
+            self.statusBar().showMessage(
+                f"{count:,} labels in view — more than the {LABEL_SAFETY_LIMIT:,} that can be "
+                "drawn at once, so none are. Zoom in, or turn them off with "
+                "Region ➔ Show Region Labels.", 8000)
+        else:
+            self.statusBar().clearMessage()
 
     def load_regions_from(self, filepath, announce=True):
         """Load a region file into this window. Returns True if anything was loaded.
@@ -979,26 +1064,103 @@ class MainWindow(QMainWindow):
             menu.exec(global_position)
         return menu
 
-    def start_drawing_region(self, kind):
-        """Enter drawing mode for one shape. A text region asks for its label first.
+    def send_regions_to_catalog(self):
+        """Copy the regions into the Plot Catalog tool as a source list.
 
-        The layer deliberately puts nothing on screen itself, so the label prompt lives here.
+        Worth having because the two overlays are good at different things: regions are drawn and
+        edited individually, while the catalogue tool has a table, a search box and row
+        highlighting, and stays usable at sizes where regions stop being individually editable.
+
+        A copy, not a link: the catalogue is a snapshot taken now, and editing a region afterwards
+        does not change it. Coordinates go across as *FITS Pixels*, which is what the catalogue
+        calls the orig coordinates regions are stored in.
+        """
+        from astropy.table import Table
+
+        from pyql3.core.regions_model import sizes_of
+
+        layer = self.region_layer
+        if layer is None or not len(layer):
+            QMessageBox.information(self, "Send Regions to Plot Catalog",
+                                    "There are no regions to send.")
+            return
+
+        regions = layer.regions
+        table = Table({
+            # `name`, `x` and `y` are the column names the catalogue tool recognises, so it
+            # configures its own coordinate type and label column without being told.
+            "name": [region.text or f"{region.TYPE} {index + 1}"
+                     for index, region in enumerate(regions)],
+            "x": [float(region.x) for region in regions],
+            "y": [float(region.y) for region in regions],
+            "type": [region.TYPE for region in regions],
+            "size": [float(sizes_of(region)[0] or 0.0) for region in regions],
+        })
+
+        self.open_plot_catalog()
+        source = os.path.basename(self.fits_reader.filepath or "") or "regions"
+        self._plot_catalog_dialog.set_catalog_table(table, f"{len(regions)} regions from {source}")
+        self.statusBar().showMessage(
+            f"Sent {len(regions):,} regions to the Plot Catalog tool. They are a copy: editing a "
+            "region will not change the catalogue.", 8000)
+
+    def start_drawing_region(self, kind):
+        """Enter drawing mode for one shape.
+
+        A text region is clicked into place and *then* asked about, which is the order the work
+        happens in: point at the feature, then say what it is called. The layer puts nothing on
+        screen itself, so it calls back here for the label once the click has landed.
         """
         if self.region_layer is None or self.image_viewer.transposed_data is None:
             QMessageBox.information(self, "Region", "Load a FITS file before drawing regions.")
             return
 
-        attributes = {}
         if kind == "text":
-            label, accepted = QInputDialog.getText(self, "New Text Region", "Label:")
-            if not accepted or not label.strip():
-                return
-            attributes["text"] = label.strip()
+            self.region_layer.begin_draw(kind, ask_text=self.ask_region_label)
+            self.statusBar().showMessage(
+                "Click the image where the label should go.", 6000)
+            return
 
-        self.region_layer.begin_draw(kind, **attributes)
-        hint = ("Click the image to place the label."
-                if kind == "text" else f"Drag on the image to draw a {kind}.")
-        self.statusBar().showMessage(hint, 6000)
+        self.region_layer.begin_draw(kind)
+        self.statusBar().showMessage(f"Drag on the image to draw a {kind}.", 6000)
+
+    def spawn_region_at(self, kind, position):
+        """Put a default-sized region where the user right-clicked.
+
+        Pointing at a feature and getting a region there is quicker than dragging one out, and the
+        size is easy to change afterwards — from the properties dialog, the Region List, or by
+        dragging a handle.
+        """
+        from pyql3.core import coords
+
+        if self.region_layer is None or self.image_viewer.transposed_data is None:
+            QMessageBox.information(self, "Region", "Load a FITS file before drawing regions.")
+            return None
+        if position is None:
+            return None
+
+        # The stored position is a display *pixel*; a region wants its centre, half a pixel on.
+        item_x = coords.index_to_item(position[0])
+        item_y = coords.index_to_item(position[1])
+
+        region = self.region_layer.place(
+            kind, item_x, item_y,
+            ask_text=self.ask_region_label if kind == "text" else None)
+        if region is not None:
+            self.statusBar().showMessage(
+                f"Added a {kind} here. Drag its handle to resize, or double-click it to edit.",
+                6000)
+        return region
+
+    def ask_region_label(self, x, y):
+        """Ask for a text region's label, having been told where it will go.
+
+        Returns the label, or an empty string to place nothing. Called by the region layer after
+        the click, so the position can be shown in the prompt.
+        """
+        label, accepted = QInputDialog.getText(
+            self, "Text Region", f"Label for the region at ({x:.1f}, {y:.1f}):")
+        return label.strip() if accepted else ""
 
     def delete_all_regions(self):
         layer = self.region_layer

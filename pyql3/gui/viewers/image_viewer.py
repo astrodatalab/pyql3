@@ -34,6 +34,8 @@ class JumpSlider(QSlider):
 class ImageViewer(QWidget):
     request_depth_plot = Signal(object)
     request_gaussian_fit = Signal(object)
+    #: A region was asked for from the right-click menu. Payload is `(kind, display pixel)`.
+    request_new_region = Signal(str, object)
     #: Emitted when the displayed plane's geometry changes — a flip, a 90° rotation, a new axis
     #: mapping or new data. Anything drawn on top in stored coordinates has to be re-placed.
     display_changed = Signal()
@@ -75,6 +77,15 @@ class ImageViewer(QWidget):
             act_depth.triggered.connect(self.on_context_plot_depth)
             act_fit = view.menu.addAction("Gaussian Fit...")
             act_fit.triggered.connect(self.on_context_gaussian_fit)
+
+            # Held on self, or PySide6 deletes the C++ menu with the first Python wrapper that
+            # touches it, taking its actions with it (`BUGS.md` M11).
+            self.new_region_menu = view.menu.addMenu("New Region")
+            for label, kind in (("Circle", "circle"), ("Box", "box"),
+                                ("Arrow", "arrow"), ("Text...", "text")):
+                act = self.new_region_menu.addAction(label)
+                act.triggered.connect(
+                    lambda checked=False, k=kind: self.on_context_new_region(k))
         
 
 
@@ -1536,19 +1547,33 @@ class ImageViewer(QWidget):
             self.toggle_position_angle(True)
 
     def on_view_clicked(self, evt):
-        if evt.button() == Qt.RightButton:
-            img_item = self.imv.getImageItem()
-            if img_item is not None and self.transposed_data is not None:
-                pt = img_item.mapFromScene(evt.scenePos())
-                nx = self.transposed_data.shape[-1]
-                ny = self.transposed_data.shape[-2]
-                x = int(np.clip(pt.x(), 0, nx - 1))
-                y = int(np.clip(pt.y(), 0, ny - 1))
-                self.last_right_click_pixel_pos = (x, y)
+        """Remember where a right-click landed, as a display pixel.
+
+        The bounds come from the *displayed* plane. They used to come from `transposed_data`, and
+        with its two spatial extents the wrong way round — `shape[-1]` is the y extent, not x — so
+        on a non-square cube a click near an edge was clipped to the wrong pixel, and a 90° rotation
+        made it worse. Nothing showed while the only fixtures were square.
+        """
+        if evt.button() != Qt.RightButton:
+            return
+        img_item = self.imv.getImageItem()
+        dims = self.orig_spatial_dims()
+        if img_item is None or dims is None:
+            return
+
+        max_x, max_y = coords.display_dims(*dims, self.rot_angle)
+        pt = img_item.mapFromScene(evt.scenePos())
+        x = int(np.clip(pt.x(), 0, max_x - 1))
+        y = int(np.clip(pt.y(), 0, max_y - 1))
+        self.last_right_click_pixel_pos = (x, y)
 
     def on_context_plot_depth(self):
         pos = getattr(self, 'last_right_click_pixel_pos', None)
         self.request_depth_plot.emit(pos)
+
+    def on_context_new_region(self, kind):
+        """Ask for a region of `kind` where the right-click landed."""
+        self.request_new_region.emit(kind, getattr(self, 'last_right_click_pixel_pos', None))
 
     def on_context_gaussian_fit(self):
         pos = getattr(self, 'last_right_click_pixel_pos', None)

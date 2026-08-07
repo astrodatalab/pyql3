@@ -7,10 +7,13 @@
   from the active tab on every tab switch.
 - Draw regions on the view like ds9 (circles, boxes, arrows, text) with YAML and ds9 `.reg`
   save/load — planned in detail in [TODO_regions.md](TODO_regions.md)
-- Should be some way to reset the highlighting of rows in the plot catalog tool
 - Zenodo integration of release versions so the tool is citeable
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
 # DONE
+- Clearing a row selection in the Plot Catalog tool: a **Clear Selection** button beside the search
+  box, **Escape** in the table, and a **Clear Selection** context-menu entry. Qt's only built-in way
+  out of a single-selection table is ctrl-clicking the selected row, which nobody finds — and since
+  selecting also recentres the view, a stray click was awkward to undo.
 - Multiple cubes at once, one per window: **File ➔ New Window** / **Open in New Window...** /
   **Close Window**, several filenames on the command line, and the Arithmetic result. Each window
   owns its reader, viewer, display settings, tool dialogs and directory watch. Files arriving

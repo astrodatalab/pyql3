@@ -1,5 +1,29 @@
 from PySide6.QtWidgets import QDialog, QVBoxLayout
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
+
+
+def keep_on_screen(window):
+    """Nudge `window` back inside the screen if it opened partly outside it.
+
+    Qt centres a dialog on its parent, so one wider than the main window starts off the left edge —
+    the Region List is 760 px against a 600 px window, which put it at x=-40 and drew
+    `Window position ... outside any known screen` in the terminal. Qt then moves it to the primary
+    screen itself, so the dialog is not lost, but it appears somewhere unrelated to where the user
+    was looking.
+    """
+    screen = window.screen() or QGuiApplication.primaryScreen()
+    if screen is None:
+        return
+
+    available = screen.availableGeometry()
+    frame = window.frameGeometry()
+    x = min(max(frame.x(), available.left()), max(available.left(),
+                                                  available.right() - frame.width() + 1))
+    y = min(max(frame.y(), available.top()), max(available.top(),
+                                                 available.bottom() - frame.height() + 1))
+    if (x, y) != (frame.x(), frame.y()):
+        window.move(x, y)
 
 
 def as_center(value):
@@ -33,6 +57,16 @@ class BaseToolDialog(QDialog):
         # Don't block the main window
         self.setModal(False)
         
+    def showEvent(self, event):
+        """Make sure the dialog is somewhere the user can see it, the first time it opens.
+
+        Only the first time: moving it deliberately afterwards is the user's business.
+        """
+        super().showEvent(event)
+        if not getattr(self, '_placed_on_screen', False):
+            self._placed_on_screen = True
+            keep_on_screen(self)
+
     def add_roi_to_viewer(self, roi):
         if self.roi is not None:
             self.remove_roi_from_viewer()

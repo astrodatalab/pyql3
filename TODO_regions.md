@@ -425,6 +425,14 @@ with 39 cases in `tests/test_region_ui.py`.
 `QMenu.exec` is modal, so `build_region_menu` is separate from `show_region_menu`; a test that pops
 a menu up hangs the suite.
 
+**Also from testing: an arrow's head pointed the wrong way** (`BUGS.md` M13). The head is
+`pxMode=True`, which means `ItemIgnoresTransformations` and therefore screen coordinates with y
+*downward*, while the line's angle has y upward — so it needs `180 - direction`, not
+`direction + 180`. The wrong form was copied from the PA compass, where it is correct because those
+arrows are `pxMode=False` and are transformed with the view. Copying an angle convention between a
+transformed and an untransformed item is the trap; the two expressions agree only at 0° and 180°,
+which is why horizontal arrows looked fine.
+
 The original scope, for the record:
 
 
@@ -538,6 +546,113 @@ The original scope, for the record:
   `log`/status-bar what was capped rather than silently truncating.
 - Region → tool handoff ("use this region as the Depth Plot aperture") is **out of scope**,
   but the model carries enough that it is a small follow-on.
+
+### Region toolbar (added after Phase 5, 2026-08-06)
+
+`pyql3/gui/region_toolbar.py`: a small vertical bar on the left with the four shapes, the region
+list and a clear-all. **Off by default** and toggled from **Region ➔ Region Toolbar**, with the
+choice remembered in `~/.pyql3/config.json` — the image is what the window is for, and a permanent
+bar takes width from it.
+
+- **The icons are painted with `QPainter`, not shipped as files.** Four outlines and a letter are
+  less work to draw than to draw, export, bundle and verify, they take their colour from the running
+  palette so they suit a light or a dark theme, and they stay crisp at any size. `QuickLook3.spec`
+  and the build's asset checks are untouched, which is the real saving.
+- **The buttons call the window**, the same methods the menu does, so the two cannot drift and the
+  clear button inherits the menu's confirmation rather than skipping it.
+- The shape buttons are exclusive and follow `RegionLayer.draw_kind`, so the pressed button says
+  what a drag will draw — and releases itself when a tool dialog revokes the drag or the window
+  refuses (nothing loaded, or a cancelled label prompt).
+- Offered on the left or right edge only: along the top it would push the image down rather than
+  narrowing it.
+
+**A bug found by rendering the window and looking at it:** a shape's caption was drawn rotated by
+the shape's own angle, so an arrow's label lay on its side at the arrow's 55° and a rotated box's
+caption tipped over with it. A box's angle rotates the *box* and an arrow's is its *heading*;
+neither is a text angle, and ds9 treats `textangle` as a property of a text region alone. Only a
+`Text` region now turns its label. The same conflation of two angle meanings as `BUGS.md` M13 — one
+worth watching for wherever an angle is passed along.
+
+### Text placement reworked (2026-08-06)
+
+Placing a label used to ask for the text first and then want a *drag*, which had it backwards twice
+over. Now: arm the tool, **click where the label goes**, and the prompt follows — naming a thing
+after pointing at it, and telling the prompt where it landed ("Label for the region at (9.0, 6.0)").
+
+- **A click, not a drag.** A click without movement never reaches `mouseDragEvent`, so text needed a
+  small drag to appear at all, and the drag drew a rubber-band line — suggesting an orientation a
+  label cannot have, since it is drawn horizontally. The layer now listens for
+  `sigMouseClicked` while the text tool is armed, and swallows drags without drawing anything.
+- **The layer still shows no dialogs.** `begin_draw("text", ask_text=…)` takes a callback, called
+  with the position in orig coordinates once the click lands; returning nothing places nothing.
+  Same shape as `PollingDialog`'s `confirm_takeover`.
+- **A pre-existing double-emit fixed on the way:** `place_at` emitted `region_drawn` *and* so did
+  the drag handler that calls it for a click-sized drag, so such a region was announced twice. One
+  private `_drawn()` now owns adding-and-announcing, with a test that counts the emissions.
+
+### A text region is now its own handle (2026-08-06)
+
+A text region used to carry a small crosshair to grab it by — and since the marker and the label
+shared an anchor, the marker sat on top of the very text it was there to move. The label is already
+a visible thing of exactly the right size, so it makes a better handle than anything added beside
+it: click, drag or right-click **the text itself**.
+
+`RegionTextItem` subclasses `pg.TextItem`, which is a `GraphicsObject` and so can take mouse events
+once it says which buttons it wants. The drag follows `pg.TargetItem`'s pattern and the signal is
+named `sigPositionChanged` to match, so the layer's existing wiring picked it up unchanged. Hovering
+outlines the text, and the cursor becomes a move cursor — without a marker, something has to say the
+text can be dragged.
+
+Two details worth keeping:
+
+- **A text region must have text.** That was already enforced by the model and the properties
+  dialog; it is now load-bearing, because an empty label would be a region with nothing to click.
+- **A shape's caption is explicitly mouse-transparent.** A `QGraphicsItem` accepts every mouse
+  button by default, so a circle's caption would otherwise sit in front of the circle and swallow
+  presses meant for the shape or for panning. Only a text region's label is interactive.
+
+### Region labels in a large set (2026-08-06)
+
+Reported: a ds9 file of 2,000 named stars drew every circle and **none of the text**. That was a
+deliberate choice in the aggregate overlay — one `TextItem` per region is the cost the overlay
+exists to avoid — and it was the wrong one. For a catalogue of named stars the names *are* the
+data.
+
+Fixed by doing what `plot_catalog.update_visible_text_labels` already does, which was the right
+precedent to follow:
+
+- **Cull to the viewport.** Only labels inside the visible rect are built, so zooming in costs
+  proportionally less: 2,000 labels take 0.45 s to build with the whole field in view, 323 take
+  0.13 s zoomed in.
+- **Hide them while panning**, rebuild 200 ms after the view settles — already in place from the
+  earlier pan work, now applied to the overlay's labels too.
+- **Let the user decide.** **Region ➔ Show Region Labels**, remembered, defaulting to on — the same
+  switch the catalogue tool offers as *Show Names*. An earlier attempt at this refused to draw more
+  than 300 labels on the grounds that they would be unreadable; that is a judgement for the person
+  looking at the field, not for the layer.
+
+What remains is a `LABEL_SAFETY_LIMIT` of 5,000, which is a hang guard rather than a readability
+rule: at ~0.18 ms per label, building an unbounded set would lock the window up. When it bites, the
+status bar says so and points at the toggle.
+
+### Spawning a region from the right-click menu (2026-08-06)
+
+The viewer's own context menu gained a **New Region** submenu — Circle, Box, Arrow, Text... — which
+puts a **default-sized** region where the click landed. Pointing at a feature and getting a region
+there is quicker than dragging one out, and the size is easy to change afterwards from a handle, the
+properties dialog or the Region List. Text still asks for its label, at that position.
+
+`RegionLayer.place(kind, x, y, ask_text=…)` is the API; `place_at` (the click-to-place path) now
+delegates to it, so a region created by either route is identical. Default sizes are named constants
+rather than literals buried in a branch.
+
+Right-clicking *on* a region still gives that region's own menu (Properties, Copy Coordinates,
+Delete) — the new entries appear when clicking the image itself.
+
+**A latent bug fixed on the way** (`BUGS.md` M15): the stored right-click position was clipped using
+`transposed_data`'s extents with x and y swapped, and against the *stored* plane rather than the
+displayed one. It already misplaced **Depth Plot** and **Gaussian Fit** near the edge of a
+non-square cube; spawning regions would have inherited it.
 
 ### Phase 6 — tests, docs, packaging
 

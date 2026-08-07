@@ -332,3 +332,43 @@ def test_viewer_adapters_report_nothing_without_data(qapp):
     assert viewer.orig_spatial_dims() is None
     assert viewer.orig_to_display(1, 2) is None
     assert viewer.display_to_orig(1, 2) is None
+
+
+def test_a_right_click_is_clipped_to_the_displayed_plane(qapp, tmp_path):
+    """The bounds came from `transposed_data`, with its two extents the wrong way round.
+
+    `shape[-1]` is the y extent, not x, so on a non-square cube a click near an edge was clipped to
+    the wrong pixel — and under a 90° rotation the whole plane has different extents. A square
+    fixture hides both.
+    """
+    from unittest.mock import Mock
+
+    import numpy as np
+    from astropy.io import fits
+    from PySide6.QtCore import QPointF, Qt
+
+    from pyql3.core.fits_reader import FitsReader
+
+    path = str(tmp_path / "oblong.fits")
+    fits.PrimaryHDU(np.zeros((6, 20, 9), dtype=np.float32)).writeto(path)
+    reader = FitsReader(path)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+
+    nx, ny = viewer.orig_spatial_dims()
+    assert nx != ny, "this test needs a non-square plane"
+
+    def right_click_at(x, y):
+        event = Mock()
+        event.button.return_value = Qt.MouseButton.RightButton
+        event.scenePos.return_value = viewer.imv.getImageItem().mapToScene(QPointF(x, y))
+        viewer.on_view_clicked(event)
+        return viewer.last_right_click_pixel_pos
+
+    # Far outside the plane: the click clips to the last real pixel of each axis.
+    assert right_click_at(999, 999) == (nx - 1, ny - 1)
+
+    # ...and after a quarter turn the extents swap, so the clip has to follow.
+    viewer.rot_angle = 90
+    viewer.refresh_display()
+    assert right_click_at(999, 999) == (ny - 1, nx - 1)

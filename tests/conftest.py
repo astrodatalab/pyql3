@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from astropy.io import fits
 from astropy.wcs import WCS
 from pyql3.core.fits_reader import FitsReader
+from pyql3.services.config import ConfigManager
 from pyql3.gui.viewers.image_viewer import ImageViewer
 
 
@@ -17,6 +18,28 @@ def qapp():
     if app is None:
         app = QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolated_settings(tmp_path_factory):
+    """Keep the suite out of the developer's own `~/.pyql3/config.json`.
+
+    `MainWindow` takes the process-wide `ConfigManager`, so every test that builds a window was
+    writing to the real settings file: it overwrote the Recent Files list with pytest temp paths,
+    and left behind whatever a test toggled — a window that then opened with a region toolbar
+    nobody asked for. It also made the suite depend on the developer's saved polling interval.
+
+    Autouse and session-scoped so no test can opt out by forgetting.
+    """
+    import pyql3.services.config as config_module
+
+    settings = tmp_path_factory.mktemp("settings") / "config.json"
+    saved = config_module._shared_config
+    config_module._shared_config = ConfigManager(settings)
+    try:
+        yield config_module._shared_config
+    finally:
+        config_module._shared_config = saved
 
 
 @pytest.fixture

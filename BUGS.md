@@ -1309,6 +1309,144 @@ does without a stubbed `confirm_cli_install`.
 
 ---
 
+## M13. An arrow region's head pointed the wrong way
+
+- **Status:** ✅ FIXED — `region_layer.py` (`_arrow_head_angle`), covered by
+  `tests/test_region_layer.py::test_the_arrow_head_points_along_its_own_line` and
+  `::test_the_arrow_head_follows_the_line_through_every_transform`
+- **Severity:** medium (the arrow drew a head that disagreed with its own line)
+- **Reported from use.**
+- **File:** `pyql3/gui/viewers/region_layer.py`, `_place_arrow_head`
+
+### Symptom
+Every arrow except a horizontal one drew its head at the wrong angle — mirrored about the
+horizontal, so an arrow drawn up-and-right had a head pointing down-and-right.
+
+### Root cause
+Two conversions, one of them missed:
+
+- `pg.ArrowItem` points **opposite** its `angle` option (measured: `head = angle + 180`).
+- The head is created with `pxMode=True`, which sets `ItemIgnoresTransformations`, so it is painted
+  in raw **screen** coordinates where y increases *downward* — while the view, and therefore the
+  line's angle, has y increasing upward.
+
+The code used `direction + 180`, which handles only the first. The two expressions agree at 0° and
+180°, so a horizontal arrow looked right and nothing else did.
+
+The convention was copied from the PA compass (`toggle_position_angle`), where `angle + 180` is
+correct — because those arrows are `pxMode=False` and so *are* transformed with the view. Copying an
+angle convention between a transformed and an untransformed item is the whole bug.
+
+### Fix
+`_arrow_head_angle(direction)` returns `(180 - direction) % 360`, with the reasoning recorded at the
+call site. Tested by measuring the direction of the head's painted path rather than by restating the
+formula, over nine angles and all eight flip × rotation combinations; reverting the fix fails 16 of
+the 19 cases, and the 3 that still pass are the horizontal ones. The aggregate overlay draws its own
+arrowheads as polyline barbs in data coordinates — a separate implementation, now also checked for
+barbs that fall behind the tip and straddle the line.
+
+---
+
+## M14. The test suite wrote to the developer's own settings file
+
+- **Status:** ✅ FIXED — `tests/conftest.py` (`isolated_settings`)
+- **Severity:** low for the code, annoying for the developer
+- **Found while checking that the region toolbar defaults to off.**
+
+### Symptom
+`MainWindow` takes the process-wide `ConfigManager`, so every test that built a window wrote to the
+real `~/.pyql3/config.json`. A full run left the **Recent Files** list holding ten pytest temp paths
+instead of the developer's own files, and any preference a test toggled stayed toggled — a window
+could then open with a region toolbar nobody had asked for.
+
+It also made the suite depend on the developer's saved settings: a stored `polling_interval` was
+being read by tests that build a window.
+
+### Fix
+An autouse, session-scoped fixture points `pyql3.services.config._shared_config` at a file under
+`tmp_path_factory` for the duration of the run, and restores it afterwards. Autouse so no test can
+opt out by forgetting. Verified by diffing the real settings file across a full run: unchanged.
+
+---
+
+## M15. A right-click near the edge was clipped to the wrong pixel
+
+- **Status:** ✅ FIXED — `image_viewer.py` (`on_view_clicked`), covered by
+  `tests/test_coords.py::test_a_right_click_is_clipped_to_the_displayed_plane`
+- **Severity:** low before regions could be spawned by right-clicking, medium after
+- **Found while adding the region entries to the viewer's context menu.**
+
+### Root cause
+```python
+nx = self.transposed_data.shape[-1]   # this is the *y* extent
+ny = self.transposed_data.shape[-2]   # ...and this is x
+x = int(np.clip(pt.x(), 0, nx - 1))
+```
+`transposed_data` is `(z, x, y)`, so the two extents were the wrong way round; and they are the
+extents of the *stored* plane, while `pt` is a coordinate on the *displayed* one, which has them
+swapped again under a 90° rotation.
+
+The stored position feeds **Depth Plot...** and **Gaussian Fit...** from the right-click menu, and
+now also spawns a region there, so a click near an edge put the tool on the wrong pixel. Every
+fixture was square until recently, which hid it completely.
+
+### Fix
+`coords.display_dims(*self.orig_spatial_dims(), self.rot_angle)` — the extents of what is actually
+on screen. Tested on a deliberately non-square plane, before and after a quarter turn.
+
+---
+
+## M16. Clicking a text region printed a traceback
+
+- **Status:** ✅ FIXED — `region_layer.py` (`RegionItemInteraction.mouseClickEvent`), covered by
+  `tests/test_region_layer.py::test_an_ordinary_click_on_any_region_does_not_raise`
+- **Severity:** medium (every ordinary click on a text region)
+- **Reported from use.**
+
+### Symptom
+```
+AttributeError: 'super' object has no attribute 'mouseClickEvent'
+```
+printed by pyqtgraph from inside `GraphicsScene.sendClickEvent`, which catches the exception, so the
+application carried on and only the terminal showed it.
+
+### Root cause
+`RegionItemInteraction` ends by delegating anything it does not handle to `super()`. That holds for
+`RegionCircleROI`, `RegionRectROI` and `RegionLineROI`, since `pg.ROI` defines `mouseClickEvent` —
+but a text region's label is a `RegionTextItem`, and **`pg.TextItem` has no such method**, so any
+single left click on the text raised.
+
+The tests missed it because the single-click case was only exercised on a circle.
+
+### Fix
+The fall-through looks the method up before calling it, and ignores the event when the base class
+has none. Tested across all four shapes and both non-handled buttons; reverting the fix fails
+exactly the text cases.
+
+---
+
+## M17. Dialogs wider than the main window opened off-screen
+
+- **Status:** ✅ FIXED — `base_tool.py` (`keep_on_screen`), covered by `tests/test_region_ui.py`
+- **Severity:** low (Qt recovered, but the dialog appeared somewhere unrelated)
+- **Reported from use.**
+
+### Symptom
+```
+qt.qpa.window: Window position QRect(-40,313 760x320) outside any known screen, using primary screen
+```
+The Region List is 760 px wide and the main window is 600 px, so centring the dialog on its parent
+put it 80 px to the left of the window — off the screen edge when the window sits near it. Qt then
+moved it to the primary screen on its own, which is why it appeared somewhere unexpected rather than
+vanishing.
+
+### Fix
+`BaseToolDialog.showEvent` nudges the dialog inside `availableGeometry()` the first time it opens —
+only the first time, since moving it afterwards is the user's business. Every tool dialog inherits
+it; `RegionPropertiesDialog`, which is a plain `QDialog`, calls the same helper.
+
+---
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |

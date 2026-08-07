@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from pyql3.core.regions_model import Arrow, Box, Circle, Text
+from pyql3.core.regions_model import Arrow, Box, Circle, Text, resolve_color
 
 #: Coordinates and sizes are pixel counts; three decimals is well past what anyone can point at.
 COORD_RANGE = (-1e6, 1e6)
@@ -146,16 +146,26 @@ class RegionPropertiesDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
         outer.addWidget(buttons)
 
+    def showEvent(self, event):
+        """Open somewhere visible, as the tool dialogs do; this one is not a `BaseToolDialog`."""
+        from pyql3.gui.tools.base_tool import keep_on_screen
+
+        super().showEvent(event)
+        if not getattr(self, '_placed_on_screen', False):
+            self._placed_on_screen = True
+            keep_on_screen(self)
+
     # ---------------------------------------------------------------- colour
 
     def choose_colour(self):
-        chosen = QColorDialog.getColor(QColor(self._colour), self, "Region Colour")
+        chosen = QColorDialog.getColor(QColor(resolve_color(self._colour)), self,
+                                       "Region Colour")
         if chosen.isValid():
             self._colour = chosen.name()
             self._show_colour()
 
     def _show_colour(self):
-        colour = QColor(self._colour)
+        colour = QColor(resolve_color(self._colour))
         self.btn_colour.setText(self._colour)
         if colour.isValid():
             text = "black" if colour.lightness() > 128 else "white"
