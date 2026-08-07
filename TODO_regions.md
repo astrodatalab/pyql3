@@ -1,9 +1,14 @@
-# Plan: ds9-style regions (circle, box, arrow, text)
+# Record: ds9-style regions (circle, box, arrow, text)
 
-Status: **Phases 0-5 done; Phase 6 (docs) planned.** Written 2026-08-05 against commit `e2be099`.
+Status: **complete** — all six phases landed between 2026-08-05 and 2026-08-06, starting from
+commit `e2be099`. This file is kept as the record of how it was built and, more usefully, of what
+was *measured*: region memory and load times, the pan-frame cost of labels, and the ds9 format
+ladder run in ds9 itself.
 
-Remaining: Phase 6 — user and developer documentation. The packaging checks were done in Phase 2,
-and the tests landed with each phase.
+**It is not where the rules live.** Anything a future change has to obey — the coordinate space
+regions are stored in, the two render modes, the Qt traps, and the verified ds9 `.reg` constraints
+— is in the "Regions" section of `AGENTS.md`. The user-facing description is `docs/tools.md` §9.
+If this file and either of those disagree, they win.
 
 Goal: draw circles, boxes, arrows and text on the image the way ds9 does, edit them
 interactively, and save/load them — natively in a flexible format (YAML), with ds9 `.reg`
@@ -654,7 +659,17 @@ Delete) — the new entries appear when clicking the image itself.
 displayed one. It already misplaced **Depth Plot** and **Gaussian Fit** near the edge of a
 non-square cube; spawning regions would have inherited it.
 
-### Phase 6 — tests, docs, packaging
+### Phase 6 — tests, docs, packaging ✅ DONE (2026-08-06)
+
+Landed: `docs/tools.md` §9 (the menu, the toolbar, drawing and right-click spawning, properties,
+the Region List, labels in a crowded field, the file formats, and what changes above 500 regions),
+`docs/cli.md` for `--regions`, `docs/developer.md` for the module map and the two render modes, and
+an `AGENTS.md` "Regions" section holding the invariants, the four Qt traps, and the ds9 interop
+rules verified below — so retiring this file loses nothing that matters. The cross-window test the
+plan asked for is `test_regions_saved_in_one_window_load_in_another`; the rest of the tests and the
+packaging checks landed with their own phases.
+
+The original scope:
 
 - Qt-free: YAML round-trip; one ds9 read/write test per shape, arrows explicitly, as the
   shape the library cannot do; sky ↔ pixel against the OSIRIS-ordered fixture including a

@@ -15,6 +15,7 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
 - **Astronomical Coordinates & WCS**: Integrates WCS pixel-to-world (RA/Dec) coordinate translations dynamically at your mouse pointer.
 - **Interactive Catalog Overlay**: Overlay astronomical catalogs (CSV, TXT, DAT, or FITS binary tables) using Display Pixels, FITS Pixels, or WCS RA/Dec coordinates. Features viewport label culling for fast performance, custom marker styling, search filtering, and row selection highlighting.
+- **ds9-Style Regions**: Draw circles, boxes, arrows and text over the image from a **Region** menu, an optional toolbar, or a right-click. Edit colour, line width, angle, label and a per-region channel range; save and load as readable YAML or exchange with ds9 as `.reg`. Catalogue-sized sets are drawn as a single overlay so tens of thousands load in seconds.
 - **Analysis Tools**: Built-in 1D profile cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and 3D OpenGL Surface Rendering.
 - **FITS Datacube Arithmetic**: Execute image and cube math (addition, subtraction, division, scalar scaling) between open datasets.
 - **Live File Polling**: Monitor a directory for incoming FITS files and automatically load them in real time as observations complete.
@@ -141,6 +142,9 @@ uv run python main.py /path/to/data.fits --catalog /path/to/catalog.csv
 # ... or a FITS table, optionally naming the extension to read
 uv run python main.py /path/to/data.fits --catalog /path/to/catalog.fits --catalog-hdu SOURCES
 
+# Draw a region file over it (QuickLook 3 YAML or a ds9 .reg)
+uv run python main.py /path/to/data.fits --regions /path/to/targets.reg
+
 # Auto-poll a directory for new incoming FITS files
 uv run python main.py --poll-dir /path/to/raw_data/
 
@@ -169,6 +173,11 @@ Found under the **Plot** and **Analysis** menu bars:
   - **High Performance**: Features debounced hide-on-pan text label rendering for smooth 60 FPS panning even with thousands of catalog sources.
   - **Interactivity**: Filter table rows in real time with the built-in search bar, click rows to center sources on the image with a red highlight, or right-click rows to copy coordinates.
   - **CLI Auto-Load**: Pass `--catalog <file>` on launch to auto-open the tool and load the catalog, with `--catalog-hdu <index|EXTNAME>` to pick a FITS table extension.
+* **Regions (`Region` menu)**: Draw circles, boxes, arrows and text over the image — drag them out, or right-click the image for **New Region** to place a default-sized one where you clicked. An optional vertical toolbar (**Region -> Region Toolbar**) holds the same tools.
+  - **Editing**: Double-click a region for a properties dialog — position, size, angle, label, colour, line width, dashing, text size, tag, visibility, and a channel range that shows the region only over part of a cube. **Region -> Region List...** gives the same in a table.
+  - **File Formats**: Save as readable YAML (`pyql3-regions/1`) or export ds9 `.reg`; loading detects the format from the file's contents, not its name, and reports anything a conversion could not carry. Geometry is stored in pixels with the sky position alongside, so regions survive flips, rotations and a move to another frame of the same field.
+  - **Large Sets**: Above 500 regions the set is drawn as one overlay — 20,000 load in about two seconds — with labels culled to the view, hidden while panning, and switchable off. **Region -> Send Regions to Plot Catalog...** hands a large set to the catalog tool for its table and search.
+  - **CLI Auto-Load**: Pass `--regions <file>` on launch, in either format.
 * **1D Profile Cuts**: `Plot -> Horizontal / Vertical / Any Cut` to generate 1D profile cuts with adjustable boxcar averaging.
 * **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis.
 * **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise.

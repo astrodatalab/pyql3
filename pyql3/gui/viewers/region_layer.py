@@ -19,6 +19,7 @@ Drawing claims the view's drag handler through `ImageViewer.begin_exclusive_drag
 fight with a tool dialog's *Draw Box* mode.
 """
 
+import gc
 import math
 
 import numpy as np
@@ -263,6 +264,8 @@ class RegionLayer(QObject):
         self._bulk_items = []
         #: Labels drawn over the aggregate overlay; rebuilt for whatever is in view.
         self._bulk_labels = []
+        #: Items taken out of the scene but not yet released. See `_destroy_items`.
+        self._retired = []
         #: Whether labels are drawn at all. The user's choice, not the layer's.
         self._labels_visible = True
         #: True while the safety ceiling is suppressing labels.
@@ -518,7 +521,7 @@ class RegionLayer(QObject):
     # ------------------------------------------------------------ aggregate overlay
 
     def _clear_bulk_items(self):
-        self._drop_retired()
+        # Retires, never releases — see `_destroy_items` for why the flush cannot happen here.
         for item in self._bulk_items + self._bulk_labels:
             self._remove_from_scene(item)
             self._retired.append(item)
@@ -892,8 +895,12 @@ class RegionLayer(QObject):
         construction of the replacement items. That is a reproducible segfault: destroying and
         rebuilding one region crashed in `pg.ROI.addScaleHandle` while the collector was freeing the
         items just discarded. Holding them until a later, quieter moment removes the race.
+
+        Nothing is released *here*, only added. Flushing the previous batch first looks harmless
+        and reintroduces the crash exactly: `clear()` destroys every entry in a loop, so entry 2's
+        flush frees entry 1's items, and the collector then runs inside `addRotateHandle` building
+        the replacements. Two segfaults in three runs (`BUGS.md` M18). The timer owns the release.
         """
-        self._drop_retired()
         for item in entry.items:
             self._remove_from_scene(item)
             self._retired.append(item)
@@ -902,8 +909,17 @@ class RegionLayer(QObject):
             QTimer.singleShot(0, self._drop_retired)
 
     def _drop_retired(self):
-        """Let go of items removed earlier. Safe here: nothing is being constructed."""
+        """Let go of items removed earlier. Safe here: nothing is being constructed.
+
+        The collection is forced rather than left to the next allocation that happens to trip the
+        threshold: a QGraphicsItem sits in a reference cycle with its children and its scene, so
+        dropping the list frees nothing by refcount alone. Running it at this known-quiet point is
+        the whole purpose of the deferral.
+        """
+        if not self._retired:
+            return
         self._retired = []
+        gc.collect()
 
     # ----------------------------------------------------------- user editing
 

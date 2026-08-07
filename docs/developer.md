@@ -9,15 +9,23 @@ This document outlines key technical details, architectural decisions, and testi
 ```
 pyql3/
 ├── core/
-│   └── fits_reader.py        # FITS loading, WCS extraction, and multi-HDU management
+│   ├── fits_reader.py        # FITS loading, WCS extraction, and multi-HDU management
+│   ├── coords.py             # orig <-> display mapping, and the pixel conventions
+│   ├── sky.py                # CelestialMap: the 2 celestial axes of any WCS
+│   ├── regions_model.py      # Circle/Box/Arrow/Text dataclasses + RegionList (no Qt)
+│   ├── regions_io.py         # YAML load/save, format sniffing, sky anchors
+│   └── ds9_regions.py        # ds9 .reg import/export, with a Report of what was lost
 ├── analysis/
 │   └── strehl.py             # Pupil mask / diffraction-limited PSF / Strehl computation
 ├── data/                     # Bundled spectral line lists (*.txt), see Packaging
 ├── gui/
 │   ├── main_window.py        # Main PySide6 application window & menu dispatch
 │   ├── window_manager.py     # The open windows, and where a new file opens
+│   ├── region_toolbar.py     # Optional vertical shape toolbar (icons painted, not files)
+│   ├── file_open.py          # Finder open-document events
 │   ├── viewers/
-│   │   └── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
+│   │   ├── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
+│   │   └── region_layer.py   # Drawing, hit-testing and rendering of regions
 │   ├── tools/
 │   │   ├── base_tool.py      # Base class for modeless tool dialogs
 │   │   ├── depth_plot.py     # Spectral extraction & line list overlays
@@ -29,12 +37,15 @@ pyql3/
 │   │   ├── arithmetic.py     # Image arithmetic between cubes/constants
 │   │   ├── advanced_plots.py # 3D surface plot
 │   │   ├── plot_catalog.py   # Source catalog overlay
+│   │   ├── region_list.py    # Table of the current regions
 │   │   └── rotate.py         # View rotation controls
 │   └── dialogs/
 │       ├── header_editor.py  # FITS header card editor
+│       ├── region_properties.py  # Per-region editor (colour, width, angle, z-range)
 │       └── polling.py        # Directory polling setup dialog
 └── services/
     ├── poller.py             # Directory scanning for new FITS files (NFS-safe)
+    ├── cli_install.py        # The `quicklook3` launcher: plan / describe / install
     └── config.py             # ~/.pyql3/config.json, recent-files list
 ```
 
@@ -51,6 +62,22 @@ watches are shared across the process.
     What is per-window, what is process-wide, where a file opened from Finder or a shell lands,
     and what `closeEvent` has to release are written down once, in the "Multiple windows"
     section of
+    [`AGENTS.md`](https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md).
+
+### The region layer
+
+`RegionLayer` owns every region on one viewer. The model in `pyql3/core/` is pure Python — it
+imports neither Qt nor pyqtgraph — so region geometry, YAML round-trips and ds9 interop are
+testable without a display, and `region_layer.py` is only the drawing of it.
+
+The layer has two rendering modes. Below `INTERACTIVE_LIMIT` regions each one is a real
+`pyqtgraph` ROI that can be dragged, resized and right-clicked; above it the whole set becomes a
+handful of aggregate items and individual interaction goes away, which is what makes a
+20,000-region catalogue load at all.
+
+!!! info "Canonical statement lives in `AGENTS.md`"
+    The coordinate space geometry is stored in, what the two render modes guarantee, and the four
+    Qt traps that this layer walks into are in the "Regions" section of
     [`AGENTS.md`](https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md).
 
 ---

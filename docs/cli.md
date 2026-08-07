@@ -22,10 +22,15 @@ uv run python main.py [OPTIONS] [FILEPATH ...]
 | `--poll-dir` | Path to directory to automatically monitor for new FITS files | `None` | `--poll-dir ~/data/observing_run` |
 | `--catalog` | Catalog to load into the Plot Catalog tool (text table or FITS table) | `None` | `--catalog sources.fits` |
 | `--catalog-hdu` | Table extension of a FITS catalog, by index or `EXTNAME` | first table | `--catalog-hdu SOURCES` |
+| `--regions` | Region file to draw on startup — QuickLook 3 YAML or a ds9 `.reg`, detected from the contents | `None` | `--regions targets.reg` |
 | `--install-cli` | Install the `quicklook3` shell launcher (see below) and exit | `False` | `--install-cli` |
 
 Scaling, colormap, rotation and extension are set from the **Display** menu and the
 controls under the image rather than from flags.
+
+`--catalog` and `--regions` load into the *first* window; anything that cannot be read is
+reported on stderr rather than in a dialog, so an automated launch is never left waiting on a
+modal window.
 
 ### Comparing several cubes
 

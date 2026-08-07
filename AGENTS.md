@@ -69,6 +69,9 @@ Entry point `main.py` builds the `QApplication` and a single `MainWindow`
 - **Tool dialogs** (`pyql3/gui/tools/*`) — modeless `QDialog`s subclassing `BaseToolDialog`
   (`base_tool.py`), each holding a reference to the shared `image_viewer` and typically an
   ROI it adds to / removes from the viewer's scene.
+- **`RegionLayer`** (`pyql3/gui/viewers/region_layer.py`) — the drawn regions on that viewer,
+  built last in `ImageViewer.__init__` and reached as `image_viewer.region_layer`. See
+  "Regions" below.
 - **`FitsReader`** (`pyql3/core/fits_reader.py`) — HDU list ownership, multi-extension
   image discovery, header edits, save.
 - **`DirectoryPoller`** (`pyql3/services/poller.py`) — auto-loads new FITS files;
@@ -175,12 +178,129 @@ from `ImageViewer.north_east_display_angles()`; do not re-derive them either.
 axis order. View rotation needs no arithmetic at all: `apply_view_rotation()` is a `QTransform`
 on the ImageItem, so anything parented to the image inherits it.
 
+### Regions (CRITICAL)
+
+ds9-style annotations — circle, box, arrow, text — drawn over the image, saved as YAML or ds9
+`.reg`. The split is deliberate and load-bearing:
+
+- **`pyql3/core/regions_model.py` / `regions_io.py` / `ds9_regions.py` import no Qt.** The model
+  is the source of truth, the items on screen are derived from it, and the derivation runs one
+  way only — except immediately after a drag, when the new geometry is read back. Keep new
+  geometry, format and interop logic on the Qt-free side; it is what makes any of this testable
+  without a display.
+- **Region geometry is stored in orig coordinates, always** (see the previous section for what
+  "orig" means). Display coordinates exist only inside `region_layer.py`, between a `coords`
+  call and a `setPos`. A region written to a file in display coordinates would move when the user
+  flipped the view.
+- **Items are parented to the ImageItem**, so view rotation is inherited for free, and are
+  removed with `ViewBox.removeItem()` — `setParentItem(None)` leaves them painted (`BUGS.md` B7).
+- **Colour names are kept, not resolved, in the model and in files.** `resolve_color()` maps them
+  to ds9's RGB only for painting, because ds9's `green` is `#00ff00` while Qt's is `#008000`;
+  resolving early would write a colour ds9 never chose back out to a `.reg`.
+- **Two render modes.** Above `INTERACTIVE_LIMIT` (500) regions the layer stops building one ROI
+  per region and draws the set as a few aggregate items. Anything that assumes an `_Entry` has a
+  `handle` must tolerate its absence. The measurements behind the limit are in the constant's
+  docstring; do not raise it without repeating them.
+- **`_region_list_dialog` is in `TOOL_DIALOG_ATTRS`**, like every other tool dialog.
+
+Four Qt traps here each cost real time. They are not hypothetical:
+
+1. **Angle conventions do not transfer between `pxMode=True` and transformed items.** An
+   `ArrowItem` with `pxMode=True` gets `ItemIgnoresTransformations`, so its angle is in screen
+   coordinates, where y runs *down* — the same number that aims a data-space line up aims the
+   head down. `_arrow_head_angle()` is the conversion (`180 - direction`); note that a
+   horizontal arrow is correct either way, so a test suite of horizontal cases proves nothing
+   (`BUGS.md` M13).
+2. **A modal `QMenu.exec` cannot be patched out in PySide6**, so a test that opens a context
+   menu hangs the suite for its full timeout. Every context menu is therefore split into a
+   `build_*_menu()` that returns the `QMenu` and a `show_*_menu()` that calls `exec` on it;
+   tests call the builder. This was learned twice — the region menu, then the catalog menu.
+3. **Dropping the last Python reference to a `QGraphicsItem` can segfault**, because GC may run
+   during the construction of its replacement. `restyle()` therefore mutates items in place, and
+   anything genuinely discarded goes to the `_retired` list, cleared from a
+   `QTimer.singleShot(0, ...)` once the event loop is back. **Nothing may release that list from
+   inside a destroy path** — flushing it at the start of `_destroy_items` meant `clear()`'s loop
+   freed each entry's items while building the next, and put the crash straight back (`BUGS.md`
+   M18). The release forces a `gc.collect()`, because these items are in reference cycles and
+   dropping the list frees nothing on its own.
+4. **`GraphicsScene.addParentContextMenus` walks up to the ImageItem**, whose `getContextMenus()`
+   returns `[None]`, and a right-click then raises. `RegionItemInteraction.raiseContextMenu`
+   overrides that walk (`BUGS.md` M12). The same mixin must check for an inherited
+   `mouseClickEvent` before calling it — `pg.TextItem` has none (`BUGS.md` M16).
+
+**`plot_catalog.py` is the reference implementation for drawing many things over the image.**
+Culling to the visible rect, hiding text while panning, and a *Show Names* toggle came from
+there; the region layer copies all three rather than inventing a rule about how many labels a
+user should want.
+
+#### ds9 `.reg` interop, verified in ds9 itself
+
+Checked empirically against ds9 with a one-construct-per-file ladder (2026-08-05), because ds9
+rejects a region file *whole* — one bad line and nothing loads, with no indication of which line.
+Do not "simplify" the writer past any of these:
+
+- **A bare `vector(...)` is a syntax error that kills the file.** `vector` exists only in ds9's
+  `#`-prefixed annotation grammar, so an arrow must be written `# vector(x,y,len,angle) vector=1`.
+  (`text` is a real shape keyword, so *both* `text(...)` and `# text(...)` load.)
+- **A comment whose first character after `#` is `-` kills the file** — `-` is ds9's exclude
+  prefix, so `# --- section ---` parses as an excluded region. Parentheses in a comment are fine.
+  Never emit a comment starting with a dash.
+- `textangle=` on a text region round-trips, so a rotated label survives.
+- **`regions.serialize(format='ds9')` output loads in ds9 unmodified**, header line included, so
+  the export path is that output plus appended `# vector(...)` lines and a provenance comment —
+  no rewriting.
+- `regions` 0.12 **drops `vector(...)` silently on read** (a `UserWarning`, no error), which is
+  why the arrow reader is ours. Its `PixCoord` is 0-based and it applies ds9's 1-based shift
+  itself; do not shift again.
+- ds9's `image` frame means FITS axes 1 and 2, which for an OSIRIS cube is not what is displayed
+  — so export writes sky coordinates whenever image coordinates would not line up in ds9
+  (`frame="auto"`; `"image"` and `"sky"` force it, and say so in the report). Anything that
+  cannot cross, either way, goes into a `Report` shown to the user rather than being dropped in
+  silence.
+- **In a sky frame ds9 measures angles from the sky axes**, so a box or arrow angle is not the
+  image-frame angle: they differ by the field rotation. `pixel_angle_to_sky()` /
+  `sky_angle_to_pixel()` convert, and a rotated field is the only case where the difference
+  shows — check any change against `check_rotated.fits` in the ladder, not a north-up frame.
+
+The ladder that established this is generated by
+`agent_tests/probes/make_ds9_check_ladder.py` (scratch, not part of the suite); re-run it in ds9
+if the writer changes shape.
+
 ### Qt slot gotcha
 
 `QAction.triggered` is `triggered(bool checked=False)`, and PySide6 picks that overload for
 any single-argument slot. A slot like `open_depth_plot(self, initial_center=None)` therefore
 receives `False` from the menu bar but a real `(x, y)` from a context menu. Use
 `as_center()` in `base_tool.py` to normalize such arguments (see `BUGS.md` B0).
+
+### Qt object lifetime (CRITICAL)
+
+**`close()` hides a window; it does not destroy it, and nothing else will.** Every
+`lambda: self.something()` connected to a QAction is held by that action, which is held by a menu,
+which is held by the widget — a reference cycle that runs through C++, where Python's collector
+cannot follow it. Measured: **415 widgets survive every `MainWindow`, permanently**, and
+`gc.collect()` reclaims none of them.
+
+Two consequences, both real and both fixed:
+
+- **A closed window kept its whole cube** — `raw_data`, `transposed_data` and `display_data` —
+  for the life of the process (`BUGS.md` M19). `MainWindow.closeEvent()` therefore calls
+  `ImageViewer.release_data()`. Anything else a window holds that is worth real memory belongs
+  there too; do not assume Qt will collect it.
+- **The test suite paid for it quadratically.** `ViewBox.__init__` calls
+  `ViewBox.updateAllViewLists()`, which walks *every* live ViewBox in the process, so building a
+  window costs O(live views): 0.037 s at ten leaked windows, 0.090 s at a hundred, 0.129 s at 150.
+  `tests/conftest.py::destroy_leftover_windows` is an autouse fixture that `shiboken6.delete`s any
+  window a test leaves behind — 150 s → 60 s for the suite.
+
+The sweeper destroys **whole windows only** (`QMainWindow` and `ImageViewer`). pyqtgraph leaves
+parentless helper widgets — context menus, a colour dialog, their frames — attached to a scene
+that is still alive; deleting one of those and then its window segfaults, and deleting a
+`ViewBoxMenu` makes pyqtgraph trip over its own deleted combo box the next time a view list
+updates. Leave them.
+
+`deleteLater()` is not a substitute: it frees under half the widgets, saved 11 MB of 193 in a
+ten-window measurement, and leaves the Python wrapper (and so the cube) alive.
 
 ## UI design
 
@@ -196,10 +316,13 @@ Windows. Always build with `uv run pyinstaller --noconfirm QuickLook3.spec` — 
 `pyinstaller main.py` or inline `--add-data` parameters, in local scripts or in
 `.github/workflows/release.yml`.
 
-- Line lists (`pyql3/data/*.txt`), `pyql3/icon.png`, `cmcrameri` colormaps, and `photutils`
-  must be registered in the spec via `datas` / `collect_all()`.
+- Line lists (`pyql3/data/*.txt`), `pyql3/icon.png`, `cmcrameri` colormaps, `photutils`, and
+  `regions` must be registered in the spec via `datas` / `collect_all()`. `regions` carries
+  seven compiled `_geometry` extension modules that PyInstaller's analysis does not find on its
+  own, so ds9 import/export fails only in the frozen build if they are dropped.
 - Both `build_app.sh` and CI run an explicit verification step that greps `dist/` for the
-  bundled `*lines.txt` and `cmcrameri` assets before archiving. Keep that check in place.
+  bundled `*lines.txt`, `cmcrameri` and `regions/_geometry` assets before archiving. Keep that
+  check in place.
 - Runtime resource lookups must go through `pyql3.get_resource_path()`, which handles the
   frozen `sys._MEIPASS` case.
 - Headless Linux CI needs system libs (`libegl1`, `libgl1`, `libglx-mesa0`, `libgl1-mesa-dri`,

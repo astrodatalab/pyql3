@@ -91,6 +91,33 @@ def test_set_regions_replaces_everything(layer):
     assert all(layer.item_for(region) is not None for region in replacement)
 
 
+def test_replacing_regions_never_releases_items_mid_rebuild(layer, qapp):
+    """The graveyard must only ever grow while items are being built (`BUGS.md` M18).
+
+    A `QGraphicsItem` sits in a reference cycle, so dropping the last Python reference leaves it
+    for the cyclic collector, which then runs at whatever allocation comes next — including one
+    inside `pg.ROI.addRotateHandle`, building the replacement. That is a segfault, not an
+    exception, so it cannot be caught: the only defence is never to create the garbage while
+    construction is underway, which is what this asserts. Flushing at the *start* of
+    `_destroy_items` looks harmless and reintroduces exactly that crash.
+    """
+    layer.set_regions([Circle(x=float(i), y=2.0, radius=1.0) for i in range(4)])
+    doomed = sum(len(entry.items) for entry in layer._entries)
+    assert doomed >= 4, "the fixture should have built real items to destroy"
+
+    layer.set_regions([Box(x=float(i), y=5.0, width=2.0, height=2.0) for i in range(4)])
+
+    # Every item of all four entries, not just the last one destroyed: a flush inside the loop
+    # leaves only the final entry's items held, which is what the bug looked like.
+    assert len(layer._retired) >= doomed, (
+        f"held {len(layer._retired)} of {doomed} destroyed items — "
+        "a rebuild released some instead of retiring them")
+
+    # ... and the graveyard is emptied once the event loop gets a turn, so it is not a leak.
+    qapp.processEvents()
+    assert layer._retired == []
+
+
 def test_clear_removes_every_item_from_the_scene(layer):
     regions = [Circle(x=2.0, y=2.0, radius=1.0), Arrow(x=3.0, y=3.0, length=4.0, angle=0.0)]
     layer.set_regions(regions)

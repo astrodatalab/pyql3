@@ -1447,6 +1447,113 @@ it; `RegionPropertiesDialog`, which is a plain `QDialog`, calls the same helper.
 
 ---
 
+## M18. Replacing the region set segfaulted, two runs in three
+
+- **Status:** ✅ FIXED — `region_layer.py` (`_destroy_items`, `_clear_bulk_items`,
+  `_drop_retired`), covered by
+  `tests/test_region_layer.py::test_replacing_regions_never_releases_items_mid_rebuild`
+- **Severity:** high — a crash, in the ordinary path of loading a second region file
+- **Found while measuring the test suite**, not from a failing test: the suite passes as a whole,
+  and the crash appeared only when a particular subset of files ran together.
+
+### Symptom
+```
+Fatal Python error: Segmentation fault
+Current thread ... (most recent call first):
+  Garbage-collecting
+  File ".../pyqtgraph/graphicsItems/GraphicsObject.py", line 18 in itemChange
+  File ".../pyqtgraph/graphicsItems/ROI.py", line 618 in addHandle
+  File ".../pyqtgraph/graphicsItems/ROI.py", line 559 in addRotateHandle
+  File ".../pyql3/gui/viewers/region_layer.py", line 834 in _build_items
+  File ".../pyql3/gui/viewers/region_layer.py", line 371 in set_regions
+```
+
+Reproduced 2 runs in 3 with:
+
+```bash
+QT_QPA_PLATFORM=offscreen uv run pytest tests/test_region_layer.py tests/test_region_ui.py \
+  tests/test_region_properties.py tests/test_region_toolbar.py tests/test_coords.py \
+  tests/test_regions_model.py tests/test_ds9_regions.py -q -p no:randomly
+```
+
+Neither file crashes alone, and the full suite passed twice — collecting a different set of
+modules is enough to move the collector's threshold, which is all this needs.
+
+### Root cause
+
+This is the same hazard the `_retired` graveyard was added to fix, defeated by its own
+implementation. Both `_destroy_items` and `_clear_bulk_items` began with `self._drop_retired()`,
+so:
+
+```python
+def clear(self, notify=True):
+    for entry in self._entries:
+        self._destroy_items(entry)     # entry 2's flush releases entry 1's items
+```
+
+`clear()` destroys entries in a loop, and each call released the batch retired by the previous
+one. `set_regions()` then calls `render()` immediately, so the collector was handed a pile of
+QGraphicsItem cycles microseconds before `addRotateHandle` allocated — and it ran there. Only the
+*last* entry's items ever reached the timer, which is why the deferral looked like it was working.
+
+### Fix
+
+The destroy paths only ever append; `QTimer.singleShot(0, ...)` owns the release, so the graveyard
+spans one turn of the event loop. `_drop_retired()` now also calls `gc.collect()` explicitly:
+a QGraphicsItem sits in a reference cycle with its children and its scene, so dropping the list
+frees nothing by refcount alone — forcing the collection at that known-quiet point is the whole
+purpose of deferring it. Three clean runs of the repro above, where the previous code crashed
+twice.
+
+The regression test asserts a structural property rather than trying to catch a crash: after a
+rebuild the graveyard must hold **every** destroyed item, not just the last entry's. Verified by
+mutation — restoring the leading `_drop_retired()` fails it.
+
+## M19. A closed window kept its cube in memory for the life of the process
+
+- **Status:** ✅ FIXED — `image_viewer.py` (`release_data`), called from
+  `main_window.py::closeEvent`, covered by
+  `tests/test_multi_window.py::test_closing_a_window_releases_its_cube`
+- **Severity:** medium — memory only, but unbounded and invisible
+- **Found while investigating why the test suite got slower as it ran.**
+
+### Symptom
+
+Five open-and-close cycles on an 8 MB cube left **five `ImageViewer`s alive holding five cubes**,
+and RSS up 168 MB. Nothing recovers it; the memory is gone until the application exits. On a real
+OSIRIS cube the leak is roughly the size of the cube per closed window — three arrays, of which
+`transposed_data` is usually a view.
+
+### Root cause
+
+`closeEvent` released everything that was obviously per-window — the poller thread, the tool
+dialogs, the FITS handle — on the assumption that Qt would take the widget itself. It does not.
+`close()` hides a window; destroying it needs an explicit `deleteLater()` or the owner dropping
+the last reference, and there is no last reference to drop: every `lambda: self.x()` connected to
+a QAction is held by that action → the menu → the widget, a cycle through C++ that Python's
+collector cannot break. **415 widgets survive every `MainWindow`, permanently**, `gc.collect()`
+included, and the arrays go with them.
+
+### Fix
+
+`ImageViewer.release_data()` drops `raw_data`, `transposed_data`, `display_data`, the header and
+the WCS, and clears the ImageView; `closeEvent` calls it. The widget shell still survives — that
+is a few hundred kB and not worth the risk of destroying a window Qt may still deliver events to.
+`deleteLater()` was measured as an alternative and rejected: 11 MB saved of 193 across ten
+windows, because it destroys the C++ object while the Python wrapper, and so the cube, stays.
+
+The test asserts through a `weakref` to the array rather than on the attributes being `None` —
+setting an attribute to `None` proves nothing if the reader, the ImageItem or a tool still holds
+the data.
+
+### The same leak in the test suite
+
+Every leaked window also costs *time*: `ViewBox.__init__` calls `ViewBox.updateAllViewLists()`,
+which walks every live ViewBox, so window construction is O(live views) — 0.037 s at ten windows,
+0.129 s at 150, which is where the suite's 0.24 s → 0.67 s fixture creep came from.
+`tests/conftest.py::destroy_leftover_windows` destroys leftovers with `shiboken6.delete`:
+**150 s → 60 s** for the full suite, same 937 tests.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |

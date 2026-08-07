@@ -579,11 +579,16 @@ class MainWindow(QMainWindow):
         gone (and, being visible windows, keep the application alive once the last main
         window closes); and the open FITS handle keeps the file un-replaceable on
         Windows, where an open file cannot be unlinked or overwritten.
+
+        The viewer's arrays go too. Qt does not destroy a closed window — see
+        `ImageViewer.release_data()` — so without this the whole cube stays in memory for as long
+        as the application runs, three times over, for every window ever closed.
         """
         self._closed = True
         self.poller.stop_polling()
         self.close_tool_dialogs()
         self.fits_reader.close()
+        self.image_viewer.release_data()
         get_window_manager().unregister(self)
         super().closeEvent(event)
 

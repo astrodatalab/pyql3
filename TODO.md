@@ -5,12 +5,21 @@
   `MainWindow` into a panel widget, so a window can hold several. The fiddly part is that the
   display state currently lives as **Display** menu checkmarks, which would have to be re-synced
   from the active tab on every tab switch.
-- Draw regions on the view like ds9 (circles, boxes, arrows, text) with YAML and ds9 `.reg`
-  save/load — planned in detail in [TODO_regions.md](TODO_regions.md)
 - Zenodo integration of release versions so the tool is citeable
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
 # DONE
-- Clearing a row selection in the Plot Catalog tool: a **Clear Selection** button beside the search
+- Draw regions on the view like ds9 — circles, boxes, arrows and text, under a **Region** menu with
+  an optional vertical toolbar and a right-click **New Region** submenu that spawns a default-sized
+  region where you clicked. Double-click for a properties dialog (colour, line width, dashing, text
+  size and angle, tag, visibility, and a channel range that has no ds9 equivalent), a **Region
+  List** table, and **Send Regions to Plot Catalog...** for a large set. Saved as readable YAML or
+  ds9 `.reg` — the format is read from the file's contents, not its name — with a report of
+  anything a conversion could not carry, plus `--regions` on the command line. Geometry is stored
+  in pixels with the sky position alongside, so regions survive flips and rotations. Above 500
+  regions the set is drawn as one overlay instead of one item each: 20,000 load in 2 s rather than
+  2 minutes, at the cost of per-region dragging. Labels are culled to the view, hidden while
+  panning, and switchable off. The record of how it was built, with the measurements, is in
+  [TODO_regions.md](TODO_regions.md); the durable rules are in `AGENTS.md`.- Clearing a row selection in the Plot Catalog tool: a **Clear Selection** button beside the search
   box, **Escape** in the table, and a **Clear Selection** context-menu entry. Qt's only built-in way
   out of a single-selection table is ctrl-clicking the selected row, which nobody finds — and since
   selecting also recentres the view, a stray click was awkward to undo.

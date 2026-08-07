@@ -543,6 +543,44 @@ def test_a_big_region_file_loads_without_per_region_items(window, tmp_path):
     assert len(layer._bulk_items) <= 2, "should be a handful of items, not 1,200"
 
 
+def test_regions_saved_in_one_window_load_in_another(qapp, sample_3d_fits, tmp_path,
+                                                     some_regions, monkeypatch):
+    """The whole point of a file format: draw here, look at it there.
+
+    Through the menu actions rather than the IO functions, so the file dialogs, the suffix
+    default and the per-window layer wiring are all on the path — two windows each own their own
+    `RegionLayer`, and a region reaching the wrong one would not show up in a single-window test.
+    """
+    source = MainWindow()
+    target = MainWindow()
+    try:
+        source.load_fits(sample_3d_fits)
+        target.load_fits(sample_3d_fits)
+        source.region_layer.set_regions(some_regions)
+
+        path = tmp_path / "shared.yml"
+        monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(path), "")))
+        monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                            staticmethod(lambda *a, **k: (str(path), "")))
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+
+        menu_action(source, "region_menu", "Save Regions As...").trigger()
+        assert path.exists()
+
+        assert len(target.region_layer) == 0, "the second window starts empty"
+        menu_action(target, "region_menu", "Load Regions...").trigger()
+
+        assert [type(r) for r in target.region_layer.regions] == [type(r) for r in some_regions]
+        assert target.region_layer.regions[0].text == "src A"
+        assert target.region_layer.regions[0].color == "red"
+        assert target.region_layer.regions[1].angle == pytest.approx(20.0)
+        assert source.region_layer.regions is not target.region_layer.regions
+    finally:
+        source.close()
+        target.close()
+
+
 # ----------------------------------------------------------- the --regions flag
 
 def test_load_regions_from_reports_a_bad_file_without_a_dialog(window, tmp_path, capsys):

@@ -195,7 +195,8 @@ To ensure source overlays track the image viewport when the astronomer rotates o
    $$(x_{i+1}, y_{i+1}) = (N_{y,i} - 1 - y_i, \; x_i)$$
 
 #### C. Interactive Highlighting & Filtering
-- **Interactive Source Selection**: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring.
+- **Interactive Source Selection**: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it.
+- **Clearing a selection**: press **Escape** in the table, use the **Clear Selection** button beside the search box, or pick **Clear Selection** from the row's right-click menu. The view stays where it is. (Qt's own way out of a single-selection table is ctrl-clicking the selected row, which few people find.)
 - **Search & Filter**: Real-time text search filters the catalog table and dynamically updates plotted markers.
 - **Custom Marker Styling**: Supports customizable marker shapes (Circles, Squares, Triangles, Diamonds, Crosses), sizes, colors, and text labels.
 
@@ -204,3 +205,104 @@ To ensure source overlays track the image viewport when the astronomer rotates o
 ## 8. FITS Header Editor
 
 The **Header Editor** allows astronomers to view, search, add, or modify FITS header cards across all HDU extensions in memory. Changes can be saved back to a new FITS file.
+
+---
+
+## 9. Regions
+
+Regions are annotations drawn over the image — **circles, boxes, arrows and text** — in the manner
+of ds9. They can be saved and reloaded, exchanged with ds9 as `.reg` files, and handed to the
+Catalog tool.
+
+Everything lives under the **Region** menu; the same tools are available from a small vertical
+toolbar (**Region ➔ Region Toolbar**, off by default and remembered once chosen) and from the
+image's own right-click menu.
+
+### Drawing
+
+| Shape | How |
+|-------|-----|
+| Circle | drag out from the centre |
+| Box | drag between opposite corners |
+| Arrow | drag from tail to head |
+| Text | click where the label goes; the label is asked for afterwards |
+
+Right-clicking the image offers **New Region ➔ Circle / Box / Arrow / Text**, which places a
+**default-sized** region on the pixel under the cursor without any dragging — usually quicker, since
+the size is easy to change afterwards.
+
+A region is moved by dragging it and resized from its handles. A **text** region has no separate
+marker: the text itself is the handle, so click, drag or right-click the words.
+
+### Editing
+
+**Double-click a region** — or choose **Properties…** from its right-click menu, or from the Region
+List — to open an editor for everything it carries: position and size, angle, label, colour, line
+width, dashing, text size, tag, visibility, and a channel range.
+
+A **channel range** restricts a region to part of a cube, so a marker on an emission-line feature
+appears only across the channels where the feature is. This has no equivalent in ds9 and is dropped
+when exporting a `.reg` file, which the export report says.
+
+**Region ➔ Region List…** shows every region in a table — type, position, size, angle, label, colour
+and visibility — editable in place. Double-click the *Colour* cell for a colour picker, or the
+*Type* cell for the full properties dialog. Right-click a row for **Properties…**, **Zoom To**,
+**Colour…**, **Copy Coordinates** and **Delete** — *Zoom To* is the way to find one region in a
+crowded field.
+
+### Colours
+
+Regions default to ds9's green. Note that this is the neon `#00ff00` ds9 draws, not the dark
+`#008000` that Qt and the SVG palette call "green": colour *names* are kept in the model and in
+saved files so they stay idiomatic, and are resolved to ds9's own RGB only for drawing.
+
+### Labels in a crowded field
+
+A region's `text` is drawn beside it. With a large catalogue that becomes a great deal of text, so:
+
+- only labels inside the visible area are drawn — zoom in and more appear;
+- labels are hidden while the view is panning and return once it settles;
+- **Region ➔ Show Region Labels** turns them off entirely, as the Catalog tool's *Show Names* does.
+
+### Saving, loading and ds9
+
+| Action | Format |
+|--------|--------|
+| **Load Regions…** | either format — the file's *contents* decide, so a ds9 file named `.yml` still loads |
+| **Save Regions As…** | QuickLook 3 YAML, unless the name ends in `.reg` |
+| **Export ds9 Regions…** | ds9 `.reg`, whatever the name |
+
+The native format is readable YAML that can be edited by hand:
+
+```yaml
+format: pyql3-regions/1
+written_by: QuickLook 3 v3.0.19
+regions:
+- type: circle
+  x: 31.5
+  y: 9.5
+  radius: 4.0
+  text: src A
+  z_range: [120, 180]
+```
+
+Geometry is stored in **pixels**, with the sky position recorded alongside when the file has a WCS,
+so a region stays where it was drawn and still means something on another frame of the same field.
+
+ds9 export writes sky coordinates automatically when image coordinates would not line up — ds9's
+`image` frame always means FITS axes 1 and 2, while an OSIRIS cube is displayed on axes 3 and 2.
+Anything that cannot be carried across, in either direction, is listed in a summary rather than
+dropped in silence.
+
+`--regions FILE` loads a region file at startup, in either format.
+
+### Very large sets
+
+Above 500 regions the whole set is drawn as a single overlay instead of one item each: 20,000
+regions then load in about two seconds and 150 MB, against roughly two minutes and 1.2 GB. The
+trade is that individual regions can no longer be dragged or right-clicked — they are still listed,
+edited, saved and exported. The status bar says when this happens.
+
+For a large set, **Region ➔ Send Regions to Plot Catalog…** copies them into the
+[Catalog tool](#7-catalog-plotting--world-coordinate-overlay), which has a sortable table, a search
+box and row highlighting. It is a copy taken at that moment, not a live link.

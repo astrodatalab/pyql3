@@ -20,6 +20,57 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def destroy_leftover_windows(qapp):
+    """Destroy the windows a test leaves behind, so the next test does not pay for them.
+
+    `widget.close()` hides a window; it does not destroy it. The C++ object survives, and so does
+    everything it owns — including the cube in `ImageViewer.raw_data`. Dropping the last Python
+    reference does not help either: every `lambda: self.something()` connected to a QAction is held
+    by that action, which is held by a menu, which is held by the widget, so the cycle runs through
+    C++ where Python's collector cannot follow it. Measured: **415 widgets survive every
+    `MainWindow`, permanently**, and `gc.collect()` reclaims none of them.
+
+    That is not merely untidy. `ViewBox.__init__` calls `ViewBox.updateAllViewLists()`, which walks
+    *every* live ViewBox in the process, so building one costs O(live views) — and the suite builds
+    hundreds. Constructing a window slows down measurably as the run goes on: 0.037 s at ten
+    windows, 0.090 s at a hundred, 0.129 s at 150. That is where the suite's 0.24 s -> 0.67 s
+    fixture creep comes from.
+
+    `shiboken6.delete` destroys the C++ object outright, which drops the connections and with them
+    the cycle. Autouse fixtures are finalized last, so this runs *after* a test's own `win.close()`.
+
+    **Only whole windows are destroyed.** pyqtgraph leaves parentless helper widgets — context
+    menus, a colour dialog, the frames behind them — belonging to a scene that is still alive;
+    deleting one of those and then its window is a segfault, and deleting its menus makes pyqtgraph
+    trip over its own combo box the next time a view list updates. Their cost is small and they are
+    left alone.
+    """
+    import shiboken6
+    from PySide6.QtWidgets import QMainWindow
+
+    def windows():
+        return {w for w in QApplication.topLevelWidgets()
+                if isinstance(w, (QMainWindow, ImageViewer)) and shiboken6.isValid(w)}
+
+    before = windows()
+    yield
+
+    leftovers = [w for w in windows() - before]
+    for widget in leftovers:
+        if shiboken6.isValid(widget):
+            widget.close()
+    qapp.processEvents()
+
+    # Re-checked one at a time: closing a window destroys anything parented to it, so a wrapper
+    # collected a moment ago may already be dangling, and deleting one of those is a segfault
+    # rather than an exception.
+    for widget in leftovers:
+        if shiboken6.isValid(widget):
+            shiboken6.delete(widget)
+    qapp.processEvents()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def isolated_settings(tmp_path_factory):
     """Keep the suite out of the developer's own `~/.pyql3/config.json`.

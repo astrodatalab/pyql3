@@ -159,6 +159,35 @@ def test_closing_a_window_releases_poller_tools_and_file(manager, tmp_path, samp
     assert watcher_of(str(tmp_path)) is None
 
 
+def test_closing_a_window_releases_its_cube(manager, sample_3d_fits):
+    """Qt does not destroy a closed window, so the cube has to be let go of explicitly.
+
+    A `lambda: self.x()` connected to a QAction is held by that action, which is held by a menu,
+    which is held by the widget — a cycle running through C++ that Python's collector cannot
+    break. The viewer therefore survives its window for the life of the process. Measured before
+    this was fixed: five open-and-close cycles left five viewers alive holding five cubes.
+
+    The weakref is the real assertion. Setting the attributes to None proves nothing on its own:
+    what matters is that no one else — the reader, the ImageItem, a tool — is still holding the
+    array.
+    """
+    import gc
+    import weakref
+
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+    cube = weakref.ref(win.image_viewer.raw_data)
+    assert cube() is not None
+
+    win.close()
+    gc.collect()
+
+    assert win.image_viewer.raw_data is None
+    assert win.image_viewer.transposed_data is None
+    assert win.image_viewer.display_data is None
+    assert cube() is None, "the cube is still in memory after its window closed"
+
+
 def test_a_pending_auto_load_retry_does_not_revive_a_closed_window(manager, tmp_path,
                                                                    sample_3d_fits, monkeypatch):
     """Retries run on a timer, so one can fire after its window has been closed."""
