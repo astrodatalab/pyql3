@@ -9,7 +9,7 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 
 ## Features
 
-- **High-Performance Rendering**: Built on PySide6 and pyqtgraph for efficient, hardware-accelerated visualization of large FITS data cubes.
+- **Rendering**: Built on PySide6 and pyqtgraph. The image display is software-rendered through Qt's raster engine, which imposes no GPU requirement; OpenGL is used only by the 3D Surface and Peak Fit views, which degrade to a message when no GL context is available.
 - **IFU Data Cube Visualization**: Interactively view FITS cubes across spatial and spectral dimensions. Extract 1D depth spectra from specific spatial pixels or regions.
 - **Z-Axis Collapsing**: Collapse 3D spectral ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
@@ -18,7 +18,8 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 - **ds9-Style Regions**: Draw circles, boxes, arrows and text over the image from a **Region** menu, an optional toolbar, or a right-click. Edit colour, line width, angle, label and a per-region channel range; save and load as readable YAML or exchange with ds9 as `.reg`. Catalogue-sized sets are drawn as a single overlay so tens of thousands load in seconds.
 - **Analysis Tools**: Built-in 1D profile cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and 3D OpenGL Surface Rendering.
 - **FITS Datacube Arithmetic**: Execute image and cube math (addition, subtraction, division, scalar scaling) between open datasets.
-- **Live File Polling**: Monitor a directory for incoming FITS files and automatically load them in real time as observations complete.
+- **Multiple Cubes at Once**: Each window is an independent view — its own file, display settings, tool dialogs and directory watch — so two dithers, or a frame and its sky, can be compared side by side rather than reloaded in turn.
+- **Directory Polling**: Watch a directory and load new FITS files as they are written, including files written from another host onto an NFS share. A frame is announced only after its size and modification time are unchanged across consecutive scans, and a burst of arrivals displays only the most recent frame.
 - **Header Editor**: View and modify FITS header cards directly in the UI.
 
 ## Download
@@ -136,6 +137,9 @@ uv run python main.py
 # Open a FITS image or 3D cube directly
 uv run python main.py /path/to/data.fits
 
+# Several files, each in its own window, for side-by-side comparison
+uv run python main.py /path/to/dither1.fits /path/to/dither2.fits
+
 # Open image and automatically load a target source catalog
 uv run python main.py /path/to/data.fits --catalog /path/to/catalog.csv
 
@@ -153,10 +157,46 @@ uv run python main.py datacube.fits --collapse-range 100 200
 ```
 
 ### Basic Navigation
-* **Open File**: `File -> Open File`
-* **Polling**: `File -> Poll Directory` to auto-load new FITS files arriving in a specific folder.
-* **Header**: `File -> View/Edit Header` to inspect or modify header keywords.
-* **Window Manager**: `Window` menu bar collects all open tool dialogs, allowing you to select any window or click **Bring All to Front**.
+* **Open File**: `File -> Open...`
+* **Header**: `File -> Edit FITS Header` to inspect or modify header keywords, on any extension.
+* **Window Menu**: lists every open window and groups each window's tool dialogs beneath it, so a Depth Plot can be told from the identically-titled Depth Plot belonging to another cube. **Bring All to Front** raises the set.
+
+### Working with Several Cubes
+
+A window is a self-contained view of one dataset: it owns its `FitsReader`, its display
+settings (scaling, colormap, rotation, axis mapping), its tool dialogs and its directory
+watch. Changing the scaling in one window does not affect another, and closing a window
+releases its cube.
+
+* **`File -> New Window`** opens an empty window; **`File -> Open in New Window...`** opens a
+  file into one; **`File -> Close Window`** closes the current window without exiting the
+  application.
+* Several filenames on the command line open one window each.
+* A file arriving with no window attached — a Finder double-click, or `quicklook3 cube.fits`
+  while the application is already running — loads into the most recently used window, or
+  opens a new one if all have been closed.
+
+### Directory Polling
+
+`File -> Polling...` watches a directory and loads new FITS files as they appear. The
+behaviour is stated here because it determines what the tool will and will not detect:
+
+* **Scanning, not filesystem events.** Kernel notification backends (FSEvents, inotify)
+  report only changes made through the local kernel, so a file written by the OSIRIS DRP
+  from another host onto an NFS share generates no event on the viewing machine. QuickLook 3
+  diffs directory snapshots instead, at a configurable interval (2 s by default), which sees
+  remote writes.
+* **A file is announced only once it has stopped changing** — its size and modification time
+  must be unchanged across two consecutive scans. This avoids loading a FITS file that is
+  still being written. On NFS this is necessary but not sufficient, because clients cache
+  file attributes for seconds at a time, so a failed read is retried rather than reported as
+  a corrupt file.
+* **A burst of arrivals displays only the newest frame**, with the number skipped reported,
+  rather than flashing each file in turn as a bulk copy completes.
+* **One window watches a given directory at a time.** Auto-loaded frames go to the window
+  that owns the watch, not to whichever window was last used, so a watch following a
+  reduction cannot take over a window opened for comparison. Moving a watch to another
+  window asks first.
 
 ### Visual Controls
 * **Slices & Slabs**: The bottom control panel allows you to switch between viewing a single Z-slice or a collapsed Z-range of a 3D datacube. Use the slider to navigate through cube depth.
@@ -170,7 +210,7 @@ Found under the **Plot** and **Analysis** menu bars:
 * **Catalog Plot Tool (`Plot -> Plot Catalog...`)**: Load astronomical catalog files (`.csv`, `.txt`, `.dat`) or FITS tables (`.fits`, `.fit`, `.fts`, gzipped) and overlay sources onto the FITS display.
   - **Coordinates**: Supports Display Pixels, FITS Pixels, or WCS RA/Dec (HMS/DMS or decimal degrees).
   - **FITS Tables**: Reads binary and ASCII table extensions; you are asked which extension to use when a file holds more than one. Common photutils / SExtractor column names (`xcentroid`, `X_IMAGE`, `ALPHA_J2000`, ...) are auto-detected, masked and undefined coordinates are skipped rather than plotted at the origin, and per-row vector columns (e.g. spectra) are omitted from the table.
-  - **High Performance**: Features debounced hide-on-pan text label rendering for smooth 60 FPS panning even with thousands of catalog sources.
+  - **Large Catalogs**: Labels are culled to the visible area and hidden while the view is being panned, so redraw cost stays bounded by what is on screen rather than by catalog size.
   - **Interactivity**: Filter table rows in real time with the built-in search bar, click rows to center sources on the image with a red highlight, or right-click rows to copy coordinates.
   - **CLI Auto-Load**: Pass `--catalog <file>` on launch to auto-open the tool and load the catalog, with `--catalog-hdu <index|EXTNAME>` to pick a FITS table extension.
 * **Regions (`Region` menu)**: Draw circles, boxes, arrows and text over the image — drag them out, or right-click the image for **New Region** to place a default-sized one where you clicked. An optional vertical toolbar (**Region -> Region Toolbar**) holds the same tools.
@@ -178,11 +218,11 @@ Found under the **Plot** and **Analysis** menu bars:
   - **File Formats**: Save as readable YAML (`pyql3-regions/1`) or export ds9 `.reg`; loading detects the format from the file's contents, not its name, and reports anything a conversion could not carry. Geometry is stored in pixels with the sky position alongside, so regions survive flips, rotations and a move to another frame of the same field.
   - **Large Sets**: Above 500 regions the set is drawn as one overlay — 20,000 load in about two seconds — with labels culled to the view, hidden while panning, and switchable off. **Region -> Send Regions to Plot Catalog...** hands a large set to the catalog tool for its table and search.
   - **CLI Auto-Load**: Pass `--regions <file>` on launch, in either format.
-* **1D Profile Cuts**: `Plot -> Horizontal / Vertical / Any Cut` to generate 1D profile cuts with adjustable boxcar averaging.
+* **1D Profile Cuts**: `Plot -> Horizontal Cut` / `Vertical Cut` / `Diagonal Cut` to generate 1D profile cuts with adjustable boxcar averaging.
 * **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis.
 * **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise.
-* **Surface Plot**: `Plot -> Surface Plot` renders a 3D OpenGL topographical surface mesh of the image data.
-* **FITS Arithmetic**: `Analysis -> Arithmetic` performs addition, subtraction, division, and scalar scaling between open FITS datasets.
+* **Surface Plot**: `Plot -> Surface` renders a 3D OpenGL surface mesh of the displayed image. Requires a working OpenGL context; without one the dialog reports that rather than failing.
+* **FITS Arithmetic**: `File -> Arithmetic...` performs addition, subtraction, division, and scalar scaling between open FITS datasets. The result opens in its own window.
 
 ## License
 

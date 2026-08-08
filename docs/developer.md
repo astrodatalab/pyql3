@@ -205,8 +205,17 @@ reuse them rather than re-deriving the range:
 QuickLook 3 uses `pytest` for regression testing. Run the test suite using `uv`:
 
 ```bash
-uv run pytest -v
+uv run pytest -v                            # ~60 s
+uv run pytest -q -n auto --dist loadfile    # ~15 s on four cores; what CI runs
 ```
+
+The suite parallelises because each `pytest-xdist` worker is a separate process with its own
+`QApplication`, window manager, poller watch table and `ConfigManager`, so the process-wide
+singletons stay singletons per worker. `--dist loadfile` keeps every test in a file on one
+worker, which is why it is preferred over the finer-grained default. Debug serially — xdist
+swallows `print` and does not support `--pdb`.
+
+Every test touches Qt, so on a headless machine prefix with `QT_QPA_PLATFORM=offscreen`.
 
 ### Test Organization (`tests/`)
 - `tests/test_fits_reader.py`: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.
@@ -221,6 +230,20 @@ uv run pytest -v
 - `tests/test_packaging_assets.py`: Bundled line lists and `cmcrameri` colormaps are present, and `QuickLook3.spec` registers every asset, the bundle identifier, and the FITS document types.
 - `tests/test_cli_install.py`: The `quicklook3` launcher — side-effect-free planning, argument forwarding and quoting, venv interpreter preservation, quarantine guard, disk-image and foreign-file refusals, install directory choice.
 - `tests/test_file_open.py`: Finder open-document routing (queueing before the window exists, real `QFileOpenEvent` delivery) and the Install Command Line Tool menu action, including that declining the confirmation writes nothing.
+- `tests/test_multi_window.py`: Several main windows at once — what each window owns, what stays process-wide (the window list and most-recently-used order, the shared `ConfigManager`, one poller per directory), and what a closing window must release.
+- `tests/test_config.py`: `ConfigManager` robustness, including that a damaged `~/.pyql3/config.json` does not block startup.
+- `tests/test_data_integrity.py`: The executable form of the `raw_data` / `transposed_data` / `display_data` rule in `AGENTS.md` — that analysis, exports and header writes read the untouched FITS array.
+- `tests/test_coords.py`: The display ↔ orig coordinate mapping in `pyql3/core/coords.py`, including angle mapping under flips and 90° steps.
+- `tests/test_position_angle.py`: The N/E compass vectors and the *North Up* button, under every flip and rotation combination (`BUGS.md` B20).
+
+Region support is tested in five files, one per layer, so a failure says which layer broke:
+
+- `tests/test_regions_model.py`: The Qt-free region model and its native YAML format — geometry, the `style:` block, and the sky anchor.
+- `tests/test_ds9_regions.py`: ds9 `.reg` import and export — the seven sky frame names, sexagesimal hours versus degrees, length units, hand-parsed arrows, the `physical` frame, and the `Report` of anything a conversion could not carry.
+- `tests/test_region_layer.py`: The drawn items on the viewer — placement under flips and rotations, the aggregate render mode above `INTERACTIVE_LIMIT`, label culling, and item lifetime.
+- `tests/test_region_properties.py`: The per-region properties dialog and the region's context menu on the image.
+- `tests/test_region_toolbar.py`: The optional vertical region toolbar.
+- `tests/test_region_ui.py`: The Region menu, the Region List dialog, format dispatch on load, and the `--regions` command-line path.
 
 ### Tests that need real instrument data
 

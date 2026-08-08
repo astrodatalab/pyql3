@@ -176,7 +176,7 @@ Three consequences worth knowing:
   NFS. Raise the scan interval for a directory holding a whole run, and prefer watching a
   per-night directory over an accumulating archive.
 
-The interval defaults to 2 seconds and is configurable in **File ➔ Directory Polling...**.
+The interval defaults to 2 seconds and is configurable in **File ➔ Polling...**.
 
 ### Enabling Directory Polling
 
@@ -189,7 +189,7 @@ uv run python main.py --poll-dir /path/to/raw_data
 
 #### Option B: Via GUI Menu
 1. Open QuickLook 3.
-2. Select **File ➔ Directory Polling...** from the top menu bar.
+2. Select **File ➔ Polling...** from the top menu bar.
 3. Click **Browse...** to pick the watch directory.
 4. Click **Start Polling**.
 

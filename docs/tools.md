@@ -361,5 +361,5 @@ trade is that individual regions can no longer be dragged or right-clicked — t
 edited, saved and exported. The status bar says when this happens.
 
 For a large set, **Region ➔ Send Regions to Plot Catalog…** copies them into the
-[Catalog tool](#7-catalog-plotting--world-coordinate-overlay), which has a sortable table, a search
+[Catalog tool](#7-catalog-plotting-world-coordinate-overlay), which has a sortable table, a search
 box and row highlighting. It is a copy taken at that moment, not a live link.
