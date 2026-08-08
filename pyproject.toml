@@ -32,6 +32,7 @@ dev = [
     "mkdocs-material>=9.5.0",
     "mkdocstrings[python]>=0.24.0",
     "pytest>=8.0.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.uv]

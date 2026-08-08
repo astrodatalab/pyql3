@@ -71,17 +71,24 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # -n auto runs one worker per core; --dist loadfile keeps each file's tests on a
+      # single worker, so the process-wide state these tests touch (the window manager,
+      # the poller's watch table, the shared ConfigManager) stays within one process the
+      # way a serial run gives it. Measured locally: 66 s -> 15 s on four workers, same
+      # 986 passed / 6 skipped, stable across repeated runs. -q rather than -v because
+      # interleaved per-test lines from four workers are not readable anyway; a failure
+      # still prints in full.
       - name: Run Unit Tests (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 20
-        run: xvfb-run --auto-servernum uv run pytest -v
+        run: xvfb-run --auto-servernum uv run pytest -q -n auto --dist loadfile
         env:
           QT_QPA_PLATFORM: offscreen
 
       - name: Run Unit Tests (Non-Linux)
         if: runner.os != 'Linux'
         timeout-minutes: 20
-        run: uv run pytest -v
+        run: uv run pytest -q -n auto --dist loadfile
 
       - name: Build with PyInstaller
         run: uv run pyinstaller --noconfirm QuickLook3.spec
@@ -125,11 +132,17 @@ jobs:
           cd dist
           tar -czvf ../${{ matrix.artifact_name }}.${{ matrix.archive_ext }} QuickLook3
 
+      # 7-Zip, not Compress-Archive. A PyInstaller onedir bundle is thousands of small
+      # files, which is the case Compress-Archive handles worst -- it is single-threaded
+      # managed code and spends minutes on a tree 7z packs in seconds. 7-Zip is
+      # preinstalled on the windows runner image. Default compression level, so the
+      # download a user gets is no larger than before; the speed is from native
+      # multithreaded deflate, not from compressing less.
       - name: Package Windows
         if: runner.os == 'Windows'
         run: |
           cd dist
-          Compress-Archive -Path QuickLook3 -DestinationPath ..\${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
+          7z a -tzip -mmt=on ..\${{ matrix.artifact_name }}.${{ matrix.archive_ext }} QuickLook3
 
       - name: Package macOS
         if: runner.os == 'macOS'

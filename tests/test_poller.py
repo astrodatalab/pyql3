@@ -134,10 +134,20 @@ def test_burst_of_files_displays_only_the_newest(qapp, tmp_path):
     for i in range(5):
         path = str(tmp_path / f"burst{i}.fits")
         _write_cube(path)
-        # Force a strictly increasing mtime so "newest" is unambiguous.
-        os.utime(path, ns=(1_000_000_000 + i, 1_000_000_000 + i))
+        # Force a strictly increasing mtime so "newest" is unambiguous. Space them a whole
+        # second apart, not the nanosecond this used to use: NTFS timestamps have 100 ns
+        # resolution, so five files one nanosecond apart are all *exactly* the same age on
+        # Windows and `max` returns whichever came first -- burst0, not burst4.
+        stamp = (i + 1) * 1_000_000_000
+        os.utime(path, ns=(stamp, stamp))
         poller._add_candidate(path)
         paths.append(path)
+
+    # Premise: the filesystem really did record five distinct ages. Asserted rather than
+    # assumed, so a filesystem coarser still says so instead of failing as if the poller
+    # had picked the wrong file.
+    ages = [os.stat(p).st_mtime_ns for p in paths]
+    assert ages == sorted(set(ages)), f"test premise: mtimes not distinct and increasing: {ages}"
 
     _settle(poller)
 

@@ -22,7 +22,8 @@ invocation must go through `uv run`. Do not assume packages are importable other
 ```bash
 uv run python main.py                       # launch the GUI
 uv run python main.py cube.fits --collapse-range 100 200
-uv run pytest -v                            # full test suite
+uv run pytest -v                            # full test suite (~60 s)
+uv run pytest -q -n auto --dist loadfile    # the same suite in parallel (~15 s); what CI runs
 uv run pytest tests/test_depth_plot.py -v   # one file
 uv run pytest tests/test_cuts.py::test_name # one test
 ./build_app.sh                              # macOS/Linux bundle (.app + .dmg / .tar.gz)
@@ -32,6 +33,13 @@ uv run mkdocs serve                         # docs site (mkdocs.yml)
 
 Every test touches Qt. On a headless machine (or to keep windows from popping up during a
 local run) prefix with `QT_QPA_PLATFORM=offscreen`.
+
+**`--dist loadfile`, not plain `-n auto`.** The suite parallelises because each worker is a
+separate process with its own `QApplication`, window manager, poller watch table and
+`ConfigManager` — the process-wide singletons stay singletons *per worker*. `loadfile` keeps
+every test in a file on one worker, so anything a file's tests share is where a serial run
+puts it. Both modes pass today; the finer-grained default buys about a second and gives that
+up. Debug serially — xdist swallows `print` and does not support `--pdb`.
 
 Version numbers come from `setuptools_scm` via git tags — `pyql3/_version.py` is generated,
 never edit it. Release binaries are built by `.github/workflows/release.yml`, triggered by

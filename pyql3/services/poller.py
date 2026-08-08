@@ -266,7 +266,12 @@ class DirectoryPoller(QObject):
             # on screen for a fraction of a second before the next one replaced them.
             candidates = settled + ([self._held_path] if self._held_path else [])
             self._held_count += len(settled)
-            self._held_path = max(candidates, key=self._mtime)
+            # Ties broken by name, so the choice is deterministic rather than
+            # whichever-we-happened-to-see-first. Timestamps really do collide here: NTFS
+            # resolves to 100 ns, an NFS share can report whole seconds, and a DRP writing
+            # a burst of frames lands several inside one tick. Frame numbers are
+            # zero-padded and increase, so the later frame also sorts later.
+            self._held_path = max(candidates, key=lambda p: (self._mtime(p), p))
 
         if self._held_path is None:
             self._hold_ticks = 0
