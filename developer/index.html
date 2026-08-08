@@ -413,6 +413,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="🏗️ Core Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-window-per-cube" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One window per cube
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-region-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The region layer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -515,6 +543,17 @@
     <span class="md-ellipsis">
       
         Test Organization (tests/)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tests-that-need-real-instrument-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tests that need real instrument data
       
     </span>
   </a>
@@ -607,6 +646,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="🏗️ Core Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-window-per-cube" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One window per cube
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-region-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The region layer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -715,6 +782,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#tests-that-need-real-instrument-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tests that need real instrument data
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -757,33 +835,86 @@
 <h2 id="core-architecture">🏗️ Core Architecture</h2>
 <div class="highlight"><pre><span></span><code>pyql3/
 ├── core/
-│   └── fits_reader.py       # FITS loading, WCS extraction, and multi-HDU management
+│   ├── fits_reader.py        # FITS loading, WCS extraction, and multi-HDU management
+│   ├── coords.py             # orig &lt;-&gt; display mapping, and the pixel conventions
+│   ├── sky.py                # CelestialMap: the 2 celestial axes of any WCS
+│   ├── regions_model.py      # Circle/Box/Arrow/Text dataclasses + RegionList (no Qt)
+│   ├── regions_io.py         # YAML load/save, format sniffing, sky anchors
+│   └── ds9_regions.py        # ds9 .reg import/export, with a Report of what was lost
+├── analysis/
+│   └── strehl.py             # Pupil mask / diffraction-limited PSF / Strehl computation
+├── data/                     # Bundled spectral line lists (*.txt), see Packaging
 ├── gui/
-│   ├── main_window.py       # Main PySide6 application window &amp; menu dispatch
+│   ├── main_window.py        # Main PySide6 application window &amp; menu dispatch
+│   ├── window_manager.py     # The open windows, and where a new file opens
+│   ├── region_toolbar.py     # Optional vertical shape toolbar (icons painted, not files)
+│   ├── file_open.py          # Finder open-document events
 │   ├── viewers/
-│   │   ├── image_viewer.py  # 2D/3D image display, WCS, scaling, &amp; colormaps
-│   │   └── plot_viewer.py   # 1D line plot viewer
+│   │   ├── image_viewer.py   # 2D/3D image display, WCS, scaling, &amp; colormaps
+│   │   └── region_layer.py   # Drawing, hit-testing and rendering of regions
 │   ├── tools/
-│   │   ├── depth_plot.py    # Spectral extraction &amp; line list overlays
-│   │   ├── cuts.py          # Spatial profile cuts
-│   │   ├── fitting.py       # 2D Gaussian/Lorentzian/Moffat fitting
-│   │   ├── photometry.py    # Aperture photometry
-│   │   ├── strehl.py        # Strehl ratio calculation
-│   │   └── base_tool.py     # Base class for modeless tool dialogs
+│   │   ├── base_tool.py      # Base class for modeless tool dialogs
+│   │   ├── depth_plot.py     # Spectral extraction &amp; line list overlays
+│   │   ├── cuts.py           # Spatial profile cuts
+│   │   ├── fitting.py        # 2D Gaussian/Lorentzian/Moffat fitting
+│   │   ├── photometry.py     # Aperture photometry
+│   │   ├── statistics.py     # Region statistics
+│   │   ├── strehl.py         # Strehl dialog (numerics live in analysis/strehl.py)
+│   │   ├── arithmetic.py     # Image arithmetic between cubes/constants
+│   │   ├── advanced_plots.py # 3D surface plot
+│   │   ├── plot_catalog.py   # Source catalog overlay
+│   │   ├── region_list.py    # Table of the current regions
+│   │   └── rotate.py         # View rotation controls
 │   └── dialogs/
-│       ├── header_editor.py # FITS header card editor
-│       └── polling.py       # Directory polling setup dialog
+│       ├── header_editor.py  # FITS header card editor
+│       ├── region_properties.py  # Per-region editor (colour, width, angle, z-range)
+│       └── polling.py        # Directory polling setup dialog
 └── services/
-    └── poller.py            # Watchdog filesystem monitoring service
+    ├── poller.py             # Directory scanning for new FITS files (NFS-safe)
+    ├── cli_install.py        # The `quicklook3` launcher: plan / describe / install
+    └── config.py             # ~/.pyql3/config.json, recent-files list
 </code></pre></div>
+<p>Tool dialogs embed their own <code>pyqtgraph.PlotWidget</code> rather than sharing a plot viewer class.</p>
+<h3 id="one-window-per-cube">One window per cube</h3>
+<p><code>MainWindow</code> is not a singleton. Every window owns its own <code>FitsReader</code>, <code>ImageViewer</code>, tool
+dialogs and <code>DirectoryPoller</code>, so two cubes can be compared side by side with an independent
+Depth Plot, scaling and colormap in each. Only the settings file, the window list and directory
+watches are shared across the process.</p>
+<div class="admonition info">
+<p class="admonition-title">Canonical statement lives in <code>AGENTS.md</code></p>
+<p>What is per-window, what is process-wide, where a file opened from Finder or a shell lands,
+and what <code>closeEvent</code> has to release are written down once, in the "Multiple windows"
+section of
+<a href="https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md"><code>AGENTS.md</code></a>.</p>
+</div>
+<h3 id="the-region-layer">The region layer</h3>
+<p><code>RegionLayer</code> owns every region on one viewer. The model in <code>pyql3/core/</code> is pure Python — it
+imports neither Qt nor pyqtgraph — so region geometry, YAML round-trips and ds9 interop are
+testable without a display, and <code>region_layer.py</code> is only the drawing of it.</p>
+<p>The layer has two rendering modes. Below <code>INTERACTIVE_LIMIT</code> regions each one is a real
+<code>pyqtgraph</code> ROI that can be dragged, resized and right-clicked; above it the whole set becomes a
+handful of aggregate items and individual interaction goes away, which is what makes a
+20,000-region catalogue load at all.</p>
+<div class="admonition info">
+<p class="admonition-title">Canonical statement lives in <code>AGENTS.md</code></p>
+<p>The coordinate space geometry is stored in, what the two render modes guarantee, and the four
+Qt traps that this layer walks into are in the "Regions" section of
+<a href="https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md"><code>AGENTS.md</code></a>.</p>
+</div>
 <hr />
 <h2 id="fits-data-cubes-and-wcs-rules-critical">⚡ FITS Data Cubes and WCS Rules (CRITICAL)</h2>
+<div class="admonition info">
+<p class="admonition-title">Canonical statement lives in <code>AGENTS.md</code></p>
+<p>The axis-order and data-state invariants are written down once, in
+<a href="https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md"><code>AGENTS.md</code></a> — the file
+coding agents load automatically. They are summarised below for orientation only. <strong>If
+the two ever disagree, <code>AGENTS.md</code> is authoritative</strong> and this page needs updating.</p>
+</div>
 <h3 id="osiris-datacube-axis-order">OSIRIS Datacube Axis Order</h3>
-<p>OSIRIS spectral datacubes map FITS Axis 1 to Wavelength (<code>WAVE</code> or <code>AWAV</code>), Axis 2 to Declination (<code>DEC--TAN</code>), and Axis 3 to Right Ascension (<code>RA---TAN</code>).</p>
-<p>When loaded via <code>astropy.io.fits.getdata()</code>, NumPy reverses the axes into C-contiguous order:
-- <code>data.shape[0]</code>: FITS Axis 3 (<code>RA</code>)
-- <code>data.shape[1]</code>: FITS Axis 2 (<code>DEC</code>)
-- <code>data.shape[2]</code>: FITS Axis 1 (<code>WAVE</code>)</p>
+<p>OSIRIS spectral datacubes map FITS Axis 1 to Wavelength (<code>WAVE</code> or <code>AWAV</code>), Axis 2 to
+Declination (<code>DEC--TAN</code>), and Axis 3 to Right Ascension (<code>RA---TAN</code>). <code>astropy</code> reverses
+that ordering into C-contiguous NumPy order, so <code>data.shape</code> is <code>(RA, DEC, WAVE)</code> —
+wavelength is FITS axis 1 but the <strong>last</strong> NumPy axis.</p>
 <h3 id="instrument-agnostic-wcs-rule">Instrument-Agnostic WCS Rule</h3>
 <p>Do <strong>not</strong> hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Always dynamically parse the <code>CTYPE</code> string using target axis indices (e.g., <code>wcs.wcs.ctype[z_idx]</code>).</p>
 <h3 id="reloading-a-file-live-observing">Reloading a File (live observing)</h3>
@@ -827,13 +958,14 @@ extension the viewer can show, used both by <code>load()</code> and by <code>get
 populates the Extension combo. <code>get_all_extensions()</code> is a different question and still lists
 tables. A <code>BINTABLE</code> has <code>data is not None</code>, so that is never the right test.</p>
 <h3 id="internal-data-state-vs-display-data-state-critical">Internal Data State vs. Display Data State (CRITICAL)</h3>
-<ul>
-<li><strong><code>self.image_viewer.raw_data</code></strong>: Retains the original, un-transposed FITS array shape and orientation. All analytical calculations, data exports, or FITS header writes <strong>must</strong> operate on <code>raw_data</code>.</li>
-<li><strong><code>self.image_viewer.transposed_data</code></strong>: Represents the data formatted for <code>pyqtgraph.ImageView</code>. Axes are transposed for compatibility with the PyQtGraph plotting engine.</li>
-</ul>
+<p><code>ImageViewer</code> keeps <strong>three</strong> arrays, not two — <code>raw_data</code>, <code>transposed_data</code>, and
+<code>display_data</code>. Confusing them corrupts output files. The definitions are stated once, in
+<a href="https://github.com/astrodatalab/pyql3/blob/main/AGENTS.md#data-state-raw_data-vs-transposed_data-vs-display_data-critical"><code>AGENTS.md</code></a>.</p>
 <div class="admonition danger">
 <p class="admonition-title">Data State Safety Rule</p>
-<p>Never use <code>transposed_data</code> to perform analytical calculations that save FITS outputs back to memory or disk. Doing so will output cubes with permanently swapped physical axes and broken WCS headers!</p>
+<p>All analytical calculations, data exports, and FITS header writes <strong>must</strong> operate on
+<code>raw_data</code>. Using <code>transposed_data</code> or <code>display_data</code> instead outputs cubes with
+permanently swapped physical axes and broken WCS headers!</p>
 </div>
 <h3 id="the-current-z-slice">The Current Z Slice</h3>
 <p><code>ImageViewer.slider_slice</code> is the single source of truth for which plane of a cube is on
@@ -905,16 +1037,53 @@ pyqtgraph raise <code>Cannot set range [nan, nan]</code>, and <code>update_slice
 <hr />
 <h2 id="running-unit-tests">🧪 Running Unit Tests</h2>
 <p>QuickLook 3 uses <code>pytest</code> for regression testing. Run the test suite using <code>uv</code>:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-v
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-v<span class="w">                            </span><span class="c1"># ~60 s</span>
+uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-q<span class="w"> </span>-n<span class="w"> </span>auto<span class="w"> </span>--dist<span class="w"> </span>loadfile<span class="w">    </span><span class="c1"># ~15 s on four cores; what CI runs</span>
 </code></pre></div>
+<p>The suite parallelises because each <code>pytest-xdist</code> worker is a separate process with its own
+<code>QApplication</code>, window manager, poller watch table and <code>ConfigManager</code>, so the process-wide
+singletons stay singletons per worker. <code>--dist loadfile</code> keeps every test in a file on one
+worker, which is why it is preferred over the finer-grained default. Debug serially — xdist
+swallows <code>print</code> and does not support <code>--pdb</code>.</p>
+<p>Every test touches Qt, so on a headless machine prefix with <code>QT_QPA_PLATFORM=offscreen</code>.</p>
 <h3 id="test-organization-tests">Test Organization (<code>tests/</code>)</h3>
 <ul>
-<li><code>tests/test_fits_reader.py</code>: FITS loading, WCS extraction, multi-extension headers, and OSIRIS axis mapping.</li>
-<li><code>tests/test_image_viewer.py</code>: <code>raw_data</code> vs <code>transposed_data</code> separation, view rotations, display scaling, and colormaps.</li>
+<li><code>tests/test_fits_reader.py</code>: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.</li>
+<li><code>tests/test_image_viewer.py</code>: <code>raw_data</code> / <code>transposed_data</code> / <code>display_data</code> separation, view rotations, display scaling, colormaps, and z-slice plane accessors.</li>
 <li><code>tests/test_depth_plot.py</code>: Spectrum extraction, background subtraction, line list parsing, LaTeX label formatting, and Y-auto scaling.</li>
-<li><code>tests/test_analysis_tools.py</code>: Profile cuts, 2D peak fitting, statistics, photometry, Strehl ratio, and surface plots.</li>
+<li><code>tests/test_analysis_tools.py</code>: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.</li>
+<li><code>tests/test_cuts.py</code>: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.</li>
+<li><code>tests/test_plot_catalog.py</code>: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns.</li>
+<li><code>tests/test_menu_actions.py</code>: The <code>QAction.triggered</code> bool-vs-coordinate slot hazard and <code>as_center()</code> coercion (see the Qt slot gotcha in <code>AGENTS.md</code>).</li>
 <li><code>tests/test_main_window_and_poller.py</code>: <code>MainWindow</code> tool lifecycle, 2D guards, and <code>DirectoryPoller</code> service.</li>
+<li><code>tests/test_poller.py</code>: Settle detection for files still being written, burst coalescing, and the auto-load retry/backoff path.</li>
+<li><code>tests/test_packaging_assets.py</code>: Bundled line lists and <code>cmcrameri</code> colormaps are present, and <code>QuickLook3.spec</code> registers every asset, the bundle identifier, and the FITS document types.</li>
+<li><code>tests/test_cli_install.py</code>: The <code>quicklook3</code> launcher — side-effect-free planning, argument forwarding and quoting, venv interpreter preservation, quarantine guard, disk-image and foreign-file refusals, install directory choice.</li>
+<li><code>tests/test_file_open.py</code>: Finder open-document routing (queueing before the window exists, real <code>QFileOpenEvent</code> delivery) and the Install Command Line Tool menu action, including that declining the confirmation writes nothing.</li>
+<li><code>tests/test_multi_window.py</code>: Several main windows at once — what each window owns, what stays process-wide (the window list and most-recently-used order, the shared <code>ConfigManager</code>, one poller per directory), and what a closing window must release.</li>
+<li><code>tests/test_config.py</code>: <code>ConfigManager</code> robustness, including that a damaged <code>~/.pyql3/config.json</code> does not block startup.</li>
+<li><code>tests/test_data_integrity.py</code>: The executable form of the <code>raw_data</code> / <code>transposed_data</code> / <code>display_data</code> rule in <code>AGENTS.md</code> — that analysis, exports and header writes read the untouched FITS array.</li>
+<li><code>tests/test_coords.py</code>: The display ↔ orig coordinate mapping in <code>pyql3/core/coords.py</code>, including angle mapping under flips and 90° steps.</li>
+<li><code>tests/test_position_angle.py</code>: The N/E compass vectors and the <em>North Up</em> button, under every flip and rotation combination (<code>BUGS.md</code> B20).</li>
 </ul>
+<p>Region support is tested in five files, one per layer, so a failure says which layer broke:</p>
+<ul>
+<li><code>tests/test_regions_model.py</code>: The Qt-free region model and its native YAML format — geometry, the <code>style:</code> block, and the sky anchor.</li>
+<li><code>tests/test_ds9_regions.py</code>: ds9 <code>.reg</code> import and export — the seven sky frame names, sexagesimal hours versus degrees, length units, hand-parsed arrows, the <code>physical</code> frame, and the <code>Report</code> of anything a conversion could not carry.</li>
+<li><code>tests/test_region_layer.py</code>: The drawn items on the viewer — placement under flips and rotations, the aggregate render mode above <code>INTERACTIVE_LIMIT</code>, label culling, and item lifetime.</li>
+<li><code>tests/test_region_properties.py</code>: The per-region properties dialog and the region's context menu on the image.</li>
+<li><code>tests/test_region_toolbar.py</code>: The optional vertical region toolbar.</li>
+<li><code>tests/test_region_ui.py</code>: The Region menu, the Region List dialog, format dispatch on load, and the <code>--regions</code> command-line path.</li>
+</ul>
+<h3 id="tests-that-need-real-instrument-data">Tests that need real instrument data</h3>
+<p>A few tests exercise a genuine OSIRIS cube, because the synthetic fixtures are built to the
+same axis convention the code assumes and so cannot catch an axis regression. They <strong>skip</strong>
+unless <code>PYQL3_TEST_CUBE</code> points at one:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PYQL3_TEST_CUBE</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/path/to/s150531_a025002_Kn5_035.fits&quot;</span>
+uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>-v
+</code></pre></div>
+<p>They always skip in CI, where no such cube exists. A path that is set but unreadable warns
+rather than skipping silently, so a typo cannot masquerade as "not configured".</p>
 <hr />
 <h2 id="building-application-packages">📦 Building Application Packages</h2>
 <p>Build standalone application bundles for macOS (<code>.app</code> / <code>.dmg</code>) or Windows (<code>.exe</code>):</p>

@@ -400,8 +400,69 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#comparing-several-cubes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparing several cubes
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launching-like-ds9-the-quicklook3-command" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🖥️ Launching Like ds9: the quicklook3 Command
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="🖥️ Launching Like ds9: the quicklook3 Command">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#installing-the-launcher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing the launcher
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#uninstalling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Uninstalling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opening-fits-files-from-the-desktop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        📂 Opening FITS Files from the Desktop
+      
+    </span>
+  </a>
   
 </li>
       
@@ -583,8 +644,69 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#comparing-several-cubes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparing several cubes
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launching-like-ds9-the-quicklook3-command" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🖥️ Launching Like ds9: the quicklook3 Command
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="🖥️ Launching Like ds9: the quicklook3 Command">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#installing-the-launcher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing the launcher
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#uninstalling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Uninstalling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opening-fits-files-from-the-desktop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        📂 Opening FITS Files from the Desktop
+      
+    </span>
+  </a>
   
 </li>
       
@@ -680,7 +802,7 @@
 <hr />
 <h2 id="command-line-flags">🚀 Command Line Flags</h2>
 <p>Launch PyQL3 with command-line arguments to automatically open specific FITS files, set display scaling, apply colormaps, or start directory polling:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>main.py<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span><span class="w"> </span><span class="o">[</span>FILEPATH<span class="o">]</span>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>main.py<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span><span class="w"> </span><span class="o">[</span>FILEPATH<span class="w"> </span>...<span class="o">]</span>
 </code></pre></div>
 <h3 id="options-reference">Options Reference</h3>
 <table>
@@ -694,10 +816,22 @@
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>filepath</code></td>
-<td style="text-align: left;">Path to a 2D or 3D FITS file to load immediately upon launch</td>
+<td style="text-align: left;"><code>filepath ...</code></td>
+<td style="text-align: left;">One or more 2D or 3D FITS files to load immediately upon launch. Each opens in its own window</td>
 <td style="text-align: left;"><code>None</code></td>
 <td style="text-align: left;"><code>uv run python main.py data.fits</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>--collapsed</code></td>
+<td style="text-align: left;">Start with the collapsed (slab) view active instead of a single channel</td>
+<td style="text-align: left;"><code>False</code></td>
+<td style="text-align: left;"><code>--collapsed</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>--collapse-range</code></td>
+<td style="text-align: left;">Start collapsed over <code>ZMIN ZMAX</code> channels (implies <code>--collapsed</code>)</td>
+<td style="text-align: left;"><code>None</code></td>
+<td style="text-align: left;"><code>--collapse-range 100 200</code></td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>--poll-dir</code></td>
@@ -706,46 +840,152 @@
 <td style="text-align: left;"><code>--poll-dir ~/data/observing_run</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--scale</code></td>
-<td style="text-align: left;">Display scaling algorithm (<code>linear</code>, <code>log</code>, <code>sqrt</code>, <code>asinh</code>, <code>histeq</code>)</td>
-<td style="text-align: left;"><code>linear</code></td>
-<td style="text-align: left;"><code>--scale log</code></td>
+<td style="text-align: left;"><code>--catalog</code></td>
+<td style="text-align: left;">Catalog to load into the Plot Catalog tool (text table or FITS table)</td>
+<td style="text-align: left;"><code>None</code></td>
+<td style="text-align: left;"><code>--catalog sources.fits</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--cmap</code></td>
-<td style="text-align: left;">Default colormap name (e.g. <code>viridis</code>, <code>cmc.oslo</code>, <code>grey</code>, <code>coolwarm</code>)</td>
-<td style="text-align: left;"><code>cmc.oslo</code></td>
-<td style="text-align: left;"><code>--cmap viridis</code></td>
+<td style="text-align: left;"><code>--catalog-hdu</code></td>
+<td style="text-align: left;">Table extension of a FITS catalog, by index or <code>EXTNAME</code></td>
+<td style="text-align: left;">first table</td>
+<td style="text-align: left;"><code>--catalog-hdu SOURCES</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--rot</code></td>
-<td style="text-align: left;">Image rotation angle in degrees (<code>0</code>, <code>90</code>, <code>180</code>, <code>270</code>)</td>
-<td style="text-align: left;"><code>0</code></td>
-<td style="text-align: left;"><code>--rot 90</code></td>
+<td style="text-align: left;"><code>--regions</code></td>
+<td style="text-align: left;">Region file to draw on startup — QuickLook 3 YAML or a ds9 <code>.reg</code>, detected from the contents</td>
+<td style="text-align: left;"><code>None</code></td>
+<td style="text-align: left;"><code>--regions targets.reg</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--flip</code></td>
-<td style="text-align: left;">Flip image horizontally</td>
+<td style="text-align: left;"><code>--install-cli</code></td>
+<td style="text-align: left;">Install the <code>quicklook3</code> shell launcher (see below) and exit</td>
 <td style="text-align: left;"><code>False</code></td>
-<td style="text-align: left;"><code>--flip</code></td>
-</tr>
-<tr>
-<td style="text-align: left;"><code>--ext</code></td>
-<td style="text-align: left;">Initial FITS HDU extension index to load</td>
-<td style="text-align: left;"><code>0</code></td>
-<td style="text-align: left;"><code>--ext 1</code></td>
-</tr>
-<tr>
-<td style="text-align: left;"><code>--collapse-mode</code></td>
-<td style="text-align: left;">Z-axis collapsing mode (<code>median</code>, <code>mean</code>, <code>sum</code>)</td>
-<td style="text-align: left;"><code>median</code></td>
-<td style="text-align: left;"><code>--collapse-mode mean</code></td>
+<td style="text-align: left;"><code>--install-cli</code></td>
 </tr>
 </tbody>
 </table>
+<p>Scaling, colormap, rotation and extension are set from the <strong>Display</strong> menu and the
+controls under the image rather than from flags.</p>
+<p><code>--catalog</code> and <code>--regions</code> load into the <em>first</em> window; anything that cannot be read is
+reported on stderr rather than in a dialog, so an automated launch is never left waiting on a
+modal window.</p>
+<h3 id="comparing-several-cubes">Comparing several cubes</h3>
+<p>Naming more than one file opens one window per file, cascaded, with any display flags applied to
+all of them:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>main.py<span class="w"> </span>s150531_a025002_Kn5_035.fits<span class="w"> </span>s150531_a026002_Kn5_035.fits<span class="w"> </span>--collapse-range<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="m">200</span>
+</code></pre></div>
+<p>Each window is independent: its own scaling, colormap, collapse range and its own Depth Plot,
+Statistics and other tool windows. More windows can be opened at any time with <strong>File ➔ New
+Window</strong> (⌘N / Ctrl+N) or <strong>File ➔ Open in New Window...</strong>, and <strong>File ➔ Close Window</strong> (⌘W /
+Ctrl+W) closes one without quitting the application. The <strong>Window</strong> menu lists every open window
+with its tool windows grouped underneath, and <strong>Bring All to Front</strong> raises the whole set.</p>
+<p>Opening a file from Finder, or running <code>quicklook3 cube.fits</code> while the application is already
+open, loads it into the window you used most recently — so it replaces the view you were last
+looking at, rather than one hidden behind it. Use <strong>Open in New Window...</strong> to keep both.</p>
+<hr />
+<h2 id="launching-like-ds9-the-quicklook3-command">🖥️ Launching Like ds9: the <code>quicklook3</code> Command</h2>
+<p>QuickLook 3 can be given a short name on your <code>PATH</code>, so a FITS file opens with one word
+from any directory:</p>
+<div class="highlight"><pre><span></span><code>quicklook3<span class="w"> </span>s150531_a025002_Kn5_035.fits
+quicklook3<span class="w"> </span>cube.fits<span class="w"> </span>--collapse-range<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="m">200</span><span class="w"> </span>--catalog<span class="w"> </span>sources.fits
+</code></pre></div>
+<h3 id="installing-the-launcher">Installing the launcher</h3>
+<p>Either way works, on macOS and on Linux:</p>
+<ul>
+<li><strong>From the running application</strong> — <strong>Help ➔ Install 'quicklook3' Command Line Tool...</strong>. This is
+  the easiest route if you installed a released binary, because the app already knows where
+  it lives. It shows you exactly what it proposes to do and writes nothing until you click
+  <strong>Install</strong>:</li>
+</ul>
+<div class="highlight"><pre><span></span><code>Install the &#39;quicklook3&#39; command line tool?
+
+Create:      /Users/you/.local/bin/quicklook3
+Which runs:  /Applications/QuickLook3.app/Contents/MacOS/QuickLook3
+
+To run it:   quicklook3 yourfile.fits
+To undo it:  rm /Users/you/.local/bin/quicklook3
+</code></pre></div>
+<ul>
+<li><strong>From a terminal</strong> — run the application with <code>--install-cli</code>. Passing the flag <em>is</em> the
+  confirmation, so this one installs directly, then prints the same summary:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="c1"># from a source checkout</span>
+uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>main.py<span class="w"> </span>--install-cli
+
+<span class="c1"># from an installed macOS bundle</span>
+/Applications/QuickLook3.app/Contents/MacOS/QuickLook3<span class="w"> </span>--install-cli
+
+<span class="c1"># from an unpacked Linux build</span>
+/opt/QuickLook3/QuickLook3<span class="w"> </span>--install-cli
+</code></pre></div>
+<p>The launcher goes into <code>/usr/local/bin</code> when that is writable, otherwise <code>~/.local/bin</code>
+(created if needed). Both routes name the exact file, and give you the <code>export PATH=...</code> line
+to add to your shell profile when that directory is not already on your <code>PATH</code>.</p>
+<h3 id="uninstalling">Uninstalling</h3>
+<p>Delete the file — nothing else is installed, and no settings are written:</p>
+<div class="highlight"><pre><span></span><code>rm<span class="w"> </span>~/.local/bin/quicklook3<span class="w">      </span><span class="c1"># or /usr/local/bin/quicklook3</span>
+</code></pre></div>
+<p>The exact path is shown both before the install (in the dialog) and after it, so you never
+have to guess which of the two it went to.</p>
+<p>What gets written is a two-line <code>sh</code> script that runs the application with <code>"$@"</code>, so it
+forwards every flag above and resolves relative paths against your current directory. It is
+a script rather than a symlink or a copy because a copied PyInstaller binary cannot find its
+own <code>_internal</code> directory. A file already at that name is never overwritten unless it was
+generated by QuickLook 3.</p>
+<div class="admonition warning">
+<p class="admonition-title">macOS: open the app once before using <code>quicklook3</code></p>
+<p>A bundle downloaded through a browser carries the <code>com.apple.quarantine</code> attribute, and
+macOS kills a quarantined program launched from a shell <strong>with no error message at all</strong>
+— <code>quicklook3 cube.fits</code> simply does nothing. Clear it by opening <code>QuickLook3.app</code> once from
+Finder (right-click ➔ <strong>Open</strong>) or with <code>xattr -cr /Applications/QuickLook3.app</code>. The
+generated launcher checks for this and prints the fix instead of failing silently.</p>
+<p>This applies again after every new download, until the app is signed and notarized.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Installing from the .dmg</p>
+<p>Drag <code>QuickLook3.app</code> to <code>/Applications</code> (or your home folder) <strong>before</strong> installing the
+launcher. Installing while the app is still running from the mounted disk image is
+refused, because that path disappears when the image is ejected.</p>
+</div>
+<hr />
+<h2 id="opening-fits-files-from-the-desktop">📂 Opening FITS Files from the Desktop</h2>
+<p>The macOS bundle registers itself as a viewer for <code>.fits</code>, <code>.fit</code>, <code>.fts</code> and <code>.fz</code> files,
+so QuickLook 3 appears in Finder's <strong>Open With</strong> menu, and a FITS file can be dropped onto
+the app or Dock icon. To make it the default for FITS, use Finder's <strong>Get Info ➔ Open with
+➔ Change All...</strong>; QuickLook 3 registers as an alternate handler and will not displace
+another viewer on its own.</p>
+<p>Two details worth knowing:</p>
+<ul>
+<li>Finder does not pass a double-clicked file as a command-line argument — it sends the
+  application an open-document event. This is handled while the app is running too, so
+  opening a second file from Finder loads it into the existing window.</li>
+<li><code>.fits.gz</code> cannot be registered: macOS matches only the final extension, and claiming
+  <code>.gz</code> would offer QuickLook 3 for every gzip file on the system. Open compressed cubes
+  through <strong>File ➔ Open...</strong> or <code>quicklook3 cube.fits.gz</code>, both of which handle them.</li>
+</ul>
+<p>On Linux, desktop integration is per-environment; the <code>quicklook3</code> launcher above is the supported
+route.</p>
 <hr />
 <h2 id="live-directory-polling-workflow">📡 Live Directory Polling Workflow</h2>
 <p>During observing runs at the telescope, raw data cubes or reduced frames are written continuously to disk. QuickLook 3 features a background directory polling service built on <code>watchdog</code>.</p>
+<p>The directory is <strong>scanned</strong> on an interval rather than watched for filesystem
+notifications. Kernel notification APIs (FSEvents, inotify) only report changes made on the
+local machine, so a DRP writing from another host onto an NFS share would go completely
+unnoticed. Scanning costs more but is the only approach that sees remote writes.</p>
+<p>Three consequences worth knowing:</p>
+<ul>
+<li><strong>A new file is displayed a few seconds after it lands</strong>, not instantly. The poller waits
+  for the file's size to stop changing, so a cube that is still being written is never
+  loaded half-complete.</li>
+<li><strong>When many files arrive at once</strong> — dragging in a night's frames, or a DRP flushing a
+  backlog — only the <strong>newest</strong> is displayed, instead of flashing each one on screen in
+  turn. A status bar message reports how many were skipped.</li>
+<li><strong>Scan cost grows with the number of files in the directory</strong>, and is markedly higher over
+  NFS. Raise the scan interval for a directory holding a whole run, and prefer watching a
+  per-night directory over an accumulating archive.</li>
+</ul>
+<p>The interval defaults to 2 seconds and is configurable in <strong>File ➔ Polling...</strong>.</p>
 <h3 id="enabling-directory-polling">Enabling Directory Polling</h3>
 <h4 id="option-a-via-command-line">Option A: Via Command Line</h4>
 <p>Start monitoring a folder immediately when launching PyQL3:</p>
@@ -754,7 +994,7 @@
 <h4 id="option-b-via-gui-menu">Option B: Via GUI Menu</h4>
 <ol>
 <li>Open QuickLook 3.</li>
-<li>Select <strong>File ➔ Directory Polling...</strong> from the top menu bar.</li>
+<li>Select <strong>File ➔ Polling...</strong> from the top menu bar.</li>
 <li>Click <strong>Browse...</strong> to pick the watch directory.</li>
 <li>Click <strong>Start Polling</strong>.</li>
 </ol>
@@ -762,6 +1002,12 @@
 <ul>
 <li>When a new file ending in <code>.fits</code> or <code>.fit</code> is created or moved into the watched directory, QuickLook 3 automatically loads the new dataset in real-time.</li>
 <li>Active analytical tools (Depth Plot, Profile Cuts, Statistics) automatically refresh to reflect the newly detected file.</li>
+<li>New frames load into <strong>the window that started the watch</strong>, and only that window. Opening
+  another window to look at something else will not divert the incoming frames to it.</li>
+<li>A directory is watched by <strong>one window at a time</strong>. Pointing a second window at a directory
+  another window is already watching asks first, and then <em>moves</em> the watch — new frames start
+  appearing in the second window instead of the first. Two simultaneous watches would scan the
+  directory twice and load every frame twice, which matters on a busy NFS share.</li>
 </ul>
 
 

@@ -647,6 +647,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#input-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Formats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#features-coordinate-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -720,6 +731,89 @@
       
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-regions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Regions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Regions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#drawing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drawing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#editing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#colours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Colours
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#labels-in-a-crowded-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labels in a crowded field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#saving-loading-and-ds9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving, loading and ds9
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#very-large-sets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Very large sets
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1135,6 +1229,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#input-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Formats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#features-coordinate-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1208,6 +1313,89 @@
       
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-regions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Regions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Regions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#drawing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drawing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#editing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#colours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Colours
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#labels-in-a-crowded-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labels in a crowded field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#saving-loading-and-ds9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving, loading and ds9
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#very-large-sets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Very large sets
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1338,8 +1526,28 @@ $<span class="arithmatex">\(\text{FWHM}_y = 2 \sqrt{2 \ln 2} \cdot \sigma_y \app
 <div class="arithmatex">\[D_{\text{result}}(x, y, z) = D_1(x, y, z) \odot D_2(x, y, z)\]</div>
 <hr />
 <h2 id="7-catalog-plotting-world-coordinate-overlay">7. Catalog Plotting &amp; World Coordinate Overlay</h2>
-<p>The <strong>Plot Catalog</strong> tool overlays external astronomical source catalogs (CSV, TXT, DAT) directly onto the 2D image plane or collapsed datacube slices.</p>
+<p>The <strong>Plot Catalog</strong> tool overlays external astronomical source catalogs directly onto the 2D image plane or collapsed datacube slices. Both text tables (CSV, TXT, DAT, ECSV, IPAC, ...) and FITS tables (<code>.fits</code>, <code>.fit</code>, <code>.fts</code>, and gzipped variants) are read.</p>
 <p><img alt="Plot Catalog" src="../images/catalog_tool.png" /></p>
+<h3 id="input-formats">Input Formats</h3>
+<p>Text catalogs are parsed by <code>astropy.io.ascii</code> in guess mode, so most delimited or
+fixed-width layouts load without configuration.</p>
+<p>For a <strong>FITS table</strong>, any binary (<code>BINTABLE</code>) or ASCII (<code>TABLE</code>) extension can be used:</p>
+<ul>
+<li>When the file holds more than one table extension, the tool asks which one to read; a
+  file with a single table loads without prompting. Tile-compressed image extensions are
+  not offered, even though FITS stores them as binary tables.</li>
+<li>Columns holding one value <em>per row per element</em> — a spectrum column, for instance — are
+  omitted, since a catalog overlay needs one scalar per source. The extension label next to
+  the filename reports how many were skipped.</li>
+<li>Undefined (<code>TNULL</code>) and masked coordinates are counted as unusable in the status line
+  rather than being plotted at the origin.</li>
+<li>Coordinate columns are guessed from the usual <code>photutils</code> and SExtractor spellings
+  (<code>xcentroid</code>/<code>ycentroid</code>, <code>X_IMAGE</code>/<code>Y_IMAGE</code>, <code>ALPHA_J2000</code>/<code>DELTA_J2000</code>, <code>RAJ2000</code>,
+  ...) in addition to plain <code>X</code>/<code>Y</code> and <code>RA</code>/<code>DEC</code>, and can always be overridden with the
+  column selectors.</li>
+</ul>
+<p>On the command line, <code>--catalog &lt;file&gt;</code> loads a catalog at startup and <code>--catalog-hdu
+&lt;index|EXTNAME&gt;</code> selects the FITS extension non-interactively.</p>
 <h3 id="features-coordinate-modes">Features &amp; Coordinate Modes</h3>
 <p>Astronomers can select between three coordinate modes:</p>
 <ol>
@@ -1367,13 +1575,176 @@ $<span class="arithmatex">\(\text{FWHM}_y = 2 \sqrt{2 \ln 2} \cdot \sigma_y \app
 </ol>
 <h4 id="c-interactive-highlighting-filtering">C. Interactive Highlighting &amp; Filtering</h4>
 <ul>
-<li><strong>Interactive Source Selection</strong>: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring.</li>
+<li><strong>Interactive Source Selection</strong>: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it.</li>
+<li><strong>Clearing a selection</strong>: press <strong>Escape</strong> in the table, use the <strong>Clear Selection</strong> button beside the search box, or pick <strong>Clear Selection</strong> from the row's right-click menu. The view stays where it is. (Qt's own way out of a single-selection table is ctrl-clicking the selected row, which few people find.)</li>
 <li><strong>Search &amp; Filter</strong>: Real-time text search filters the catalog table and dynamically updates plotted markers.</li>
 <li><strong>Custom Marker Styling</strong>: Supports customizable marker shapes (Circles, Squares, Triangles, Diamonds, Crosses), sizes, colors, and text labels.</li>
 </ul>
 <hr />
 <h2 id="8-fits-header-editor">8. FITS Header Editor</h2>
 <p>The <strong>Header Editor</strong> allows astronomers to view, search, add, or modify FITS header cards across all HDU extensions in memory. Changes can be saved back to a new FITS file.</p>
+<hr />
+<h2 id="9-regions">9. Regions</h2>
+<p>Regions are annotations drawn over the image — <strong>circles, boxes, arrows and text</strong> — in the manner
+of ds9. They can be saved and reloaded, exchanged with ds9 as <code>.reg</code> files, and handed to the
+Catalog tool.</p>
+<p>Everything lives under the <strong>Region</strong> menu; the same tools are available from a small vertical
+toolbar (<strong>Region ➔ Region Toolbar</strong>, off by default and remembered once chosen) and from the
+image's own right-click menu.</p>
+<h3 id="drawing">Drawing</h3>
+<table>
+<thead>
+<tr>
+<th>Shape</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Circle</td>
+<td>drag out from the centre</td>
+</tr>
+<tr>
+<td>Box</td>
+<td>drag between opposite corners</td>
+</tr>
+<tr>
+<td>Arrow</td>
+<td>drag from tail to head</td>
+</tr>
+<tr>
+<td>Text</td>
+<td>click where the label goes; the label is asked for afterwards</td>
+</tr>
+</tbody>
+</table>
+<p>Right-clicking the image offers <strong>New Region ➔ Circle / Box / Arrow / Text</strong>, which places a
+<strong>default-sized</strong> region on the pixel under the cursor without any dragging — usually quicker, since
+the size is easy to change afterwards.</p>
+<p>A region is moved by dragging it and resized from its handles. A <strong>text</strong> region has no separate
+marker: the text itself is the handle, so click, drag or right-click the words.</p>
+<h3 id="editing">Editing</h3>
+<p><strong>Double-click a region</strong> — or choose <strong>Properties…</strong> from its right-click menu, or from the Region
+List — to open an editor for everything it carries: position and size, angle, label, colour, line
+width, dashing, text size, tag, visibility, and a channel range.</p>
+<p>A <strong>channel range</strong> restricts a region to part of a cube, so a marker on an emission-line feature
+appears only across the channels where the feature is. This has no equivalent in ds9 and is dropped
+when exporting a <code>.reg</code> file, which the export report says.</p>
+<p><strong>Region ➔ Region List…</strong> shows every region in a table — type, position, size, angle, label, colour
+and visibility — editable in place. Double-click the <em>Colour</em> cell for a colour picker, or the
+<em>Type</em> cell for the full properties dialog. Right-click a row for <strong>Properties…</strong>, <strong>Zoom To</strong>,
+<strong>Colour…</strong>, <strong>Copy Coordinates</strong> and <strong>Delete</strong> — <em>Zoom To</em> is the way to find one region in a
+crowded field.</p>
+<h3 id="colours">Colours</h3>
+<p>Regions default to ds9's green. Note that this is the neon <code>#00ff00</code> ds9 draws, not the dark
+<code>#008000</code> that Qt and the SVG palette call "green": colour <em>names</em> are kept in the model and in
+saved files so they stay idiomatic, and are resolved to ds9's own RGB only for drawing.</p>
+<h3 id="labels-in-a-crowded-field">Labels in a crowded field</h3>
+<p>A region's <code>text</code> is drawn beside it. With a large catalogue that becomes a great deal of text, so:</p>
+<ul>
+<li>only labels inside the visible area are drawn — zoom in and more appear;</li>
+<li>labels are hidden while the view is panning and return once it settles;</li>
+<li><strong>Region ➔ Show Region Labels</strong> turns them off entirely, as the Catalog tool's <em>Show Names</em> does.</li>
+</ul>
+<h3 id="saving-loading-and-ds9">Saving, loading and ds9</h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Format</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Load Regions…</strong></td>
+<td>either format — the file's <em>contents</em> decide, so a ds9 file named <code>.yml</code> still loads</td>
+</tr>
+<tr>
+<td><strong>Save Regions As…</strong></td>
+<td>QuickLook 3 YAML, unless the name ends in <code>.reg</code></td>
+</tr>
+<tr>
+<td><strong>Export ds9 Regions…</strong></td>
+<td>ds9 <code>.reg</code>, whatever the name</td>
+</tr>
+</tbody>
+</table>
+<p>The native format is readable YAML that can be edited by hand:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pyql3-regions/1</span>
+<span class="nt">written_by</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">QuickLook 3 v3.0.19</span>
+<span class="nt">style</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">color</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">green</span>
+<span class="w">  </span><span class="nt">line_width</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">  </span><span class="nt">dash</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">  </span><span class="nt">font_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">12</span>
+<span class="nt">regions</span><span class="p">:</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">circle</span>
+<span class="w">  </span><span class="nt">x</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">31.5</span>
+<span class="w">  </span><span class="nt">y</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9.5</span>
+<span class="w">  </span><span class="nt">radius</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4.0</span>
+<span class="w">  </span><span class="nt">text</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">src A</span>
+<span class="w">  </span><span class="nt">z_range</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">120</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">180</span><span class="p p-Indicator">]</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">box</span>
+<span class="w">  </span><span class="nt">x</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20.0</span>
+<span class="w">  </span><span class="nt">y</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30.0</span>
+<span class="w">  </span><span class="nt">width</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6.0</span>
+<span class="w">  </span><span class="nt">height</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4.0</span>
+<span class="w">  </span><span class="nt">angle</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30.0</span>
+<span class="w">  </span><span class="nt">color</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">red</span>
+<span class="w">  </span><span class="nt">line_width</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">  </span><span class="nt">dash</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p>The <strong><code>style:</code> block is ds9's <code>global</code> line</strong>: it records the formatting the file was written with,
+and each region writes only what it does differently — the box above is red and dashed, the circle
+takes the file's green. Nothing about a region's appearance is left to whichever defaults the
+program happens to have when the file is read, and editing the one block restyles every region that
+did not override it.</p>
+<p>Geometry is stored in <strong>pixels</strong>, and when the image has a WCS the sky position is recorded
+alongside it — so the file holds every region in <strong>both frames at once</strong>, with <code>frame:</code> naming the
+one that was meant:</p>
+<div class="highlight"><pre><span></span><code><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">circle</span>
+<span class="w">  </span><span class="nt">x</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10.0</span>
+<span class="w">  </span><span class="nt">y</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9.0</span>
+<span class="w">  </span><span class="nt">radius</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span>
+<span class="w">  </span><span class="nt">frame</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sky</span><span class="w">          </span><span class="c1"># ...or image, which is written out too rather than left implied</span>
+<span class="w">  </span><span class="nt">sky</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">ra_deg</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">266.4171407868465</span>
+<span class="w">    </span><span class="nt">dec_deg</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-29.00776633506410</span>
+<span class="w">    </span><span class="nt">size_arcsec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.105</span>
+</code></pre></div>
+<p><code>frame: sky</code> means the same thing it does in ds9: the region is placed from its RA/Dec, so a set
+drawn on one dither lands on the same stars in the next, and a box keeps its orientation on the sky
+if the field is rotated. <code>frame: image</code> keeps the stored pixels instead, which is what something
+fixed to the detector wants.</p>
+<p><strong>Loading a file whose two frames disagree asks which to use</strong> — that is, a file drawn on a
+different pointing of the same field. The question names the difference ("3 region(s) sit up to
+20.4 pixel(s) apart in the two frames") and defaults to the frame the file was saved with. It is
+not asked when the two agree, which is every file loaded back onto the image it was drawn on: those
+regions come back exactly where they were. <code>--regions</code> at startup never asks; it takes the frame
+the file was saved with.</p>
+<p>Anything that moved, and anything that could not be placed because this image has no WCS, is said
+in the summary. A file saved with no WCS available has no sky positions to record and is always
+read back in pixels.</p>
+<p>ds9 export writes sky coordinates automatically when image coordinates would not line up — ds9's
+<code>image</code> frame always means FITS axes 1 and 2, while an OSIRIS cube is displayed on axes 3 and 2.
+Anything that cannot be carried across, in either direction, is listed in a summary rather than
+dropped in silence.</p>
+<p>On the way in, every frame ds9 writes is read: <code>image</code>, <code>physical</code>, and the sky frames <code>icrs</code>,
+<code>fk5</code>/<code>j2000</code>, <code>fk4</code>/<code>b1950</code>, <code>galactic</code> and <code>ecliptic</code>. A sky-frame file needs the image to have a
+WCS covering the two axes on display — with one, positions in any of those frames land on the right
+pixel, in decimal degrees or sexagesimal. <code>physical</code> is read as image coordinates: the two differ
+only for a file cut out of a larger one with IRAF <code>LTV</code>/<code>LTM</code> keywords, and that shift is not
+applied. Shapes QuickLook 3 does not draw — an ellipse, a compass, a ruler — are named in the
+summary, so a file never loads short without saying why.</p>
+<p><code>--regions FILE</code> loads a region file at startup, in either format.</p>
+<h3 id="very-large-sets">Very large sets</h3>
+<p>Above 500 regions the whole set is drawn as a single overlay instead of one item each: 20,000
+regions then load in about two seconds and 150 MB, against roughly two minutes and 1.2 GB. The
+trade is that individual regions can no longer be dragged or right-clicked — they are still listed,
+edited, saved and exported. The status bar says when this happens.</p>
+<p>For a large set, <strong>Region ➔ Send Regions to Plot Catalog…</strong> copies them into the
+<a href="#7-catalog-plotting-world-coordinate-overlay">Catalog tool</a>, which has a sortable table, a search
+box and row highlighting. It is a copy taken at that moment, not a live link.</p>
 
 
 

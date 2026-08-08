@@ -322,10 +322,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#downloads-version-v3018" class="md-nav__link">
+  <a href="#downloads-version-v3022" class="md-nav__link">
     <span class="md-ellipsis">
       
-        🚀 Downloads (Version v3.0.18)
+        🚀 Downloads (Version v3.0.22)
       
     </span>
   </a>
@@ -508,10 +508,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#downloads-version-v3018" class="md-nav__link">
+  <a href="#downloads-version-v3022" class="md-nav__link">
     <span class="md-ellipsis">
       
-        🚀 Downloads (Version v3.0.18)
+        🚀 Downloads (Version v3.0.22)
       
     </span>
   </a>
@@ -576,7 +576,7 @@
 <p>This tool is a replacement for the legacy IDL <code>qlook2</code> GUI for viewing and analyzing FITS data originally built for the OSIRIS instrument at the Keck Observatory. While QuickLook 3 is optimized for OSIRIS data, it works seamlessly with most IFU instruments including JWST NIRSpec IFU and Gemini NIFS.</p>
 <p><img alt="QuickLook 3 UI" src="images/hero.png" /></p>
 <hr />
-<h2 id="downloads-version-v3018">🚀 Downloads (Version v3.0.18)</h2>
+<h2 id="downloads-version-v3022">🚀 Downloads (Version v3.0.22)</h2>
 <p>Download the standalone compiled application for your operating system below. No Python installation is required.</p>
 <div id="download-loading" style="color: #666; font-style: italic; margin: 10px 0;">
     Fetching latest release from GitHub...
@@ -603,6 +603,21 @@
 </code></pre></div></li>
 </ol>
 </div>
+<div class="admonition tip">
+<p class="admonition-title">Launching from the terminal, and opening FITS files from Finder</p>
+<p>After dragging <code>QuickLook3.app</code> to your Applications folder, choose
+<strong>Help ➔ Install 'quicklook3' Command Line Tool...</strong> to get a <code>quicklook3</code> command on your <code>PATH</code>:</p>
+<div class="highlight"><pre><span></span><code>quicklook3<span class="w"> </span>cube.fits<span class="w"> </span>--collapse-range<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="m">200</span>
+</code></pre></div>
+<p>The dialog shows exactly where the command will be installed and how to remove it
+again (<code>rm</code> the one file it creates), and nothing is written until you agree.</p>
+<p>The bundle also registers as a viewer for <code>.fits</code>, <code>.fit</code>, <code>.fts</code> and <code>.fz</code>, so
+QuickLook 3 shows up in Finder's <strong>Open With</strong> menu.</p>
+<p>One ordering note: open the app from Finder at least once (or run the <code>xattr -cr</code> command
+above) before using <code>quicklook3</code>. macOS kills a freshly downloaded, quarantined app with no
+message when it is started from a shell. See the
+<a href="cli/#launching-like-ds9-the-quicklook3-command">Command Line Guide</a> for details.</p>
+</div>
 <hr />
 <h2 id="key-features">✨ Key Features</h2>
 <ul>
@@ -612,6 +627,8 @@
 <li><strong>Astronomical Coordinates:</strong> Integrates WCS pixel-to-world (RA/Dec) coordinate translations at your mouse pointer.</li>
 <li><strong>Advanced Scaling:</strong> Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling.</li>
 <li><strong>Analysis Tools:</strong> Features built-in region cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and Catalog Plotting.</li>
+<li><strong>ds9-Style Regions:</strong> Draw circles, boxes, arrows and text over the image, edit them from a properties dialog or a table, and save or load them as readable YAML or ds9 <code>.reg</code> files.</li>
+<li><strong>Several Cubes at Once:</strong> Open as many windows as you like (<strong>File ➔ New Window</strong>, or one per file on the command line). Each window has its own scaling, colormap and analysis tools, so two cubes can be compared side by side.</li>
 <li><strong>Live File Polling:</strong> Monitor a directory for incoming data files and automatically load them in real-time.</li>
 </ul>
 <hr />
