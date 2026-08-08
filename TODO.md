@@ -8,6 +8,17 @@
 - Zenodo integration of release versions so the tool is citeable
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
 # DONE
+- Background subtraction from a sky annulus in the Depth Plot, so each channel is an aperture
+  photometry measurement. The Depth Plot now opens on a circular aperture with an explicit
+  **Radius** box, combined with **Total**, and background subtraction defaults to an annulus whose
+  centre *is* the aperture's -- it follows every move and resize rather than being placed
+  separately -- with **Sky radii** inner/outer controls. Boundary pixels are weighted by the
+  fraction the circle covers, a NaN pixel reduces the aperture area instead of poisoning the
+  channel, and geometry that cannot be measured is reported rather than drawn as a flat line. The
+  independently placed background region remains, as a **Mode** the user selects. A background
+  *total* is offered only in that mode: subtracting a summed annulus per pixel would scale with
+  the annulus width. The arithmetic is Qt-free in `pyql3/core/spectral_photometry.py` and is
+  tested against the Aperture Photometry tool plane by plane, so the two tools cannot drift.
 - Draw regions on the view like ds9 — circles, boxes, arrows and text, under a **Region** menu with
   an optional vertical toolbar and a right-click **New Region** submenu that spawns a default-sized
   region where you clicked. Double-click for a properties dialog (colour, line width, dashing, text

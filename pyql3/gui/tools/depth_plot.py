@@ -5,7 +5,29 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
 from PySide6.QtCore import Qt, QDir
+from pyql3.core.spectral_photometry import (
+    ApertureError,
+    annulus_spectrum,
+    subtract_background,
+)
 from pyql3.gui.tools.base_tool import BaseToolDialog, as_center
+
+#: Opening aperture radius, in pixels.
+DEFAULT_APERTURE_RADIUS = 3.0
+
+#: The sky annulus is defined *relative to the aperture*, not as two free numbers: it starts
+#: one pixel outside the aperture and is two pixels wide. Keeping it a relationship rather
+#: than a pair of constants is what makes it survive a change of aperture -- an annulus left
+#: at fixed radii while the aperture grew would end up measuring sky from inside the source,
+#: which subtracts signal and looks like nothing went wrong.
+SKY_INNER_GAP = 1.0
+SKY_WIDTH = 2.0
+DEFAULT_INNER_RADIUS = DEFAULT_APERTURE_RADIUS + SKY_INNER_GAP
+DEFAULT_OUTER_RADIUS = DEFAULT_INNER_RADIUS + SKY_WIDTH
+
+#: Colour of the two sky rings. The same orange as the Background curve, so the annulus on
+#: the image and the line on the plot are visibly one thing.
+_RING_COLOR = (255, 140, 0)
 
 
 def latex_to_html(text):
@@ -94,15 +116,34 @@ class DepthPlotDialog(BaseToolDialog):
         top_layout.addWidget(QLabel("calc using:"))
         self.combo_calc = QComboBox()
         self.combo_calc.addItems(["Average", "Median", "Total"])
+        # Total by default: it is what "aperture photometry with a sky annulus" means, and
+        # it makes the background subtraction a single well-defined quantity
+        # (aperture_sum - background_level * aperture_area) rather than a per-pixel average
+        # whose meaning depends on how many pixels happened to fall in the aperture.
+        self.combo_calc.setCurrentText("Total")
         self.combo_calc.currentIndexChanged.connect(self.update_plot)
         top_layout.addWidget(self.combo_calc)
-        
+
         top_layout.addWidget(QLabel("Shape:"))
         self.combo_shape = QComboBox()
         self.combo_shape.addItems(["Rectangle", "Circle"])
+        # Circle by default, so the aperture has a centre and a radius and the annulus has
+        # something concentric to sit outside.
+        self.combo_shape.setCurrentText("Circle")
         self.combo_shape.currentIndexChanged.connect(self.toggle_roi_shape)
         top_layout.addWidget(self.combo_shape)
-        
+
+        top_layout.addWidget(QLabel("Radius:"))
+        self.spin_radius = QDoubleSpinBox()
+        self.spin_radius.setRange(0.5, 10000.0)
+        self.spin_radius.setDecimals(2)
+        self.spin_radius.setSingleStep(0.5)
+        self.spin_radius.setValue(DEFAULT_APERTURE_RADIUS)
+        self.spin_radius.setSuffix(" px")
+        self.spin_radius.setToolTip("Aperture radius. Resizes the circle on the image.")
+        self.spin_radius.valueChanged.connect(self.on_radius_changed)
+        top_layout.addWidget(self.spin_radius)
+
         top_layout.addStretch()
         self.layout.addLayout(top_layout)
         
@@ -212,8 +253,8 @@ class DepthPlotDialog(BaseToolDialog):
         region_layout.addWidget(QLabel("to"), 1, 2)
         region_layout.addWidget(self.spin_y1, 1, 3)
 
-        # Background Region GroupBox
-        self.group_bg = QGroupBox("BACKGROUND REGION")
+        # Background GroupBox
+        self.group_bg = QGroupBox("BACKGROUND")
         bg_layout = QGridLayout(self.group_bg)
 
         self.chk_enable_bg = QCheckBox("Enable Background Subtraction")
@@ -226,6 +267,44 @@ class DepthPlotDialog(BaseToolDialog):
         bg_layout.addWidget(QLabel("Calc using:"), 0, 2)
         bg_layout.addWidget(self.combo_bg_calc, 0, 3)
 
+        # Annulus by default. The independent "Region" box remains for a background that
+        # has to be measured somewhere specific -- an adjacent slit, a clean corner -- but
+        # a sky annulus concentric with the aperture is the usual case and is now the one
+        # you get without asking.
+        self.combo_bg_mode = QComboBox()
+        self.combo_bg_mode.addItems(["Annulus", "Region"])
+        self.combo_bg_mode.setCurrentText("Annulus")
+        self.combo_bg_mode.setEnabled(False)
+        self.combo_bg_mode.currentIndexChanged.connect(self.on_bg_mode_changed)
+
+        self.spin_r_in = QDoubleSpinBox()
+        self.spin_r_out = QDoubleSpinBox()
+        for spin, value, tip in ((self.spin_r_in, DEFAULT_INNER_RADIUS, "Inner sky radius"),
+                                 (self.spin_r_out, DEFAULT_OUTER_RADIUS, "Outer sky radius")):
+            spin.setRange(0.5, 10000.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.5)
+            spin.setValue(value)
+            spin.setSuffix(" px")
+            spin.setToolTip(tip)
+            spin.setEnabled(False)
+            spin.valueChanged.connect(self.on_annulus_changed)
+
+        bg_layout.addWidget(QLabel("Mode:"), 1, 0)
+        bg_layout.addWidget(self.combo_bg_mode, 1, 1)
+        bg_layout.addWidget(QLabel("Sky radii:"), 1, 2)
+
+        radii_row = QHBoxLayout()
+        radii_row.setContentsMargins(0, 0, 0, 0)
+        radii_row.addWidget(self.spin_r_in)
+        radii_row.addWidget(QLabel("to"))
+        radii_row.addWidget(self.spin_r_out)
+        bg_layout.addLayout(radii_row, 1, 3)
+
+        self.lbl_bg_info = QLabel("")
+        self.lbl_bg_info.setWordWrap(True)
+        bg_layout.addWidget(self.lbl_bg_info, 4, 0, 1, 4)
+
         self.spin_bg_x0 = QSpinBox(); self.spin_bg_x0.setRange(0, 10000); self.spin_bg_x0.setEnabled(False)
         self.spin_bg_x1 = QSpinBox(); self.spin_bg_x1.setRange(0, 10000); self.spin_bg_x1.setEnabled(False)
         self.spin_bg_y0 = QSpinBox(); self.spin_bg_y0.setRange(0, 10000); self.spin_bg_y0.setEnabled(False)
@@ -235,15 +314,18 @@ class DepthPlotDialog(BaseToolDialog):
         for spin in [self.spin_bg_x0, self.spin_bg_x1, self.spin_bg_y0, self.spin_bg_y1]:
             spin.valueChanged.connect(self.on_bg_spin_changed)
 
-        bg_layout.addWidget(QLabel("X Region:"), 1, 0)
-        bg_layout.addWidget(self.spin_bg_x0, 1, 1)
-        bg_layout.addWidget(QLabel("to"), 1, 2)
-        bg_layout.addWidget(self.spin_bg_x1, 1, 3)
-
-        bg_layout.addWidget(QLabel("Y Region:"), 2, 0)
-        bg_layout.addWidget(self.spin_bg_y0, 2, 1)
+        # Rows 2 and 3: the independent Region box. Row 1 above is the annulus.
+        self.lbl_bg_x = QLabel("X Region:")
+        self.lbl_bg_y = QLabel("Y Region:")
+        bg_layout.addWidget(self.lbl_bg_x, 2, 0)
+        bg_layout.addWidget(self.spin_bg_x0, 2, 1)
         bg_layout.addWidget(QLabel("to"), 2, 2)
-        bg_layout.addWidget(self.spin_bg_y1, 2, 3)
+        bg_layout.addWidget(self.spin_bg_x1, 2, 3)
+
+        bg_layout.addWidget(self.lbl_bg_y, 3, 0)
+        bg_layout.addWidget(self.spin_bg_y0, 3, 1)
+        bg_layout.addWidget(QLabel("to"), 3, 2)
+        bg_layout.addWidget(self.spin_bg_y1, 3, 3)
 
         # Add Cube Input Data and Background Region side-by-side
         regions_row_layout = QHBoxLayout()
@@ -299,13 +381,15 @@ class DepthPlotDialog(BaseToolDialog):
         else:
             center_x, center_y = 2, 2
             
-        # Must exist before the first update_plot(), which reads it
+        # Must exist before the first update_plot(), which reads them
         self.bg_roi = None
+        self.ring_inner = None
+        self.ring_outer = None
+        self._updating_radius = False
+        self._sky_radii_customised = False
 
-        roi = pg.RectROI([center_x - 2, center_y - 2], [4, 4], pen=pg.mkPen((0, 255, 0), width=3), hoverPen=pg.mkPen((0, 255, 0), width=5))
-        roi.addScaleHandle([1, 1], [0, 0])
-        roi.addScaleHandle([0, 0], [1, 1])
-        self.add_roi_to_viewer(roi)
+        r = DEFAULT_APERTURE_RADIUS
+        self.add_roi_to_viewer(self._build_roi([center_x - r, center_y - r], [r * 2, r * 2]))
         self.on_roi_changed()
 
         # Background-subtraction wiring belongs here, not in set_center(): the
@@ -430,8 +514,204 @@ class DepthPlotDialog(BaseToolDialog):
         self.spin_y0.setValue(y0)
         self.spin_y1.setValue(y0 + h)
         self._updating_spins = False
-        
+
+        # The aperture radius and the sky rings are derived from the ROI, so every path
+        # that moves or resizes it -- a drag, the spin boxes, set_center() from the
+        # right-click menu -- arrives here and they follow. That is the whole of "the
+        # annulus is not independent of the extraction region".
+        geometry = self.aperture_geometry()
+        if geometry is not None:
+            self._updating_radius = True
+            self.spin_radius.setValue(geometry[2])
+            self.track_aperture_radii(geometry[2])
+            self._updating_radius = False
+        self.sync_annulus_rings()
+
         self.update_plot()
+
+    # ------------------------------------------------------------ circular aperture
+
+    def _build_roi(self, pos, size):
+        """The source ROI for the currently selected shape."""
+        pen = pg.mkPen((0, 255, 0), width=3)
+        hover = pg.mkPen((0, 255, 0), width=5)
+        if self.combo_shape.currentText() == "Circle":
+            return pg.CircleROI(pos, size, pen=pen, hoverPen=hover)
+        roi = pg.RectROI(pos, size, pen=pen, hoverPen=hover)
+        roi.addScaleHandle([1, 1], [0, 0])
+        roi.addScaleHandle([0, 0], [1, 1])
+        return roi
+
+    def aperture_geometry(self):
+        """`(cx, cy, radius)` of the source ROI, in display pixels, or None without one.
+
+        The radius is the half-width of the shorter side, so a circle dragged out of square
+        still measures a circle -- the same rule `update_plot`'s rectangle path uses for its
+        mask, and the reason the two agree.
+        """
+        if self.roi is None:
+            return None
+        pos, size = self.roi.pos(), self.roi.size()
+        cx = pos.x() + size.x() / 2.0
+        cy = pos.y() + size.y() / 2.0
+        return cx, cy, min(size.x(), size.y()) / 2.0
+
+    def annulus_is_active(self):
+        """True when the background comes from a sky annulus rather than a free region."""
+        return (self.chk_enable_bg.isChecked()
+                and self.combo_bg_mode.currentText() == "Annulus"
+                and self.combo_shape.currentText() == "Circle")
+
+    def on_radius_changed(self):
+        """Resize the source ROI about its centre to match the radius spin box."""
+        if self._updating_radius or self.roi is None:
+            return
+        geometry = self.aperture_geometry()
+        if geometry is None:
+            return
+        cx, cy, current = geometry
+        r = self.spin_radius.value()
+        if abs(r - current) < 1e-6:
+            return
+        self.roi.blockSignals(True)
+        self.roi.setPos([cx - r, cy - r])
+        self.roi.setSize([r * 2, r * 2])
+        self.roi.blockSignals(False)
+        # The ROI's signals are blocked, so on_roi_changed() will not run and this path has
+        # to carry the annulus along itself.
+        self._updating_radius = True
+        self.track_aperture_radii(r)
+        self._updating_radius = False
+        self.sync_annulus_rings()
+        self.update_plot()
+
+    def track_aperture_radii(self, r_ap):
+        """Move the sky radii to sit just outside an aperture of `r_ap`.
+
+        Only until the user sets one themselves: after that the numbers they typed are the
+        ones that stay, because someone who has chosen an annulus has chosen it for a reason.
+        """
+        if self._sky_radii_customised:
+            return
+        self.spin_r_in.setValue(r_ap + SKY_INNER_GAP)
+        self.spin_r_out.setValue(r_ap + SKY_INNER_GAP + SKY_WIDTH)
+
+    def on_annulus_changed(self):
+        """Keep the two sky radii ordered, then redraw."""
+        if self._updating_radius:
+            return
+        # Reached only on a genuine edit -- every programmatic write is inside the guard --
+        # so this is where the annulus stops following the aperture.
+        self._sky_radii_customised = True
+        # An inner radius at or beyond the outer one is not a ring; push the outer one out
+        # rather than refusing the edit, so typing into either box always does something.
+        if self.spin_r_out.value() <= self.spin_r_in.value():
+            self._updating_radius = True
+            self.spin_r_out.setValue(self.spin_r_in.value() + self.spin_r_out.singleStep())
+            self._updating_radius = False
+        self.sync_annulus_rings()
+        self.update_plot()
+
+    def add_annulus_rings(self):
+        """Two concentric guides on the image. Not draggable: the aperture places them."""
+        self.remove_annulus_rings()
+        if self.image_viewer is None or getattr(self.image_viewer, 'imv', None) is None:
+            return
+
+        pen = pg.mkPen(_RING_COLOR, width=2, style=Qt.DashLine)
+        hover = pg.mkPen(_RING_COLOR, width=2, style=Qt.DashLine)
+        img_item = self.image_viewer.imv.getImageItem()
+        for name in ("ring_inner", "ring_outer"):
+            ring = pg.CircleROI([0, 0], [1, 1], pen=pen, hoverPen=hover,
+                                movable=False, resizable=False)
+            # The lone handle would offer a resize the model does not support.
+            try:
+                ring.removeHandle(0)
+            except Exception:
+                pass
+            if img_item is not None:
+                ring.setParentItem(img_item)
+            else:
+                self.image_viewer.imv.getView().addItem(ring)
+            setattr(self, name, ring)
+        self.sync_annulus_rings()
+
+    def remove_annulus_rings(self):
+        """Take the rings off the scene.
+
+        `removeItem` on the ViewBox, not `setParentItem(None)`: a parented item detached
+        that way stays painted (`BUGS.md` B7).
+        """
+        for name in ("ring_inner", "ring_outer"):
+            ring = getattr(self, name, None)
+            if ring is None:
+                continue
+            if self.image_viewer is not None:
+                try:
+                    self.image_viewer.imv.getView().removeItem(ring)
+                except Exception:
+                    pass
+                try:
+                    ring.setParentItem(None)
+                except Exception:
+                    pass
+            setattr(self, name, None)
+
+    def sync_annulus_rings(self):
+        """Centre the rings on the aperture and size them from the two radius spins."""
+        if self.ring_inner is None or self.ring_outer is None:
+            return
+        geometry = self.aperture_geometry()
+        if geometry is None:
+            return
+        cx, cy, _ = geometry
+        for ring, radius in ((self.ring_inner, self.spin_r_in.value()),
+                             (self.ring_outer, self.spin_r_out.value())):
+            ring.setPos([cx - radius, cy - radius])
+            ring.setSize([radius * 2, radius * 2])
+
+    def region_background_level(self, cube):
+        """Per-channel background from the independent region ROI, or None.
+
+        A circular aperture can still take its background from a box drawn elsewhere -- an
+        adjacent clean patch of sky -- so this exists for `Region` mode and returns the same
+        kind of per-channel level the annulus produces, to be applied by the same rule.
+        """
+        if self.bg_roi is None:
+            return None
+        _, x_len, y_len = cube.shape
+        pos, size = self.bg_roi.pos(), self.bg_roi.size()
+        x0, y0 = int(pos.x()), int(pos.y())
+        w, h = int(size.x()), int(size.y())
+
+        x0 = max(0, min(x0, x_len - 1))
+        y0 = max(0, min(y0, y_len - 1))
+        x1 = max(x0 + 1, min(x0 + w, x_len))
+        y1 = max(y0 + 1, min(y0 + h, y_len))
+
+        region = cube[:, x0:x1, y0:y1].astype(float, copy=True)
+        if region.size == 0:
+            return None
+
+        if self.combo_shape.currentText() == "Circle":
+            yy, xx = np.mgrid[:(x1 - x0), :(y1 - y0)]
+            cx, cy = (x1 - x0) / 2.0 - 0.5, (y1 - y0) / 2.0 - 0.5
+            r = min((x1 - x0) / 2.0, (y1 - y0) / 2.0)
+            region = np.where(((xx - cy) ** 2 + (yy - cx) ** 2) <= r ** 2, region, np.nan)
+
+        method = self.combo_bg_calc.currentText()
+        with np.errstate(invalid="ignore"):
+            if method == "Average":
+                return np.nanmean(region, axis=(1, 2))
+            if method == "Median":
+                return np.nanmedian(region, axis=(1, 2))
+            return np.nansum(region, axis=(1, 2))
+
+    def on_bg_mode_changed(self):
+        """Swap between a concentric annulus and an independent region."""
+        if not self.chk_enable_bg.isChecked():
+            return
+        self.toggle_background()
 
     def add_bg_roi(self):
         if self.bg_roi is not None:
@@ -485,22 +765,47 @@ class DepthPlotDialog(BaseToolDialog):
             self.bg_roi = None
 
     def toggle_background(self, state=None):
+        """Enable background subtraction, in whichever mode is selected.
+
+        The two modes are mutually exclusive on screen as well as in the arithmetic: an
+        annulus has no independent position, so its box spins are meaningless and the free
+        region ROI must not be left on the image beside it.
+        """
         checked = self.chk_enable_bg.isChecked()
-        if checked:
+        annulus = checked and self.annulus_is_active()
+
+        if checked and not annulus:
             if self.bg_roi is None:
                 self.add_bg_roi()
-            self.spin_bg_x0.setEnabled(True)
-            self.spin_bg_x1.setEnabled(True)
-            self.spin_bg_y0.setEnabled(True)
-            self.spin_bg_y1.setEnabled(True)
-            self.combo_bg_calc.setEnabled(True)
         else:
             self.remove_bg_roi()
-            self.spin_bg_x0.setEnabled(False)
-            self.spin_bg_x1.setEnabled(False)
-            self.spin_bg_y0.setEnabled(False)
-            self.spin_bg_y1.setEnabled(False)
-            self.combo_bg_calc.setEnabled(False)
+
+        if annulus:
+            if self.ring_inner is None:
+                self.add_annulus_rings()
+            else:
+                self.sync_annulus_rings()
+        else:
+            self.remove_annulus_rings()
+
+        self.combo_bg_calc.setEnabled(checked)
+        self.combo_bg_mode.setEnabled(checked)
+        for spin in (self.spin_r_in, self.spin_r_out):
+            spin.setEnabled(annulus)
+        for spin in (self.spin_bg_x0, self.spin_bg_x1, self.spin_bg_y0, self.spin_bg_y1):
+            spin.setEnabled(checked and not annulus)
+
+        # A background *total* means nothing when it is subtracted per pixel -- the number
+        # would scale with however wide the annulus was drawn. Offer it only for the region
+        # mode, which predates this and where users may rely on it.
+        total_index = self.combo_bg_calc.findText("Total")
+        if total_index >= 0:
+            item = self.combo_bg_calc.model().item(total_index)
+            if item is not None:
+                item.setEnabled(not annulus)
+            if annulus and self.combo_bg_calc.currentText() == "Total":
+                self.combo_bg_calc.setCurrentText("Median")
+
         self.update_plot()
 
     def on_bg_roi_changed(self):
@@ -541,6 +846,7 @@ class DepthPlotDialog(BaseToolDialog):
     def closeEvent(self, event):
         self.clear_line_overlays()
         self.remove_bg_roi()
+        self.remove_annulus_rings()
         super().closeEvent(event)
 
     def get_data_dir(self):
@@ -866,7 +1172,101 @@ class DepthPlotDialog(BaseToolDialog):
                 self.image_viewer.imv.getView().addItem(self.bg_roi)
             self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
 
+        # An annulus needs a circle to be concentric with. Leaving the mode set to Annulus
+        # over a rectangle would silently measure no background at all, so switching shape
+        # switches the background mode with it, visibly.
+        if self.chk_enable_bg.isChecked():
+            if shape != "Circle" and self.combo_bg_mode.currentText() == "Annulus":
+                self.combo_bg_mode.setCurrentText("Region")   # re-enters toggle_background
+            else:
+                self.toggle_background()
+
         self.update_plot()
+
+    def _draw_depth_curves(self, spectrum, bg_spectrum, subtracted_spectrum, z_len,
+                           center):
+        """Put the three spectra on the plot, against a wavelength axis when there is one.
+
+        Shared by the circular and rectangular extraction paths so that the WCS lookup,
+        the axis labelling and the DN/s -> Total DN multiplier are defined once. `center`
+        is the aperture centre in display pixels, which is what the wavelength solution is
+        evaluated at.
+        """
+        x_axis = np.arange(z_len)
+        wavelengths = None
+        cunit = ""
+        ctype = ""
+        
+        if self.image_viewer.wcs is not None and self.image_viewer.wcs_z_idx is not None:
+            wcs = self.image_viewer.wcs
+            z_idx = self.image_viewer.wcs_z_idx
+            ctype_raw = str(wcs.wcs.ctype[z_idx]).upper()
+            ctype = ctype_raw.split('-')[0] if '-' in ctype_raw else ctype_raw
+            
+            try:
+                cunit = str(wcs.wcs.cunit[z_idx]).strip()
+                if cunit.lower() == 'm':
+                    cunit = 'µm'
+            except Exception:
+                cunit = "µm"
+            
+            cx, cy = center
+
+            # Un-flip and un-rotate to get coords in transposed_data space. This used to
+            # be inlined here with one axis length used for both axes, which put the
+            # lookup at the wrong pixel for a rotated non-square plane (BUGS.md B13).
+            cx, cy = self.image_viewer.display_to_orig(cx, cy)
+
+            x_idx, y_idx = self.image_viewer.display_axis_indices()
+                
+            fixed_coords = np.zeros((z_len, wcs.naxis))
+            if wcs.naxis > max(x_idx, y_idx):
+                fixed_coords[:, x_idx] = cx
+                fixed_coords[:, y_idx] = cy
+            fixed_coords[:, z_idx] = np.arange(z_len)
+
+            try:
+                world = wcs.wcs_pix2world(fixed_coords, 0)
+                wavelengths = world[:, z_idx]
+                try:
+                    orig_cunit = str(wcs.wcs.cunit[z_idx]).strip().lower()
+                    if orig_cunit == 'm':
+                        wavelengths = wavelengths * 1e6
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"Warning: WCS pixel_to_world failed in DepthPlotDialog: {e}")
+                wavelengths = None
+
+        if wavelengths is not None and len(wavelengths) == z_len:
+            x_axis = wavelengths
+            self.current_wavelengths = wavelengths
+            self.current_wavelength_unit = cunit
+            
+            label = "Wavelength" if 'WAVE' in ctype else ctype
+            unit_str = f" ({cunit})" if cunit else ""
+            self.plot_widget.getAxis('bottom').setLabel(f"{label}{unit_str}")
+            
+            self.top_axis.wavelengths = wavelengths
+            self.plot_widget.showAxis('top')
+            self.plot_widget.getAxis('top').setLabel("Slice Index (pixels)")
+        else:
+            x_axis = np.arange(z_len)
+            self.current_wavelengths = None
+            self.current_wavelength_unit = ""
+            self.plot_widget.setLabel('bottom', "Slice Index (pixels)")
+            self.top_axis.wavelengths = None
+            self.plot_widget.hideAxis('top')
+        
+        mult = self.image_viewer.data_multiplier
+        self.plot_data.setData(x_axis, spectrum * mult)
+
+        if bg_spectrum is not None and subtracted_spectrum is not None:
+            self.plot_bg.setData(x_axis, bg_spectrum * mult)
+            self.plot_sub.setData(x_axis, subtracted_spectrum * mult)
+        else:
+            self.plot_bg.setData([], [])
+            self.plot_sub.setData([], [])
 
     def update_plot(self):
         if self.image_viewer is None or self.image_viewer.transposed_data is None:
@@ -900,11 +1300,60 @@ class DepthPlotDialog(BaseToolDialog):
         x1 = max(x0+1, min(x0+w, x_len))
         y1 = max(y0+1, min(y0+h, y_len))
         
+        if plot_type == "Depth Plot" and self.combo_shape.currentText() == "Circle":
+            # The circular path goes through pyql3/core/spectral_photometry.py so that the
+            # aperture is defined once -- with fractional edge pixels -- and means the same
+            # thing whether or not a background is being subtracted. See that module for
+            # what Total/Average/Median mean once a background level is involved.
+            spectrum, bg_spectrum, subtracted_spectrum = None, None, None
+            geometry = self.aperture_geometry()
+            annulus = self.annulus_is_active()
+            try:
+                if geometry is None:
+                    raise ApertureError("no aperture on the image")
+                cx, cy, r_ap = geometry
+                result = annulus_spectrum(
+                    cube, (cx, cy), r_ap,
+                    r_in=self.spin_r_in.value() if annulus else None,
+                    r_out=self.spin_r_out.value() if annulus else None,
+                    combine=calc_method,
+                    estimator=self.combo_bg_calc.currentText() if annulus else "Median")
+            except ApertureError as exc:
+                # A geometry that cannot be measured is reported, not drawn as a flat line
+                # that would be read as data.
+                self.lbl_bg_info.setText(f"<span style='color:#b00'>{exc}</span>")
+                self.plot_data.setData([], [])
+                self.plot_bg.setData([], [])
+                self.plot_sub.setData([], [])
+                return
+
+            spectrum, bg_spectrum, subtracted_spectrum = result.as_tuple()
+            if annulus:
+                self.lbl_bg_info.setText(
+                    f"Aperture {result.aperture_area:.1f} px², "
+                    f"sky annulus {result.annulus_pixels} px")
+            elif self.chk_enable_bg.isChecked():
+                # Circular aperture, background from the independent region. Applied by the
+                # same rule as the annulus so the two modes differ only in where the level
+                # was measured.
+                bg_spectrum = self.region_background_level(cube)
+                if bg_spectrum is not None:
+                    subtracted_spectrum = subtract_background(
+                        spectrum, bg_spectrum, calc_method, result.aperture_area)
+                self.lbl_bg_info.setText(f"Aperture {result.aperture_area:.1f} px²")
+            else:
+                self.lbl_bg_info.setText("")
+
+            self._draw_depth_curves(spectrum, bg_spectrum, subtracted_spectrum, z_len,
+                                    (cx, cy))
+            return
+
         if plot_type == "Depth Plot":
+            self.lbl_bg_info.setText("")
             region = cube[:, x0:x1, y0:y1].astype(float, copy=True)
             if region.size == 0:
                 return
-                
+
             # If circle, apply mask
             if self.combo_shape.currentText() == "Circle":
                 yy, xx = np.mgrid[:(x1-x0), :(y1-y0)]
@@ -961,82 +1410,9 @@ class DepthPlotDialog(BaseToolDialog):
                     else:
                         subtracted_spectrum = np.nansum(subtracted_region, axis=(1, 2))
                 
-            x_axis = np.arange(z_len)
-            wavelengths = None
-            cunit = ""
-            ctype = ""
-            
-            if self.image_viewer.wcs is not None and self.image_viewer.wcs_z_idx is not None:
-                wcs = self.image_viewer.wcs
-                z_idx = self.image_viewer.wcs_z_idx
-                ctype_raw = str(wcs.wcs.ctype[z_idx]).upper()
-                ctype = ctype_raw.split('-')[0] if '-' in ctype_raw else ctype_raw
-                
-                try:
-                    cunit = str(wcs.wcs.cunit[z_idx]).strip()
-                    if cunit.lower() == 'm':
-                        cunit = 'µm'
-                except Exception:
-                    cunit = "µm"
-                
-                cx, cy = x0 + w/2.0, y0 + h/2.0
+            self._draw_depth_curves(spectrum, bg_spectrum, subtracted_spectrum, z_len,
+                                    (x0 + w / 2.0, y0 + h / 2.0))
 
-                # Un-flip and un-rotate to get coords in transposed_data space. This used to
-                # be inlined here with one axis length used for both axes, which put the
-                # lookup at the wrong pixel for a rotated non-square plane (BUGS.md B13).
-                cx, cy = self.image_viewer.display_to_orig(cx, cy)
-
-                x_idx, y_idx = self.image_viewer.display_axis_indices()
-                    
-                fixed_coords = np.zeros((z_len, wcs.naxis))
-                if wcs.naxis > max(x_idx, y_idx):
-                    fixed_coords[:, x_idx] = cx
-                    fixed_coords[:, y_idx] = cy
-                fixed_coords[:, z_idx] = np.arange(z_len)
-
-                try:
-                    world = wcs.wcs_pix2world(fixed_coords, 0)
-                    wavelengths = world[:, z_idx]
-                    try:
-                        orig_cunit = str(wcs.wcs.cunit[z_idx]).strip().lower()
-                        if orig_cunit == 'm':
-                            wavelengths = wavelengths * 1e6
-                    except Exception:
-                        pass
-                except Exception as e:
-                    print(f"Warning: WCS pixel_to_world failed in DepthPlotDialog: {e}")
-                    wavelengths = None
-
-            if wavelengths is not None and len(wavelengths) == z_len:
-                x_axis = wavelengths
-                self.current_wavelengths = wavelengths
-                self.current_wavelength_unit = cunit
-                
-                label = "Wavelength" if 'WAVE' in ctype else ctype
-                unit_str = f" ({cunit})" if cunit else ""
-                self.plot_widget.getAxis('bottom').setLabel(f"{label}{unit_str}")
-                
-                self.top_axis.wavelengths = wavelengths
-                self.plot_widget.showAxis('top')
-                self.plot_widget.getAxis('top').setLabel("Slice Index (pixels)")
-            else:
-                x_axis = np.arange(z_len)
-                self.current_wavelengths = None
-                self.current_wavelength_unit = ""
-                self.plot_widget.setLabel('bottom', "Slice Index (pixels)")
-                self.top_axis.wavelengths = None
-                self.plot_widget.hideAxis('top')
-            
-            mult = self.image_viewer.data_multiplier
-            self.plot_data.setData(x_axis, spectrum * mult)
-
-            if bg_spectrum is not None and subtracted_spectrum is not None:
-                self.plot_bg.setData(x_axis, bg_spectrum * mult)
-                self.plot_sub.setData(x_axis, subtracted_spectrum * mult)
-            else:
-                self.plot_bg.setData([], [])
-                self.plot_sub.setData([], [])
-            
         elif plot_type == "Horizontal Cut":
             # Cut the plane that is actually on screen: in Boxcar or Z Range mode that is a
             # collapsed plane which exists in no single channel of the cube (B17).

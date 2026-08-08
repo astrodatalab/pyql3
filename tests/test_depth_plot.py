@@ -1,23 +1,25 @@
 import pytest
 import numpy as np
+import pyqtgraph as pg
 from PySide6.QtWidgets import QFileDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.depth_plot import DepthPlotDialog, latex_to_html
 
 
 def test_depth_plot_region_extraction(loaded_viewer):
-    """Test spectral cube depth plot spectrum calculation and background subtraction."""
+    """The independent-region background: still available, no longer the default."""
     dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
     dialog.combo_calc.setCurrentText("Median")
     dialog.update_plot()
     assert dialog.plot_widget is not None, "Plot widget None in DepthPlotDialog"
 
-    # Enable background subtraction
+    # Enable background subtraction over a free-standing region rather than an annulus.
     dialog.chk_enable_bg.setChecked(True)
-    dialog.toggle_background()
+    dialog.combo_bg_mode.setCurrentText("Region")
     dialog.combo_bg_calc.setCurrentText("Average")
     dialog.update_plot()
     assert dialog.bg_roi is not None, "Background ROI was not initialized"
+    assert dialog.ring_inner is None, "the annulus was left on the image beside the region"
     dialog.close()
 
 
@@ -30,6 +32,7 @@ def test_depth_plot_background_toggle_without_initial_center(loaded_viewer):
     """
     dialog = DepthPlotDialog(image_viewer=loaded_viewer)   # no initial_center
     assert dialog.bg_roi is None, "Background ROI should not exist before enabling"
+    dialog.combo_bg_mode.setCurrentText("Region")
 
     dialog.chk_enable_bg.setChecked(True)   # signal path only, no manual call
     assert dialog.bg_roi is not None, "Ticking the checkbox did not create the background ROI"
@@ -178,3 +181,250 @@ def test_depth_plot_export_button(loaded_viewer):
     assert scene.exportDialog is not None, "Export dialog was not created on scene"
     assert scene.exportDialog.isVisible(), "Export dialog is not visible after clicking Export... button"
     dialog.close()
+
+
+# --------------------------------------------------- circular aperture + sky annulus
+
+
+def test_the_defaults_are_a_circular_aperture_totalled(loaded_viewer):
+    """Total over a circle, because that is what an annulus subtraction is defined against."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert dialog.combo_shape.currentText() == "Circle"
+        assert dialog.combo_calc.currentText() == "Total"
+        assert dialog.combo_bg_mode.currentText() == "Annulus"
+        assert isinstance(dialog.roi, pg.CircleROI), "the source ROI is not a circle"
+        assert dialog.spin_radius.value() == pytest.approx(dialog.aperture_geometry()[2])
+    finally:
+        dialog.close()
+
+
+def test_enabling_the_background_draws_an_annulus_not_a_second_region(loaded_viewer):
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+
+        assert dialog.ring_inner is not None and dialog.ring_outer is not None
+        assert dialog.bg_roi is None, "an independent background region was created too"
+        assert dialog.spin_r_in.isEnabled() and dialog.spin_r_out.isEnabled()
+        assert not dialog.spin_bg_x0.isEnabled(), \
+            "the region box spins describe a region that no longer exists"
+
+        bg_x, bg_y = dialog.plot_bg.getData()
+        sub_x, _ = dialog.plot_sub.getData()
+        assert bg_x is not None and len(bg_x) > 0, "no background spectrum was plotted"
+        assert sub_x is not None and len(sub_x) > 0, "no subtracted spectrum was plotted"
+    finally:
+        dialog.close()
+
+
+def _ring_center(ring):
+    pos, size = ring.pos(), ring.size()
+    return pos.x() + size.x() / 2.0, pos.y() + size.y() / 2.0
+
+
+def test_the_annulus_follows_the_aperture_it_is_not_independent(loaded_viewer):
+    """The whole point of annulus mode: one centre, not two."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+
+        for target in [(15, 25), (30, 12), (20, 20)]:
+            dialog.set_center(target)
+            cx, cy, _ = dialog.aperture_geometry()
+            assert (cx, cy) == pytest.approx(target), "the aperture did not move"
+            assert _ring_center(dialog.ring_inner) == pytest.approx((cx, cy)), \
+                f"inner ring left behind at {target}"
+            assert _ring_center(dialog.ring_outer) == pytest.approx((cx, cy)), \
+                f"outer ring left behind at {target}"
+    finally:
+        dialog.close()
+
+
+def test_dragging_the_aperture_also_moves_the_annulus(loaded_viewer):
+    """set_center() is not the only way the ROI moves -- a drag emits sigRegionChanged."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.roi.setPos([31.0, 7.0])          # as a drag would
+
+        cx, cy, _ = dialog.aperture_geometry()
+        assert _ring_center(dialog.ring_inner) == pytest.approx((cx, cy))
+        assert _ring_center(dialog.ring_outer) == pytest.approx((cx, cy))
+    finally:
+        dialog.close()
+
+
+def test_the_radius_spin_resizes_the_aperture_about_its_centre(loaded_viewer):
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.spin_radius.setValue(7.5)
+        cx, cy, r = dialog.aperture_geometry()
+        assert r == pytest.approx(7.5)
+        assert (cx, cy) == pytest.approx((20.0, 20.0)), "resizing moved the aperture"
+    finally:
+        dialog.close()
+
+
+def test_the_sky_radii_size_the_rings(loaded_viewer):
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.spin_r_in.setValue(6.0)
+        dialog.spin_r_out.setValue(11.0)
+
+        assert dialog.ring_inner.size().x() == pytest.approx(12.0)
+        assert dialog.ring_outer.size().x() == pytest.approx(22.0)
+    finally:
+        dialog.close()
+
+
+def test_an_outer_radius_inside_the_inner_one_is_pushed_out(loaded_viewer):
+    """Refusing the edit would leave the box unresponsive; reordering keeps it usable."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.spin_r_in.setValue(20.0)
+        assert dialog.spin_r_out.value() > dialog.spin_r_in.value()
+    finally:
+        dialog.close()
+
+
+def test_a_background_total_is_unavailable_for_an_annulus(loaded_viewer):
+    """Per-pixel subtraction of a summed annulus would scale with the annulus width."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        index = dialog.combo_bg_calc.findText("Total")
+        assert not dialog.combo_bg_calc.model().item(index).isEnabled()
+        assert dialog.combo_bg_calc.currentText() == "Median"
+
+        dialog.combo_bg_mode.setCurrentText("Region")
+        assert dialog.combo_bg_calc.model().item(index).isEnabled(), \
+            "the region mode lost an option it always had"
+    finally:
+        dialog.close()
+
+
+def test_switching_to_a_rectangle_gives_up_the_annulus(loaded_viewer):
+    """An annulus has nothing to be concentric with once the aperture is a box."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        assert dialog.ring_inner is not None
+
+        dialog.combo_shape.setCurrentText("Rectangle")
+        assert dialog.ring_inner is None, "the rings outlived the circle"
+        assert dialog.combo_bg_mode.currentText() == "Region"
+        assert dialog.bg_roi is not None, "background was silently switched off"
+    finally:
+        dialog.close()
+
+
+def test_the_rings_are_taken_off_the_image_when_the_dialog_closes(loaded_viewer):
+    """`BUGS.md` B7: a parented item detached the wrong way stays painted."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    dialog.chk_enable_bg.setChecked(True)
+    rings = [dialog.ring_inner, dialog.ring_outer]
+    dialog.close()
+
+    scene_items = loaded_viewer.imv.getView().scene().items()
+    for ring in rings:
+        assert ring not in scene_items, "a sky ring was left on the image"
+    assert dialog.ring_inner is None and dialog.ring_outer is None
+
+
+def test_the_spectrum_does_not_depend_on_how_the_view_is_oriented(loaded_viewer):
+    """A circular aperture is invariant under flips and 90 degree steps; assert it.
+
+    This is the class of error `BUGS.md` B13/B14/B20 records three times over -- a
+    transform applied in the wrong order or with one axis length used for both.
+    """
+    reference = None
+    for flip in (False, True):
+        for rot in (0, 90, 180, 270):
+            loaded_viewer.flip, loaded_viewer.rot_angle = flip, rot
+            loaded_viewer.refresh_display()
+
+            dialog = DepthPlotDialog(image_viewer=loaded_viewer)
+            try:
+                ox, oy = 12.0, 17.0
+                dx, dy = loaded_viewer.orig_to_display(ox, oy)
+                dialog.set_center((dx, dy))
+                dialog.spin_radius.setValue(4.0)
+                dialog.chk_enable_bg.setChecked(True)
+                _, y = dialog.plot_sub.getData()
+                assert y is not None and len(y), f"no spectrum at flip={flip} rot={rot}"
+                if reference is None:
+                    reference = np.asarray(y)
+                else:
+                    assert np.asarray(y) == pytest.approx(reference, rel=1e-6, abs=1e-9), \
+                        f"spectrum changed under flip={flip} rot={rot}"
+            finally:
+                dialog.close()
+
+    loaded_viewer.flip, loaded_viewer.rot_angle = False, 0
+    loaded_viewer.refresh_display()
+
+
+def test_an_aperture_off_the_cube_says_so_instead_of_drawing_a_line(loaded_viewer):
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.set_center((5000, 5000))
+
+        x, _ = dialog.plot_data.getData()
+        assert x is None or len(x) == 0, "an unmeasurable aperture still drew a spectrum"
+        assert "overlap" in dialog.lbl_bg_info.text(), dialog.lbl_bg_info.text()
+    finally:
+        dialog.close()
+
+
+def test_the_sky_annulus_defaults_just_outside_the_aperture(loaded_viewer):
+    """Inner = aperture + 1, outer = inner + 2."""
+    from pyql3.gui.tools import depth_plot as dp_mod
+
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        r_ap = dialog.spin_radius.value()
+        assert dialog.spin_r_in.value() == pytest.approx(r_ap + dp_mod.SKY_INNER_GAP)
+        assert dialog.spin_r_out.value() == pytest.approx(
+            dialog.spin_r_in.value() + dp_mod.SKY_WIDTH)
+    finally:
+        dialog.close()
+
+
+def test_the_annulus_keeps_its_offset_when_the_aperture_grows(loaded_viewer):
+    """Fixed radii would end up measuring sky from inside an enlarged aperture."""
+    from pyql3.gui.tools import depth_plot as dp_mod
+
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        for r_ap in (6.0, 9.5, 2.0):
+            dialog.spin_radius.setValue(r_ap)
+            assert dialog.spin_r_in.value() == pytest.approx(r_ap + dp_mod.SKY_INNER_GAP), \
+                f"the annulus did not follow an aperture of {r_ap}"
+            assert dialog.spin_r_out.value() == pytest.approx(
+                r_ap + dp_mod.SKY_INNER_GAP + dp_mod.SKY_WIDTH)
+            assert dialog.spin_r_in.value() > r_ap, "sky is being measured inside the source"
+    finally:
+        dialog.close()
+
+
+def test_radii_the_user_typed_are_not_overwritten(loaded_viewer):
+    """Following the aperture is a default, not a policy."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.spin_r_in.setValue(12.0)
+        dialog.spin_r_out.setValue(18.0)
+
+        dialog.spin_radius.setValue(5.0)
+        assert dialog.spin_r_in.value() == pytest.approx(12.0), "overwrote a chosen radius"
+        assert dialog.spin_r_out.value() == pytest.approx(18.0)
+
+        dialog.set_center((25, 25))
+        assert dialog.spin_r_in.value() == pytest.approx(12.0), "a move reset the radii"
+    finally:
+        dialog.close()

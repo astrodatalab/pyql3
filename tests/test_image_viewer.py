@@ -458,6 +458,10 @@ def test_depth_plot_cuts_use_the_collapsed_plane(channel_cube, method, expected)
     assert np.isclose(on_screen, expected)
 
     dp = DepthPlotDialog(None, v)
+    # These assert how a *cut* aggregates across the ROI width. The `calc using`
+    # combo is shared with the Depth Plot, whose default is now Total, so say which
+    # one is meant rather than inheriting it.
+    dp.combo_calc.setCurrentText("Average")
     try:
         dp.roi.setPos(2, 2)
         dp.roi.setSize([6, 6])
@@ -482,6 +486,10 @@ def test_depth_plot_cuts_follow_boxcar(channel_cube):
     assert np.isclose(float(np.nanmean(v.imv.getImageItem().image)), 9.0)
 
     dp = DepthPlotDialog(None, v)
+    # These assert how a *cut* aggregates across the ROI width. The `calc using`
+    # combo is shared with the Depth Plot, whose default is now Total, so say which
+    # one is meant rather than inheriting it.
+    dp.combo_calc.setCurrentText("Average")
     try:
         dp.roi.setPos(2, 2)
         dp.roi.setSize([6, 6])
@@ -502,6 +510,10 @@ def test_depth_plot_cuts_still_follow_a_single_slice(channel_cube):
     v.slider_slice.setValue(13)
 
     dp = DepthPlotDialog(None, v)
+    # These assert how a *cut* aggregates across the ROI width. The `calc using`
+    # combo is shared with the Depth Plot, whose default is now Total, so say which
+    # one is meant rather than inheriting it.
+    dp.combo_calc.setCurrentText("Average")
     try:
         dp.roi.setPos(2, 2)
         dp.roi.setSize([6, 6])

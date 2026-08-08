@@ -219,7 +219,7 @@ Found under the **Plot** and **Analysis** menu bars:
   - **Large Sets**: Above 500 regions the set is drawn as one overlay — 20,000 load in about two seconds — with labels culled to the view, hidden while panning, and switchable off. **Region -> Send Regions to Plot Catalog...** hands a large set to the catalog tool for its table and search.
   - **CLI Auto-Load**: Pass `--regions <file>` on launch, in either format.
 * **1D Profile Cuts**: `Plot -> Horizontal Cut` / `Vertical Cut` / `Diagonal Cut` to generate 1D profile cuts with adjustable boxcar averaging.
-* **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis.
+* **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis. Extraction defaults to a circular aperture with an explicit radius, totalled per channel. Background subtraction defaults to a sky annulus concentric with that aperture — inner and outer radii are set directly, and the annulus follows the aperture rather than being placed separately — which makes each channel an aperture-photometry measurement. An independently placed background region remains available for a background that must be measured somewhere specific.
 * **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise.
 * **Surface Plot**: `Plot -> Surface` renders a 3D OpenGL surface mesh of the displayed image. Requires a working OpenGL context; without one the dialog reports that rather than failing.
 * **FITS Arithmetic**: `File -> Arithmetic...` performs addition, subtraction, division, and scalar scaling between open FITS datasets. The result opens in its own window.

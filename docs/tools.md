@@ -22,10 +22,60 @@ For a user-selected Region of Interest (ROI) containing spatial pixels $(x, y)$,
 * **Total (Sum)**:
   $$S(z) = \sum_{(x,y) \in \text{ROI}} I(x, y, z)$$
 
-#### B. Background Subtraction
-When **Enable Background Subtraction** is checked, a secondary background ROI is defined. The background spectrum $S_{\text{bg}}(z)$ is calculated using the selected background method (Median, Mean, or Total), and the background-subtracted spectrum is computed as:
+The tool opens on a **circular** aperture combined with **Total**, with an explicit
+**Radius** control beside the shape selector. That is the combination for which background
+subtraction has a single unambiguous definition (§B), and it is the same quantity the
+Aperture Photometry tool reports for one plane.
 
-$$S_{\text{subtracted}}(z) = S_{\text{signal}}(z) - S_{\text{bg}}(z)$$
+For a circular aperture the pixels on the boundary are weighted by the fraction $w_i$ of
+each pixel the circle covers, so $N = \sum_i w_i$ rather than a count of whole pixels. This
+matters at the small radii typical of an IFU field: a 3 px aperture quantised to whole
+pixels is wrong by several percent. A median cannot be weighted meaningfully, so the
+**Median** method instead uses the whole pixels whose centres fall inside.
+
+#### B. Background Subtraction
+Background subtraction estimates one background level $b(z)$ per channel and removes it from
+every pixel of the aperture before the pixels are combined. Two modes set where $b(z)$ is
+measured:
+
+* **Annulus** (default) — a sky annulus concentric with the extraction aperture, with inner
+  radius $r_{\text{in}}$ and outer radius $r_{\text{out}}$. The annulus is *not* independent:
+  its centre is the centre of the extraction circle and follows it whenever the aperture is
+  moved or resized. This is aperture photometry applied channel by channel.
+* **Region** — an independently placed and sized ROI, for a background that must be measured
+  somewhere specific.
+
+With $b(z)$ the level over the annulus (its **Median**, the default, or its **Average**) and
+$A = \sum_i w_i$ the aperture area:
+
+$$
+S_{\text{subtracted}}(z) =
+\begin{cases}
+\sum_i w_i\, I_i(z) \;-\; b(z)\,A & \text{Total} \\[4pt]
+\dfrac{\sum_i w_i\, I_i(z)}{A} \;-\; b(z) & \text{Average} \\[4pt]
+\operatorname{median}_i I_i(z) \;-\; b(z) & \text{Median}
+\end{cases}
+$$
+
+The **Total** line is the standard photometric estimator, $\text{aperture\_sum} -
+\text{median(annulus)} \times \text{area}$; the other two are the same quantity expressed per
+pixel. A background **Total** is offered only in Region mode: summing an annulus and then
+subtracting that sum from each pixel would scale with however wide the annulus happened to
+be drawn, so it is disabled for an annulus.
+
+A NaN pixel contributes to neither $\sum_i w_i I_i$ nor $A$, so a masked or dead pixel inside
+the aperture reduces the area rather than poisoning the channel. A channel that is entirely
+NaN within the annulus yields a NaN background for that channel alone. Geometry that cannot
+be measured at all — an aperture off the edge of the cube, $r_{\text{in}} \ge r_{\text{out}}$
+— is reported beneath the controls instead of being drawn as a flat line.
+
+Because the aperture is circular and the view transforms are flips and multiples of 90°, the
+extracted spectrum is invariant to how the image is currently oriented. Note that a circle in
+pixel space is a circle on sky only for square spatial pixels, which OSIRIS has and some
+instruments do not.
+
+The arithmetic lives in `pyql3/core/spectral_photometry.py`, which imports no Qt and is
+tested directly, including against the Aperture Photometry tool's independent implementation.
 
 #### C. Wavelength Primary X-Axis & Dual Axis Display
 When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths $\lambda$ ($\mu\text{m}$). The top X-axis (`PixelIndexAxis`) dynamically renders the corresponding 0-indexed channel slice numbers ($z \in [0, N-1]$). 
