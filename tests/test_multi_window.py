@@ -15,6 +15,8 @@ Windows here are deliberately constructed without `show()`: an unshown window is
 the active window, so `most_recent()` is decided by the recorded order rather than by
 whatever the offscreen platform decides to activate.
 """
+import os
+
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
@@ -224,16 +226,28 @@ def test_only_one_poller_watches_a_directory(qapp, tmp_path):
 
 
 def test_watch_ownership_compares_canonical_paths(qapp, tmp_path):
-    """A trailing slash or a symlink is the same directory, and must collide."""
-    link = tmp_path / "link"
-    link.symlink_to(tmp_path / "real", target_is_directory=True)
+    """A trailing slash, a symlink or a change of case is the same directory, and must collide."""
     (tmp_path / "real").mkdir(exist_ok=True)
+
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        # Windows refuses this with WinError 1314 unless the process holds
+        # SeCreateSymbolicLinkPrivilege (Developer Mode, or an elevated shell). The trailing
+        # separator and the case fold below still cover the canonicalisation there.
+        link = None
 
     poller = DirectoryPoller()
     try:
         poller.start_polling(str(tmp_path / "real") + "/")
-        assert watcher_of(str(link)) is poller
-        assert watcher_of(str(tmp_path / "real")) is poller
+        assert watcher_of(str(tmp_path / "real")) is poller, "trailing separator"
+        if link is not None:
+            assert watcher_of(str(link)) is poller, "symlink"
+        if os.path.normcase("A") == "a":
+            # Only where the filesystem really is case-insensitive to the path API, which is
+            # Windows -- `normcase` is a no-op on macOS even on a case-insensitive volume.
+            assert watcher_of(str(tmp_path / "real").upper()) is poller, "change of case"
     finally:
         poller.stop_polling()
 

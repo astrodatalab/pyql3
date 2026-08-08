@@ -1642,6 +1642,61 @@ the library's `ds9_frame_map`, with a test asserting the two tables stay equal.
 A vector line that does not parse is now reported instead of silently dropped, and an arrow in a
 frame that cannot be placed (`wcsa`, `detector`) is refused rather than read as pixels.
 
+## M22. The Windows release build hung for its full six-hour limit
+
+- **Status:** ✅ FIXED — `tests/test_file_open.py` (the `shell_launcher_only` marker and
+  `test_on_windows_the_action_explains_itself_instead_of_prompting`) and
+  `.github/workflows/release.yml` (`timeout-minutes`)
+- **Severity:** high — no Windows binary could be released at all, and the failure took six
+  hours to report
+- **Reported by CI**, on the Windows leg of the release workflow.
+
+### Symptom
+
+`Run Unit Tests (Non-Linux)` stopped on
+`tests/test_file_open.py::test_the_menu_action_installs_nothing_until_the_user_agrees` and
+produced no further output. GitHub cancelled the job at its six-hour default
+(`Error: The operation was canceled.`). macOS and Linux passed the same test in
+milliseconds.
+
+### Root cause
+
+`cli_install.plan()` refuses on Windows — there is no shell launcher to write — and it
+refuses *first*, before anything else in the function:
+
+```python
+if sys.platform.startswith('win'):
+    raise CliInstallError("Installing a shell launcher is only supported on macOS and Linux.")
+```
+
+`MainWindow.install_cli_tool()` catches that and calls `QMessageBox.warning(...)`, which is
+modal. The test stubbed `confirm_cli_install` — as `AGENTS.md` requires — but that hook is
+reached only *after* a successful plan, so on Windows it was never called and the real
+warning dialog opened with nothing to dismiss it. Offscreen makes no difference: a modal
+`exec` blocks whether or not anything is drawn. Reproduced locally by forcing
+`cli_install.sys.platform = 'win32'`.
+
+Three more tests in the same file had the same shape: two hung identically, and
+`test_a_write_failure_after_confirmation_is_reported` would have failed on the message text.
+None had ever run on Windows, because the suite never got past the first hang.
+`tests/test_cli_install.py` was already skipped whole on Windows for exactly this reason —
+the GUI half of the feature was simply missed.
+
+The six hours are a separate fault: `release.yml` set no `timeout-minutes`, so any hang runs
+to GitHub's default.
+
+### Fix
+
+The four tests that reach the real `plan()` now carry a `shell_launcher_only` skip marker,
+matching the module-level skip in `tests/test_cli_install.py`. Windows behaviour is covered
+rather than merely skipped: a new test patches `cli_install.sys.platform`, stubs
+`QMessageBox.warning`, and asserts the action explains itself and never asks for
+confirmation — so it runs on every platform, which is what would have caught this.
+
+`timeout-minutes: 45` on the build job and `20` on each test step cap the blast radius: a
+full build is well under fifteen minutes, so the next hang of any kind is reported in a
+quarter of an hour instead of six hours.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |
@@ -1656,6 +1711,9 @@ frame that cannot be placed (`wcsa`, `detector`) is refused rather than read as 
 | M8 | `advanced_plots.py:48`, `fitting.py:243` | `np.nan_to_num(data, nan=np.nanmedian(data))` warns and yields NaN for an all-NaN region. | Guard with `np.all(np.isnan(...))` and substitute 0. |
 | M9 | `advanced_plots.py:134-138` | `ContourDialog.update_plot` returns early when *Show Contours* is unchecked, before `clear_contours()`, so contours from a previous slice can linger. | Clear first, then return. |
 | M11 | ✅ FIXED — `main_window.py` | `create_menus` kept its `QMenu` objects in locals only, so nothing held a Python reference. Harmless while unwrapped, but any code calling `action.menu()` becomes a transient Python owner and PySide6 deletes the C++ menu **and every QAction in it** when that wrapper is collected. Confirmed while writing the Phase 4 region-menu tests: a helper that walked `menuBar().actions()` and called `.menu()` got back an action that was already dead. | Done: every menu is now stored on `self` (`self.file_menu`, `self.display_menu`, `self.scaling_menu`, `self.colormap_menu`, `self.units_menu`, `self.plot_menu`, `self.analysis_menu`, `self.region_menu`, `self.help_menu`, joining `self.window_menu` and `self.recent_menu`). **Reach a menu through its attribute, never through `action.menu()`** — see `tests/test_region_ui.py::menu_action`. |
+| M23 | ✅ FIXED — `.github/workflows/release.yml`, `build_app.sh` | The packaged-asset check globbed `dist/**/regions/_geometry/*`, which the `__init__.py` and the `tests/` directory collected alongside the extensions already satisfy — so it passed on a build containing **no compiled `_geometry` extension at all**, which is the only thing `collect_all('regions')` is there for. Verified by running the step against a `dist/` tree holding just `_geometry/__init__.py`: it reported success. Found while auditing the Windows build (`M22`), where the extensions are `.pyd`. | Done: both copies now filter on `importlib.machinery.EXTENSION_SUFFIXES`, so only a real `.so`/`.pyd` counts. Re-verified against fake `dist/` trees with and without one. |
+| M24 | ✅ FIXED — `poller.py` (`_watch_key`) | The canonical watch key was `realpath(abspath(expanduser(path)))` with no `normcase`. On Windows `C:\Data\OSIRIS` and `c:\data\osiris` are one directory but two keys, so two windows could each start a `PollingObserver` over it — the double scan traffic and double load that `watcher_of` exists to prevent. | Done: `os.path.normcase` on the result, a no-op on POSIX. `tests/test_multi_window.py::test_watch_ownership_compares_canonical_paths` asserts the case fold where `normcase` actually folds. |
+| M25 | ✅ FIXED — `build_app.bat` | The Windows build script ran `uv add --dev pyinstaller pillow`, which re-resolves and rewrites `uv.lock` — the exact hazard removed from `release.yml`, still present for anyone building on Windows. Both packages are already in the locked `dev` group. | Done: `uv sync --frozen`. |
 | M10 | `header_editor.py:104-136` | `apply_table_edits` writes back *every* row, including structural cards (`SIMPLE`, `BITPIX`, `NAXIS*`), and coerces types by string-parsing, so `'2.0'` string values silently become floats. | Only write rows whose text differs from the original card, and skip the structural keywords. |
 
 ---

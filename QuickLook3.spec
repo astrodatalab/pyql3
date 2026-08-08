@@ -11,7 +11,7 @@ tmp_ret = collect_all('photutils')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('cmcrameri')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-# ds9 region import/export. `regions` carries seven compiled `_geometry` extensions that
+# ds9 region import/export. `regions` carries six compiled `_geometry` extensions that
 # PyInstaller does not find from the imports alone; the build verification greps for them.
 tmp_ret = collect_all('regions')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

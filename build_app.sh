@@ -20,10 +20,15 @@ found_cmc = list(dist_dir.glob('**/cmcrameri*')) + list(dist_dir.glob('**/cmc*')
 if not found_cmc:
     print('ERROR: No cmcrameri assets found in dist build artifact!')
     sys.exit(1)
-# ds9 region support: seven compiled extensions PyInstaller only picks up via collect_all.
-found_regions = list(dist_dir.glob('**/regions/_geometry/*'))
+# ds9 region support: six compiled extensions PyInstaller only picks up via collect_all.
+# Match the extension suffix, not just the directory -- a bare '_geometry/*' glob is
+# satisfied by the __init__.py and tests/ collected beside them, so it would pass on a
+# build with no compiled extension in it at all.
+import importlib.machinery
+found_regions = [p for p in dist_dir.glob('**/regions/_geometry/*')
+                 if p.suffix in importlib.machinery.EXTENSION_SUFFIXES]
 if not found_regions:
-    print('ERROR: No regions/_geometry extensions found in dist build artifact!')
+    print('ERROR: No compiled regions/_geometry extensions found in dist build artifact!')
     sys.exit(1)
 print('ALL PACKAGED ASSETS VERIFIED SUCCESSFULLY!')
 "

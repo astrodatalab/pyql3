@@ -5,11 +5,22 @@ open-document event. These tests use real `QFileOpenEvent`s delivered through th
 QApplication, which is the only thing that proves the filter is installed correctly.
 """
 
+import sys
+
 import pytest
 from PySide6.QtCore import QEvent, QUrl
 from PySide6.QtGui import QFileOpenEvent
 
 from pyql3.gui.file_open import FileOpenHandler
+
+# `cli_install.plan()` refuses outright on Windows, where there is no shell launcher to
+# write, so a test that stubs only the *later* steps gets the real "unsupported platform"
+# QMessageBox instead -- a modal with nothing to close it, which hangs the run until the
+# CI job is killed. Every test that reaches the real `plan()` is therefore macOS/Linux
+# only, matching the module-level skip in tests/test_cli_install.py; the Windows behaviour
+# is covered by its own test below.
+shell_launcher_only = pytest.mark.skipif(
+    sys.platform.startswith('win'), reason="the shell launcher is macOS/Linux only")
 
 
 def test_paths_arriving_before_the_window_exists_are_queued():
@@ -134,6 +145,7 @@ def test_the_install_cli_menu_action_is_present_except_on_windows(qapp, monkeypa
         win.close()
 
 
+@shell_launcher_only
 def test_the_menu_action_installs_nothing_until_the_user_agrees(qapp, monkeypatch, tmp_path):
     """The dangerous version of this feature wrote an executable on the first click."""
     from pyql3.gui.main_window import MainWindow
@@ -158,6 +170,7 @@ def test_the_menu_action_installs_nothing_until_the_user_agrees(qapp, monkeypatc
     assert not target.parent.exists(), "declining still created the directory"
 
 
+@shell_launcher_only
 def test_the_menu_action_installs_exactly_what_was_confirmed(qapp, monkeypatch, tmp_path):
     from pyql3.gui.main_window import MainWindow
     from pyql3.services import cli_install
@@ -182,6 +195,35 @@ def test_the_menu_action_installs_exactly_what_was_confirmed(qapp, monkeypatch, 
     assert installed.is_file()
     assert agreed_to[0].path == installed, "installed somewhere other than what was shown"
     assert str(installed) in reported[0] and f"rm {installed}" in reported[0]
+
+
+def test_on_windows_the_action_explains_itself_instead_of_prompting(qapp, monkeypatch):
+    """Windows has no shell launcher, and the refusal must not reach a modal dialog.
+
+    The menu item is not built on Windows, but `install_cli_tool` is still callable --
+    and every step after `plan()` is skipped, so a test stubbing only `confirm_cli_install`
+    hits the real `QMessageBox.warning`. That hung the Windows CI run for its full
+    six-hour limit.
+    """
+    from pyql3.gui.main_window import MainWindow
+    from pyql3.services import cli_install
+
+    monkeypatch.setattr(cli_install.sys, 'platform', 'win32')
+    asked = []
+    monkeypatch.setattr(MainWindow, 'confirm_cli_install',
+                        lambda self, proposed: asked.append(proposed) or True)
+    shown = []
+    monkeypatch.setattr('pyql3.gui.main_window.QMessageBox.warning',
+                        lambda parent, title, text: shown.append(text))
+
+    win = MainWindow()
+    try:
+        win.install_cli_tool()
+    finally:
+        win.close()
+
+    assert len(shown) == 1 and 'macOS and Linux' in shown[0]
+    assert asked == [], "asked the user to confirm something the platform cannot do"
 
 
 def test_the_confirmation_dialog_states_the_path_the_command_and_the_undo(qapp, tmp_path):
@@ -287,6 +329,7 @@ def test_an_impossible_install_is_reported_before_any_dialog(qapp, monkeypatch):
     assert asked == [], "asked the user to confirm something that cannot be done"
 
 
+@shell_launcher_only
 def test_a_write_failure_after_confirmation_is_reported(qapp, monkeypatch, tmp_path):
     """The plan can succeed and the write still fail -- a race, or a permissions change."""
     from pyql3.gui.main_window import MainWindow
@@ -313,6 +356,7 @@ def test_a_write_failure_after_confirmation_is_reported(qapp, monkeypatch, tmp_p
     assert shown == ["Cannot write /somewhere/quicklook3"]
 
 
+@shell_launcher_only
 def test_the_success_message_repeats_the_path_setup_when_one_is_needed(qapp, monkeypatch,
                                                                       tmp_path):
     from pyql3.gui.main_window import MainWindow

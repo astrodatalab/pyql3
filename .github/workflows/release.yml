@@ -20,6 +20,10 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # A test that opens an unstubbed modal dialog blocks forever, and with no timeout set
+    # the job runs to GitHub's six-hour default before anyone finds out. A full build is
+    # well under fifteen minutes, so a hang is reported in a quarter of an hour instead.
+    timeout-minutes: 45
     strategy:
       matrix:
         include:
@@ -69,12 +73,14 @@ jobs:
 
       - name: Run Unit Tests (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 20
         run: xvfb-run --auto-servernum uv run pytest -v
         env:
           QT_QPA_PLATFORM: offscreen
 
       - name: Run Unit Tests (Non-Linux)
         if: runner.os != 'Linux'
+        timeout-minutes: 20
         run: uv run pytest -v
 
       - name: Build with PyInstaller
@@ -97,12 +103,18 @@ jobs:
               print('ERROR: No cmcrameri assets found in dist build artifact!')
               sys.exit(1)
 
-          # ds9 region support: seven compiled extensions that PyInstaller only picks up
-          # via collect_all('regions') in the spec.
-          found_regions = list(dist_dir.glob('**/regions/_geometry/*'))
+          # ds9 region support. The point of collect_all('regions') is the *compiled*
+          # _geometry extensions, so match on the extension suffix -- '_geometry/*' also
+          # matches the plain .py files collected alongside them (and the ones in
+          # _geometry/tests/), which would let the check pass on a build with no
+          # extensions in it at all. Suffix differs by platform: .pyd on Windows, .so
+          # elsewhere.
+          import importlib.machinery
+          found_regions = [p for p in dist_dir.glob('**/regions/_geometry/*')
+                           if p.suffix in importlib.machinery.EXTENSION_SUFFIXES]
           print('Found regions extensions in dist:', [str(p) for p in found_regions])
           if not found_regions:
-              print('ERROR: No regions/_geometry extensions found in dist build artifact!')
+              print('ERROR: No compiled regions/_geometry extensions found in dist build artifact!')
               sys.exit(1)
           print('ALL PACKAGED ASSETS VERIFIED SUCCESSFULLY IN DIST BUILD!')
           "

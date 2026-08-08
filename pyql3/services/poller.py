@@ -54,8 +54,16 @@ _watches = {}
 
 
 def _watch_key(path):
-    """Canonical form of a directory path, so two spellings of one directory collide."""
-    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    """Canonical form of a directory path, so two spellings of one directory collide.
+
+    `normcase` is what makes this hold on Windows, where the filesystem is case-insensitive
+    and the separator can be written either way: `C:/Data/OSIRIS` and `c:\\data\\osiris` are
+    one directory, and without folding them together each would get its own poller over it --
+    exactly the double-scan-and-double-load this key exists to prevent. It is a no-op on
+    POSIX, where the two spellings really are different directories.
+    """
+    return os.path.normcase(
+        os.path.realpath(os.path.abspath(os.path.expanduser(path))))
 
 
 def watcher_of(path):

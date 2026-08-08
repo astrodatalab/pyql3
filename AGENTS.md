@@ -362,11 +362,16 @@ Windows. Always build with `uv run pyinstaller --noconfirm QuickLook3.spec` — 
 
 - Line lists (`pyql3/data/*.txt`), `pyql3/icon.png`, `cmcrameri` colormaps, `photutils`, and
   `regions` must be registered in the spec via `datas` / `collect_all()`. `regions` carries
-  seven compiled `_geometry` extension modules that PyInstaller's analysis does not find on its
-  own, so ds9 import/export fails only in the frozen build if they are dropped.
+  six compiled `_geometry` extension modules (`regions` 0.12) that PyInstaller's analysis does
+  not find on its own, so ds9 import/export fails only in the frozen build if they are dropped.
+  They arrive through `collect_all`'s **hiddenimports**, not its binaries — `collect_dynamic_libs`
+  returns nothing for them.
 - Both `build_app.sh` and CI run an explicit verification step that greps `dist/` for the
   bundled `*lines.txt`, `cmcrameri` and `regions/_geometry` assets before archiving. Keep that
-  check in place.
+  check in place, and keep it matching on the **extension suffix**
+  (`importlib.machinery.EXTENSION_SUFFIXES`; `.pyd` on Windows, `.so` elsewhere): a bare
+  `regions/_geometry/*` glob is satisfied by the `__init__.py` and the `tests/` directory
+  collected alongside them, so it passes on a build containing no compiled extension at all.
 - Runtime resource lookups must go through `pyql3.get_resource_path()`, which handles the
   frozen `sys._MEIPASS` case.
 - Headless Linux CI needs system libs (`libegl1`, `libgl1`, `libglx-mesa0`, `libgl1-mesa-dri`,
@@ -401,7 +406,13 @@ executable onto `PATH` on a single click, before saying where, is not acceptable
 skips the prompt because typing the flag is the consent, but prints the same summary.
 
 Any test that calls `MainWindow.install_cli_tool()` must stub `confirm_cli_install`, or the
-real modal dialog blocks the suite forever.
+real modal dialog blocks the suite forever. **That is not sufficient on Windows**, where
+`plan()` refuses before the confirmation hook is ever reached and the refusal goes to
+`QMessageBox.warning` — a modal with nothing to close it, offscreen or not. A test driving
+the real `plan()` therefore belongs behind `tests/test_file_open.py::shell_launcher_only` (or
+the module-level skip in `tests/test_cli_install.py`); a test of the Windows path must stub
+`QMessageBox.warning` as well. This cost a six-hour Windows CI run (`BUGS.md` M22), which is
+also why `release.yml` now sets `timeout-minutes` on the job and on each test step — keep them.
 
 Three further constraints were each learned from a real failure, so do not simplify them away:
 
