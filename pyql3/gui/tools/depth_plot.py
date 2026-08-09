@@ -3,7 +3,7 @@ import re
 import pathlib
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog
+from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog, QWidget
 from PySide6.QtCore import Qt, QDir
 from pyql3.core.spectral_photometry import (
     ApertureError,
@@ -113,37 +113,10 @@ class DepthPlotDialog(BaseToolDialog):
         self.combo_type.currentIndexChanged.connect(self.update_plot)
         top_layout.addWidget(self.combo_type)
         
-        top_layout.addWidget(QLabel("calc using:"))
-        self.combo_calc = QComboBox()
-        self.combo_calc.addItems(["Average", "Median", "Total"])
-        # Total by default: it is what "aperture photometry with a sky annulus" means, and
-        # it makes the background subtraction a single well-defined quantity
-        # (aperture_sum - background_level * aperture_area) rather than a per-pixel average
-        # whose meaning depends on how many pixels happened to fall in the aperture.
-        self.combo_calc.setCurrentText("Total")
-        self.combo_calc.currentIndexChanged.connect(self.update_plot)
-        top_layout.addWidget(self.combo_calc)
-
-        top_layout.addWidget(QLabel("Shape:"))
-        self.combo_shape = QComboBox()
-        self.combo_shape.addItems(["Rectangle", "Circle"])
-        # Circle by default, so the aperture has a centre and a radius and the annulus has
-        # something concentric to sit outside.
-        self.combo_shape.setCurrentText("Circle")
-        self.combo_shape.currentIndexChanged.connect(self.toggle_roi_shape)
-        top_layout.addWidget(self.combo_shape)
-
-        top_layout.addWidget(QLabel("Radius:"))
-        self.spin_radius = QDoubleSpinBox()
-        self.spin_radius.setRange(0.5, 10000.0)
-        self.spin_radius.setDecimals(2)
-        self.spin_radius.setSingleStep(0.5)
-        self.spin_radius.setValue(DEFAULT_APERTURE_RADIUS)
-        self.spin_radius.setSuffix(" px")
-        self.spin_radius.setToolTip("Aperture radius. Resizes the circle on the image.")
-        self.spin_radius.valueChanged.connect(self.on_radius_changed)
-        top_layout.addWidget(self.spin_radius)
-
+        # Shape, Radius and the combine method used to live here. They describe *what is
+        # measured*, not what the window does, and they belong beside the rest of the
+        # aperture in the EXTRACTION group below -- where the aperture is described once
+        # rather than twice, in two parameterisations, at opposite ends of the dialog.
         top_layout.addStretch()
         self.layout.addLayout(top_layout)
         
@@ -171,10 +144,21 @@ class DepthPlotDialog(BaseToolDialog):
         
         self.layout.addWidget(self.plot_widget, stretch=1)
         
-        self.plot_legend = self.plot_widget.addLegend(offset=(10, 10))
-        self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=2.5), name="Source")
-        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=2.5, style=Qt.DashLine), name="Background")
-        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=2.5), name="Subtracted")
+        # Top *right*: a spectrum is read left to right, and at (10, 10) the box covered the
+        # first few percent of every curve -- the Source trace ran behind it in every state.
+        # Opaque, or the entries are drawn over whatever does pass underneath.
+        self.plot_legend = self.plot_widget.addLegend(offset=(-10, 10),
+                                                      brush=pg.mkBrush(255, 255, 255, 220),
+                                                      pen=pg.mkPen(180, 180, 180),
+                                                      labelTextColor='k')
+        # Built without `name=`, which would enrol them in the legend before they have data.
+        # `sync_legend()` owns membership: see there for why an empty curve is not listed.
+        self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=2.5))
+        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=2.5, style=Qt.DashLine))
+        # Dash-dot, not another solid line: Source and Subtracted are the two curves most
+        # often compared, and hue is the one channel a colour-blind reader may not have.
+        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=2.5, style=Qt.DashDotLine))
+        self.plot_legend.addItem(self.plot_data, "Source")
         
         # Crosshair / Hover Label
         self.lbl_cursor = QLabel("X: --  Y: --")
@@ -219,7 +203,6 @@ class DepthPlotDialog(BaseToolDialog):
         axes_layout.addWidget(self.chk_fix_y, 1, 6)
         axes_layout.addWidget(self.chk_log_y, 1, 7)
         
-        self.layout.addWidget(group_axes)
         
         btn_set_x.clicked.connect(self.apply_x_range)
         btn_auto_x.clicked.connect(self.auto_x_range)
@@ -231,27 +214,88 @@ class DepthPlotDialog(BaseToolDialog):
         self.chk_fix_y.stateChanged.connect(self.toggle_fix_y)
         self.chk_log_y.stateChanged.connect(self.toggle_log_scale)
         
-        # Region Controls GroupBox
-        group_region = QGroupBox("INPUT DATA FROM CUBE")
+        # ------------------------------------------------------------------ EXTRACTION
+        # Everything that defines what is measured, in one box: the shape, how its pixels
+        # are combined, and its geometry -- expressed the way that shape is actually
+        # parameterised. A circle gets a centre and a radius; only a rectangle gets corners.
+        # Showing a circle's bounding box, as this group used to, describes the same figure
+        # in a form nobody would choose to type.
+        group_region = QGroupBox("EXTRACTION APERTURE")
         region_layout = QGridLayout(group_region)
-        
+        region_layout.setVerticalSpacing(4)
+
+        self.combo_shape = QComboBox()
+        self.combo_shape.addItems(["Rectangle", "Circle"])
+        # Circle by default, so the aperture has a centre and a radius and the annulus has
+        # something concentric to sit outside.
+        self.combo_shape.setCurrentText("Circle")
+        self.combo_shape.currentIndexChanged.connect(self.toggle_roi_shape)
+
+        self.combo_calc = QComboBox()
+        self.combo_calc.addItems(["Average", "Median", "Total"])
+        # Total by default: it is what "aperture photometry with a sky annulus" means, and
+        # it makes the background subtraction a single well-defined quantity
+        # (aperture_sum - background_level * aperture_area) rather than a per-pixel average
+        # whose meaning depends on how many pixels happened to fall in the aperture.
+        self.combo_calc.setCurrentText("Total")
+        self.combo_calc.currentIndexChanged.connect(self.update_plot)
+
+        region_layout.addWidget(QLabel("Shape:"), 0, 0)
+        region_layout.addWidget(self.combo_shape, 0, 1)
+        region_layout.addWidget(QLabel("Combine:"), 0, 2)
+        region_layout.addWidget(self.combo_calc, 0, 3)
+
+        # --- circle geometry: centre and radius, side by side
+        self.spin_cx = QDoubleSpinBox(); self.spin_cy = QDoubleSpinBox()
+        self.spin_radius = QDoubleSpinBox()
+        for spin in (self.spin_cx, self.spin_cy, self.spin_radius):
+            spin.setDecimals(2)
+            spin.setSingleStep(0.5)
+            spin.setSuffix(" px")
+        for spin in (self.spin_cx, self.spin_cy):
+            spin.setRange(-10000.0, 10000.0)
+            spin.valueChanged.connect(self.on_center_spin_changed)
+        self.spin_radius.setRange(0.5, 10000.0)
+        self.spin_radius.setValue(DEFAULT_APERTURE_RADIUS)
+        self.spin_radius.setToolTip("Aperture radius. Resizes the circle on the image.")
+        self.spin_radius.valueChanged.connect(self.on_radius_changed)
+
+        self.geom_circle = QWidget()
+        circle_layout = QGridLayout(self.geom_circle)
+        circle_layout.setContentsMargins(0, 0, 0, 0)
+        circle_layout.addWidget(QLabel("Center X:"), 0, 0)
+        circle_layout.addWidget(self.spin_cx, 0, 1)
+        circle_layout.addWidget(QLabel("Y:"), 0, 2)
+        circle_layout.addWidget(self.spin_cy, 0, 3)
+        circle_layout.addWidget(QLabel("Radius:"), 1, 0)
+        circle_layout.addWidget(self.spin_radius, 1, 1)
+        circle_layout.setColumnStretch(4, 1)
+        region_layout.addWidget(self.geom_circle, 1, 0, 1, 4)
+
+        # --- rectangle geometry: the corner spins, unchanged
         self.spin_x0 = QSpinBox(); self.spin_x0.setRange(0, 10000)
         self.spin_x1 = QSpinBox(); self.spin_x1.setRange(0, 10000)
         self.spin_y0 = QSpinBox(); self.spin_y0.setRange(0, 10000)
         self.spin_y1 = QSpinBox(); self.spin_y1.setRange(0, 10000)
-        
+
         for spin in [self.spin_x0, self.spin_x1, self.spin_y0, self.spin_y1]:
             spin.valueChanged.connect(self.on_spin_changed)
-            
-        region_layout.addWidget(QLabel("X Region:"), 0, 0)
-        region_layout.addWidget(self.spin_x0, 0, 1)
-        region_layout.addWidget(QLabel("to"), 0, 2)
-        region_layout.addWidget(self.spin_x1, 0, 3)
-        
-        region_layout.addWidget(QLabel("Y Region:"), 1, 0)
-        region_layout.addWidget(self.spin_y0, 1, 1)
-        region_layout.addWidget(QLabel("to"), 1, 2)
-        region_layout.addWidget(self.spin_y1, 1, 3)
+
+        self.geom_rect = QWidget()
+        rect_layout = QGridLayout(self.geom_rect)
+        rect_layout.setContentsMargins(0, 0, 0, 0)
+        rect_layout.addWidget(QLabel("X Region:"), 0, 0)
+        rect_layout.addWidget(self.spin_x0, 0, 1)
+        rect_layout.addWidget(QLabel("to"), 0, 2)
+        rect_layout.addWidget(self.spin_x1, 0, 3)
+        rect_layout.addWidget(QLabel("Y Region:"), 1, 0)
+        rect_layout.addWidget(self.spin_y0, 1, 1)
+        rect_layout.addWidget(QLabel("to"), 1, 2)
+        rect_layout.addWidget(self.spin_y1, 1, 3)
+        rect_layout.setColumnStretch(4, 1)
+        region_layout.addWidget(self.geom_rect, 2, 0, 1, 4)
+
+        region_layout.setRowStretch(3, 1)
 
         # Background GroupBox
         self.group_bg = QGroupBox("BACKGROUND")
@@ -263,8 +307,12 @@ class DepthPlotDialog(BaseToolDialog):
         self.combo_bg_calc.setCurrentText("Median")
         self.combo_bg_calc.setEnabled(False)
 
+        bg_layout.setVerticalSpacing(4)
         bg_layout.addWidget(self.chk_enable_bg, 0, 0, 1, 2)
-        bg_layout.addWidget(QLabel("Calc using:"), 0, 2)
+        # "Estimator", not a second "Calc using". The label in the EXTRACTION box says how
+        # the aperture's pixels are combined; this one says how the sky pixels are reduced
+        # to one level. Two different questions should not read as the same control.
+        bg_layout.addWidget(QLabel("Estimator:"), 0, 2)
         bg_layout.addWidget(self.combo_bg_calc, 0, 3)
 
         # Annulus by default. The independent "Region" box remains for a background that
@@ -287,54 +335,70 @@ class DepthPlotDialog(BaseToolDialog):
             spin.setValue(value)
             spin.setSuffix(" px")
             spin.setToolTip(tip)
-            spin.setEnabled(False)
             spin.valueChanged.connect(self.on_annulus_changed)
 
         bg_layout.addWidget(QLabel("Mode:"), 1, 0)
         bg_layout.addWidget(self.combo_bg_mode, 1, 1)
-        bg_layout.addWidget(QLabel("Sky radii:"), 1, 2)
 
-        radii_row = QHBoxLayout()
-        radii_row.setContentsMargins(0, 0, 0, 0)
-        radii_row.addWidget(self.spin_r_in)
-        radii_row.addWidget(QLabel("to"))
-        radii_row.addWidget(self.spin_r_out)
-        bg_layout.addLayout(radii_row, 1, 3)
-
-        self.lbl_bg_info = QLabel("")
-        self.lbl_bg_info.setWordWrap(True)
-        bg_layout.addWidget(self.lbl_bg_info, 4, 0, 1, 4)
-
-        self.spin_bg_x0 = QSpinBox(); self.spin_bg_x0.setRange(0, 10000); self.spin_bg_x0.setEnabled(False)
-        self.spin_bg_x1 = QSpinBox(); self.spin_bg_x1.setRange(0, 10000); self.spin_bg_x1.setEnabled(False)
-        self.spin_bg_y0 = QSpinBox(); self.spin_bg_y0.setRange(0, 10000); self.spin_bg_y0.setEnabled(False)
-        self.spin_bg_y1 = QSpinBox(); self.spin_bg_y1.setRange(0, 10000); self.spin_bg_y1.setEnabled(False)
+        self.spin_bg_x0 = QSpinBox(); self.spin_bg_x0.setRange(0, 10000)
+        self.spin_bg_x1 = QSpinBox(); self.spin_bg_x1.setRange(0, 10000)
+        self.spin_bg_y0 = QSpinBox(); self.spin_bg_y0.setRange(0, 10000)
+        self.spin_bg_y1 = QSpinBox(); self.spin_bg_y1.setRange(0, 10000)
 
         self._updating_bg_spins = False
         for spin in [self.spin_bg_x0, self.spin_bg_x1, self.spin_bg_y0, self.spin_bg_y1]:
             spin.valueChanged.connect(self.on_bg_spin_changed)
 
-        # Rows 2 and 3: the independent Region box. Row 1 above is the annulus.
-        self.lbl_bg_x = QLabel("X Region:")
-        self.lbl_bg_y = QLabel("Y Region:")
-        bg_layout.addWidget(self.lbl_bg_x, 2, 0)
-        bg_layout.addWidget(self.spin_bg_x0, 2, 1)
-        bg_layout.addWidget(QLabel("to"), 2, 2)
-        bg_layout.addWidget(self.spin_bg_x1, 2, 3)
+        # The two modes' controls are *swapped*, not greyed out. Disabled spin boxes reading
+        # 0 look like measurements; five inert rows were most of this box in every state.
+        self.bg_annulus_row = QWidget()
+        annulus_layout = QGridLayout(self.bg_annulus_row)
+        annulus_layout.setContentsMargins(0, 0, 0, 0)
+        annulus_layout.addWidget(QLabel("Sky radii:"), 0, 0)
+        annulus_layout.addWidget(self.spin_r_in, 0, 1)
+        annulus_layout.addWidget(QLabel("to"), 0, 2)
+        annulus_layout.addWidget(self.spin_r_out, 0, 3)
+        annulus_layout.setColumnStretch(4, 1)
+        bg_layout.addWidget(self.bg_annulus_row, 2, 0, 1, 4)
 
-        bg_layout.addWidget(self.lbl_bg_y, 3, 0)
-        bg_layout.addWidget(self.spin_bg_y0, 3, 1)
-        bg_layout.addWidget(QLabel("to"), 3, 2)
-        bg_layout.addWidget(self.spin_bg_y1, 3, 3)
+        self.bg_region_rows = QWidget()
+        bg_region_layout = QGridLayout(self.bg_region_rows)
+        bg_region_layout.setContentsMargins(0, 0, 0, 0)
+        bg_region_layout.addWidget(QLabel("X Region:"), 0, 0)
+        bg_region_layout.addWidget(self.spin_bg_x0, 0, 1)
+        bg_region_layout.addWidget(QLabel("to"), 0, 2)
+        bg_region_layout.addWidget(self.spin_bg_x1, 0, 3)
+        bg_region_layout.addWidget(QLabel("Y Region:"), 1, 0)
+        bg_region_layout.addWidget(self.spin_bg_y0, 1, 1)
+        bg_region_layout.addWidget(QLabel("to"), 1, 2)
+        bg_region_layout.addWidget(self.spin_bg_y1, 1, 3)
+        bg_region_layout.setColumnStretch(4, 1)
+        bg_layout.addWidget(self.bg_region_rows, 3, 0, 1, 4)
 
-        # Add Cube Input Data and Background Region side-by-side
+        bg_layout.setRowStretch(4, 1)
+
+        # Add the two measurement groups side-by-side
         regions_row_layout = QHBoxLayout()
         regions_row_layout.setContentsMargins(0, 0, 0, 0)
         regions_row_layout.setSpacing(6)
         regions_row_layout.addWidget(group_region)
-        regions_row_layout.addWidget(self.group_bg)
+        regions_row_layout.addWidget(self.group_bg, stretch=1)
 
         self.layout.addLayout(regions_row_layout)
+
+        # One status line under both groups. It reports the aperture area and annulus pixel
+        # count -- which belong to neither box alone -- and is where an unmeasurable geometry
+        # is explained, rather than that message hiding inside the background box.
+        self.lbl_bg_info = QLabel("")
+        self.lbl_bg_info.setWordWrap(True)
+        self.lbl_bg_info.setContentsMargins(6, 2, 6, 2)
+        # Muted, so a status readout is not mistaken for the heading of the group below it.
+        self.lbl_bg_info.setStyleSheet("color: #666;")
+        self.layout.addWidget(self.lbl_bg_info)
+
+        # Axis limits are display tuning, not measurement: below the groups that decide
+        # what is measured, not between them and the plot.
+        self.layout.addWidget(group_axes)
 
         # Spectral Line List GroupBox in its own row
         self.group_linelist = QGroupBox("SPECTRAL LINE LIST")
@@ -390,6 +454,7 @@ class DepthPlotDialog(BaseToolDialog):
 
         r = DEFAULT_APERTURE_RADIUS
         self.add_roi_to_viewer(self._build_roi([center_x - r, center_y - r], [r * 2, r * 2]))
+        self.sync_control_visibility()
         self.on_roi_changed()
 
         # Background-subtraction wiring belongs here, not in set_center(): the
@@ -399,6 +464,63 @@ class DepthPlotDialog(BaseToolDialog):
         self.combo_bg_calc.currentIndexChanged.connect(self.update_plot)
 
         self.update_plot()
+
+    @staticmethod
+    def _is_drawn(item):
+        """True when `item` currently has points on the plot."""
+        x, _ = item.getData()
+        return x is not None and len(x) > 0
+
+    def sync_legend(self):
+        """List exactly the curves that are drawn.
+
+        A fixed three-entry legend describes a plot that is on screen in one state only: with
+        the background switched off, and in either cut, two of the three curves are empty, so
+        the key names series the user cannot find. Source is permanent; the other two come and
+        go with their data.
+
+        Entries are added and removed rather than rebuilt, because `LegendItem.clear()` drops
+        the last reference to each `ItemSample` and this file has been bitten by that before
+        (`BUGS.md` M18, and `base_tool.remove_roi_from_viewer`).
+        """
+        listed = {label.text for _, label in self.plot_legend.items}
+        for item, name in ((self.plot_bg, "Background"), (self.plot_sub, "Subtracted")):
+            drawn = self._is_drawn(item)
+            if drawn and name not in listed:
+                self.plot_legend.addItem(item, name)
+            elif not drawn and name in listed:
+                self.plot_legend.removeItem(item)
+
+    def _cut_region(self, plane, x0, x1, y0, y1):
+        """The pixels a cut collapses, or None when the aperture is off the plane.
+
+        The cuts used to slice the ROI's *bounding box* whatever shape was selected, so
+        `Shape: Circle` measured the corners the circle excludes -- the control stated one
+        thing and the arithmetic did another. A cut collapses one axis of the extraction
+        aperture, so it is the same aperture the Depth Plot draws.
+        """
+        region = plane[x0:x1, y0:y1]
+        if region.size == 0:
+            return None
+        mask = self._circular_mask(*region.shape)
+        if mask is None:
+            return region
+        return np.where(mask, region.astype(float), np.nan)
+
+    def _circular_mask(self, nx, ny):
+        """Whole pixels of an `nx` by `ny` bounding box whose centres fall inside the circle.
+
+        `None` for a rectangular aperture, so a caller applies the mask or not without
+        consulting the shape combo itself. The radius is the half-width of the shorter side,
+        matching `aperture_geometry()` -- which is what keeps a circle dragged out of square
+        measuring the same figure everywhere it is measured.
+        """
+        if self.combo_shape.currentText() != "Circle":
+            return None
+        ix, iy = np.mgrid[:nx, :ny]
+        cx, cy = nx / 2.0 - 0.5, ny / 2.0 - 0.5
+        r = min(nx / 2.0, ny / 2.0)
+        return ((ix - cx) ** 2 + (iy - cy) ** 2) <= r ** 2
 
     def set_center(self, center):
         center = as_center(center)
@@ -522,6 +644,8 @@ class DepthPlotDialog(BaseToolDialog):
         geometry = self.aperture_geometry()
         if geometry is not None:
             self._updating_radius = True
+            self.spin_cx.setValue(geometry[0])
+            self.spin_cy.setValue(geometry[1])
             self.spin_radius.setValue(geometry[2])
             self.track_aperture_radii(geometry[2])
             self._updating_radius = False
@@ -584,6 +708,27 @@ class DepthPlotDialog(BaseToolDialog):
         self._updating_radius = False
         self.sync_annulus_rings()
         self.update_plot()
+
+    def sync_control_visibility(self):
+        """Show the controls that describe the current shape and background mode.
+
+        Swapped rather than disabled: a greyed spin box still reads as a number someone
+        measured, and in every state roughly half of these controls do not apply.
+        """
+        circle = self.combo_shape.currentText() == "Circle"
+        self.geom_circle.setVisible(circle)
+        self.geom_rect.setVisible(not circle)
+
+        enabled = self.chk_enable_bg.isChecked()
+        annulus = self.annulus_is_active()
+        self.bg_annulus_row.setVisible(enabled and annulus)
+        self.bg_region_rows.setVisible(enabled and not annulus)
+
+    def on_center_spin_changed(self):
+        """Move the aperture to a typed centre."""
+        if self._updating_radius or self.roi is None:
+            return
+        self.set_center((self.spin_cx.value(), self.spin_cy.value()))
 
     def track_aperture_radii(self, r_ap):
         """Move the sky radii to sit just outside an aperture of `r_ap`.
@@ -790,10 +935,7 @@ class DepthPlotDialog(BaseToolDialog):
 
         self.combo_bg_calc.setEnabled(checked)
         self.combo_bg_mode.setEnabled(checked)
-        for spin in (self.spin_r_in, self.spin_r_out):
-            spin.setEnabled(annulus)
-        for spin in (self.spin_bg_x0, self.spin_bg_x1, self.spin_bg_y0, self.spin_bg_y1):
-            spin.setEnabled(checked and not annulus)
+        self.sync_control_visibility()
 
         # A background *total* means nothing when it is subtracted per pixel -- the number
         # would scale with however wide the annulus was drawn. Offer it only for the region
@@ -1172,15 +1314,27 @@ class DepthPlotDialog(BaseToolDialog):
                 self.image_viewer.imv.getView().addItem(self.bg_roi)
             self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
 
-        # An annulus needs a circle to be concentric with. Leaving the mode set to Annulus
-        # over a rectangle would silently measure no background at all, so switching shape
-        # switches the background mode with it, visibly.
-        if self.chk_enable_bg.isChecked():
-            if shape != "Circle" and self.combo_bg_mode.currentText() == "Annulus":
-                self.combo_bg_mode.setCurrentText("Region")   # re-enters toggle_background
-            else:
-                self.toggle_background()
+        # An annulus needs a circle to be concentric with, so over a rectangle the option is
+        # *withdrawn*, not quietly ignored. Leaving the combo reading "Annulus" while the
+        # tool measured a free region was a control that stated the opposite of what it did.
+        circle = shape == "Circle"
+        index = self.combo_bg_mode.findText("Annulus")
+        item = self.combo_bg_mode.model().item(index) if index >= 0 else None
+        if item is not None:
+            item.setEnabled(circle)
 
+        if not circle and self.combo_bg_mode.currentText() == "Annulus":
+            self._forced_region = True
+            self.combo_bg_mode.setCurrentText("Region")   # re-enters toggle_background
+        elif circle and getattr(self, '_forced_region', False):
+            # Only restore what this took away; a Region the user chose stays chosen.
+            self._forced_region = False
+            self.combo_bg_mode.setCurrentText("Annulus")
+        elif self.chk_enable_bg.isChecked():
+            self.toggle_background()
+
+        # Also when the background is off: the geometry row still has to follow the shape.
+        self.sync_control_visibility()
         self.update_plot()
 
     def _draw_depth_curves(self, spectrum, bg_spectrum, subtracted_spectrum, z_len,
@@ -1268,6 +1422,8 @@ class DepthPlotDialog(BaseToolDialog):
             self.plot_bg.setData([], [])
             self.plot_sub.setData([], [])
 
+        self.sync_legend()
+
     def update_plot(self):
         if self.image_viewer is None or self.image_viewer.transposed_data is None:
             return
@@ -1278,11 +1434,25 @@ class DepthPlotDialog(BaseToolDialog):
         plot_type = self.combo_type.currentText()
         calc_method = self.combo_calc.currentText()
 
+        # Cleared here and nowhere else, so no readout can outlive the measurement it
+        # describes. `Aperture 28.3 px²` used to survive a switch to a cut, which performs no
+        # aperture photometry at all, and sat under the plot describing numbers it had no
+        # part in. Each branch below either replaces this line or means to leave it empty.
+        self.lbl_bg_info.setText("")
+
+        depth = plot_type == "Depth Plot"
         if hasattr(self, 'group_bg'):
-            self.group_bg.setEnabled(plot_type == "Depth Plot")
+            self.group_bg.setEnabled(depth)
         if hasattr(self, 'group_linelist'):
-            self.group_linelist.setEnabled(plot_type == "Depth Plot")
-            
+            self.group_linelist.setEnabled(depth)
+        if not depth:
+            # The reason a group is inert has to be readable, and `lbl_line_info` lives
+            # *inside* the line-list group, so it was greyed out along with everything it
+            # explained. The status line is outside both groups.
+            self.lbl_bg_info.setText(
+                "Background subtraction and line lists apply to the Depth Plot only.")
+
+
         # Transform the 3D cube to match the display coordinates (rotation, flip)
         cube = self.image_viewer.apply_spatial_transforms(self.image_viewer.transposed_data)
 
@@ -1325,6 +1495,7 @@ class DepthPlotDialog(BaseToolDialog):
                 self.plot_data.setData([], [])
                 self.plot_bg.setData([], [])
                 self.plot_sub.setData([], [])
+                self.sync_legend()
                 return
 
             spectrum, bg_spectrum, subtracted_spectrum = result.as_tuple()
@@ -1349,19 +1520,15 @@ class DepthPlotDialog(BaseToolDialog):
             return
 
         if plot_type == "Depth Plot":
-            self.lbl_bg_info.setText("")
             region = cube[:, x0:x1, y0:y1].astype(float, copy=True)
             if region.size == 0:
                 return
 
-            # If circle, apply mask
-            if self.combo_shape.currentText() == "Circle":
-                yy, xx = np.mgrid[:(x1-x0), :(y1-y0)]
-                cx, cy = (x1-x0)/2.0 - 0.5, (y1-y0)/2.0 - 0.5
-                r = min((x1-x0)/2.0, (y1-y0)/2.0)
-                mask = ((xx - cy)**2 + (yy - cx)**2) <= r**2
+            mask = self._circular_mask(x1 - x0, y1 - y0)
+            if mask is not None:
                 region = np.where(mask, region, np.nan)
-                
+
+
             if calc_method == "Average":
                 spectrum = np.nanmean(region, axis=(1, 2))
             elif calc_method == "Median":
@@ -1385,11 +1552,8 @@ class DepthPlotDialog(BaseToolDialog):
 
                 bg_region = cube[:, bg_x0:bg_x1, bg_y0:bg_y1].astype(float, copy=True)
                 if bg_region.size > 0:
-                    if self.combo_shape.currentText() == "Circle":
-                        yy_bg, xx_bg = np.mgrid[:(bg_x1-bg_x0), :(bg_y1-bg_y0)]
-                        cx_bg, cy_bg = (bg_x1-bg_x0)/2.0 - 0.5, (bg_y1-bg_y0)/2.0 - 0.5
-                        r_bg = min((bg_x1-bg_x0)/2.0, (bg_y1-bg_y0)/2.0)
-                        mask_bg = ((xx_bg - cy_bg)**2 + (yy_bg - cx_bg)**2) <= r_bg**2
+                    mask_bg = self._circular_mask(bg_x1 - bg_x0, bg_y1 - bg_y0)
+                    if mask_bg is not None:
                         bg_region = np.where(mask_bg, bg_region, np.nan)
 
                     bg_calc_method = self.combo_bg_calc.currentText()
@@ -1419,8 +1583,8 @@ class DepthPlotDialog(BaseToolDialog):
             plane = self.image_viewer.current_plane()
             if plane is None or plane.ndim != 2:
                 return
-            region = plane[x0:x1, y0:y1]
-            if region.size == 0:
+            region = self._cut_region(plane, x0, x1, y0, y1)
+            if region is None:
                 return
             if calc_method == "Average":
                 cut = np.nanmean(region, axis=1) # collapse Y
@@ -1428,7 +1592,7 @@ class DepthPlotDialog(BaseToolDialog):
                 cut = np.nanmedian(region, axis=1)
             else:
                 cut = np.nansum(region, axis=1)
-                
+
             self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
             self.current_wavelengths = None
@@ -1446,8 +1610,8 @@ class DepthPlotDialog(BaseToolDialog):
             plane = self.image_viewer.current_plane()
             if plane is None or plane.ndim != 2:
                 return
-            region = plane[x0:x1, y0:y1]
-            if region.size == 0:
+            region = self._cut_region(plane, x0, x1, y0, y1)
+            if region is None:
                 return
             if calc_method == "Average":
                 cut = np.nanmean(region, axis=0) # collapse X
@@ -1465,6 +1629,10 @@ class DepthPlotDialog(BaseToolDialog):
             unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
             self.plot_widget.setLabel('left', f"Intensity ({unit})")
             self.plot_data.setData(x_axis, cut * self.image_viewer.data_multiplier)
+            # `plot_bg` too: this branch cleared only the subtracted curve, so a background
+            # measured for a depth plot stayed drawn over a cut it had no part in.
+            self.plot_bg.setData([], [])
             self.plot_sub.setData([], [])
 
+        self.sync_legend()
         self.update_line_overlays()

@@ -22,10 +22,17 @@ For a user-selected Region of Interest (ROI) containing spatial pixels $(x, y)$,
 * **Total (Sum)**:
   $$S(z) = \sum_{(x,y) \in \text{ROI}} I(x, y, z)$$
 
-The tool opens on a **circular** aperture combined with **Total**, with an explicit
-**Radius** control beside the shape selector. That is the combination for which background
-subtraction has a single unambiguous definition (§B), and it is the same quantity the
-Aperture Photometry tool reports for one plane.
+The tool opens on a **circular** aperture combined with **Total**. That is the combination
+for which background subtraction has a single unambiguous definition (§B), and it is the
+same quantity the Aperture Photometry tool reports for one plane.
+
+Everything that defines what is measured is in the **EXTRACTION APERTURE** group: the shape,
+how its pixels are combined, and its geometry in the form that shape is parameterised —
+**Center X / Y** and **Radius** for a circle, **X Region / Y Region** for a rectangle. The
+geometry controls swap with the shape rather than describing a circle by its bounding box.
+The **BACKGROUND** group likewise shows only the controls its current mode uses. An annulus
+is offered only for a circular aperture, since it has nothing to be concentric with
+otherwise; selecting a rectangle withdraws the option rather than ignoring it.
 
 For a circular aperture the pixels on the boundary are weighted by the fraction $w_i$ of
 each pixel the circle covers, so $N = \sum_i w_i$ rather than a count of whole pixels. This
@@ -119,6 +126,12 @@ The **Cut Plot** tool extracts 1D spatial intensity profiles across slices of th
 
 ### Algorithm
 For multi-pixel cut widths, intensity values perpendicular to the cut vector are averaged or collapsed using Median, Mean, or Total sum.
+
+A cut collapses one axis of the **EXTRACTION APERTURE**, so it measures the same figure the
+Depth Plot does: with **Shape** set to *Circle*, pixels outside the circle are excluded rather
+than the ROI's bounding box being taken whole. The **BACKGROUND** and **SPECTRAL LINE LIST**
+groups have no meaning for a cut and are disabled, which the status line under the two groups
+says in as many words.
 
 ---
 

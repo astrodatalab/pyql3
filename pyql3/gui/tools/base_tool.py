@@ -1,5 +1,7 @@
+import gc
+
 from PySide6.QtWidgets import QDialog, QVBoxLayout
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 
 
@@ -50,7 +52,9 @@ class BaseToolDialog(QDialog):
         self.setWindowTitle(title)
         self.image_viewer = image_viewer
         self.roi = None
-        
+        #: ROIs taken out of the scene but not yet released. See `remove_roi_from_viewer`.
+        self._retired_rois = []
+
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(10, 10, 10, 10)
         
@@ -97,7 +101,27 @@ class BaseToolDialog(QDialog):
                 self.image_viewer.imv.getView().removeItem(self.roi)
             except Exception:
                 pass
+            # Retire, do not release. `self.roi = None` here dropped the last Python
+            # reference to a QGraphicsItem, and every caller that removes an ROI does so in
+            # order to build its replacement -- so the collector ran *inside*
+            # `ROI.addScaleHandle` -> `GraphicsObject.__init__` and freed the old item
+            # mid-construction. Segfault, in `toggle_roi_shape`, reproducibly on the second
+            # shape change. Same failure and same remedy as `BUGS.md` M18 in region_layer:
+            # the event loop owns the release.
+            self._retired_rois.append(self.roi)
             self.roi = None
+            QTimer.singleShot(0, self._drop_retired_rois)
+
+    def _drop_retired_rois(self):
+        """Release ROIs taken out of the scene, once the event loop is back.
+
+        The explicit `gc.collect()` is deliberate: these items sit in reference cycles, so
+        dropping the list frees nothing on its own.
+        """
+        if not self._retired_rois:
+            return
+        self._retired_rois = []
+        gc.collect()
             
     def closeEvent(self, event):
         self.remove_roi_from_viewer()
@@ -109,7 +133,9 @@ class BaseToolDialog(QDialog):
 
     def setup_draw_button(self, layout):
         from PySide6.QtWidgets import QPushButton
-        self.btn_draw = QPushButton("Draw Box / Region")
+        # "Region", not "Box": the shape a tool draws is the tool's own choice -- the Depth
+        # Plot draws a circle by default -- so the button must not name one of them.
+        self.btn_draw = QPushButton("Draw Region")
         self.btn_draw.setCheckable(True)
         self.btn_draw.clicked.connect(self.toggle_draw_mode)
         layout.insertWidget(0, self.btn_draw)

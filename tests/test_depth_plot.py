@@ -206,8 +206,8 @@ def test_enabling_the_background_draws_an_annulus_not_a_second_region(loaded_vie
 
         assert dialog.ring_inner is not None and dialog.ring_outer is not None
         assert dialog.bg_roi is None, "an independent background region was created too"
-        assert dialog.spin_r_in.isEnabled() and dialog.spin_r_out.isEnabled()
-        assert not dialog.spin_bg_x0.isEnabled(), \
+        assert dialog.bg_annulus_row.isVisibleTo(dialog), "the sky radii are not shown"
+        assert not dialog.bg_region_rows.isVisibleTo(dialog), \
             "the region box spins describe a region that no longer exists"
 
         bg_x, bg_y = dialog.plot_bg.getData()
@@ -317,6 +317,33 @@ def test_switching_to_a_rectangle_gives_up_the_annulus(loaded_viewer):
         assert dialog.ring_inner is None, "the rings outlived the circle"
         assert dialog.combo_bg_mode.currentText() == "Region"
         assert dialog.bg_roi is not None, "background was silently switched off"
+
+        # The combo must not merely read "Region" -- Annulus has to be unselectable, or a
+        # user picks it again and the tool goes on measuring something else.
+        index = dialog.combo_bg_mode.findText("Annulus")
+        assert not dialog.combo_bg_mode.model().item(index).isEnabled()
+
+        dialog.combo_shape.setCurrentText("Circle")
+        assert dialog.combo_bg_mode.model().item(index).isEnabled()
+        assert dialog.combo_bg_mode.currentText() == "Annulus", \
+            "the mode this took away was not given back"
+        assert dialog.ring_inner is not None
+    finally:
+        dialog.close()
+
+
+def test_a_region_the_user_chose_survives_a_trip_through_rectangle(loaded_viewer):
+    """Restoring Annulus is undoing our own override, not overriding the user's choice."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.combo_bg_mode.setCurrentText("Region")      # deliberate
+
+        dialog.combo_shape.setCurrentText("Rectangle")
+        dialog.combo_shape.setCurrentText("Circle")
+
+        assert dialog.combo_bg_mode.currentText() == "Region", \
+            "a deliberately chosen Region was overwritten"
     finally:
         dialog.close()
 
@@ -426,5 +453,263 @@ def test_radii_the_user_typed_are_not_overwritten(loaded_viewer):
 
         dialog.set_center((25, 25))
         assert dialog.spin_r_in.value() == pytest.approx(12.0), "a move reset the radii"
+    finally:
+        dialog.close()
+
+
+# ------------------------------------------------------------------ control grouping
+
+
+def test_the_geometry_row_matches_the_shape(loaded_viewer):
+    """A circle is a centre and a radius; only a rectangle gets corner spins."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert dialog.geom_circle.isVisibleTo(dialog)
+        assert not dialog.geom_rect.isVisibleTo(dialog), \
+            "a circle was described by its bounding box as well"
+
+        dialog.combo_shape.setCurrentText("Rectangle")
+        assert dialog.geom_rect.isVisibleTo(dialog)
+        assert not dialog.geom_circle.isVisibleTo(dialog), \
+            "a rectangle was offered a radius"
+    finally:
+        dialog.close()
+
+
+def test_the_centre_spins_track_and_drive_the_aperture(loaded_viewer):
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert (dialog.spin_cx.value(), dialog.spin_cy.value()) == pytest.approx((20.0, 20.0))
+
+        dialog.set_center((28, 11))
+        assert (dialog.spin_cx.value(), dialog.spin_cy.value()) == pytest.approx((28.0, 11.0))
+
+        dialog.spin_cx.setValue(33.0)
+        cx, cy, _ = dialog.aperture_geometry()
+        assert (cx, cy) == pytest.approx((33.0, 11.0)), "typing a centre did not move it"
+    finally:
+        dialog.close()
+
+
+def test_inapplicable_background_rows_are_hidden_not_greyed(loaded_viewer):
+    """A disabled spin box reading 0 still reads as a measurement."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert not dialog.bg_annulus_row.isVisibleTo(dialog), \
+            "sky radii shown with background subtraction switched off"
+        assert not dialog.bg_region_rows.isVisibleTo(dialog)
+
+        dialog.chk_enable_bg.setChecked(True)
+        assert dialog.bg_annulus_row.isVisibleTo(dialog)
+        assert not dialog.bg_region_rows.isVisibleTo(dialog)
+
+        dialog.combo_bg_mode.setCurrentText("Region")
+        assert dialog.bg_region_rows.isVisibleTo(dialog)
+        assert not dialog.bg_annulus_row.isVisibleTo(dialog)
+    finally:
+        dialog.close()
+
+
+def test_the_aperture_is_described_in_one_place(loaded_viewer):
+    """Shape, combine and radius moved out of the toolbar into the extraction group."""
+    from PySide6.QtWidgets import QGroupBox
+
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        for widget in (dialog.combo_shape, dialog.combo_calc, dialog.spin_radius):
+            box = widget
+            while box is not None and not isinstance(box, QGroupBox):
+                box = box.parentWidget()
+            assert box is not None and "APERTURE" in box.title(), \
+                f"{widget} is not in the extraction group"
+    finally:
+        dialog.close()
+
+
+def _legend_names(dialog):
+    """The series the plot legend currently claims are drawn."""
+    return [label.text for _, label in dialog.plot_legend.items]
+
+
+def _cut_viewer(tmp_path, spike_at):
+    """A viewer on a cube of ones with one bright pixel at display `spike_at` (x, y).
+
+    The cube is written in OSIRIS order (WAVE, DEC, RA) and every axis is the same
+    length, so the default axis mapping cannot make one of them special. `data[x, y, :]`
+    is the column that lands at display `(x, y)` in every plane -- asserted below, since
+    an off-by-one axis here would place the spike outside the aperture and the test would
+    pass for the wrong reason.
+    """
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from pyql3.core.fits_reader import FitsReader
+
+    data = np.ones((40, 40, 40), dtype=np.float32)
+    data[spike_at[0], spike_at[1], :] = 1000.0
+
+    w = WCS(naxis=3)
+    w.wcs.ctype = ['WAVE', 'DEC--TAN', 'RA---TAN']
+    w.wcs.crval = [2.2, 34.0, -118.0]
+    w.wcs.cdelt = [0.0005, 0.0001, 0.0001]
+    w.wcs.crpix = [1, 20, 20]
+    w.wcs.cunit = ['um', 'deg', 'deg']
+    header = w.to_header()
+    header['ITIME'] = 1.0
+    header['BUNIT'] = 'DN/s'
+
+    path = tmp_path / "cut_cube.fits"
+    fits.PrimaryHDU(data=data, header=header).writeto(path, overwrite=True)
+    reader = FitsReader(str(path))
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    assert viewer.current_plane()[spike_at] == 1000.0, \
+        "the bright pixel is not at the display position this test assumes"
+    return viewer
+
+
+def test_a_cut_does_not_inherit_the_depth_plot_aperture_readout(loaded_viewer):
+    """Switching to a cut must not leave the previous mode's measurement on screen.
+
+    The cut branches never touched `lbl_bg_info`, so `Aperture 28.3 px^2` -- computed for a
+    circular extraction that a cut does not perform -- stayed under the plot describing
+    numbers it had nothing to do with.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        assert "Aperture" in dialog.lbl_bg_info.text(), "no readout to go stale"
+
+        dialog.combo_type.setCurrentText("Horizontal Cut")
+        assert "Aperture" not in dialog.lbl_bg_info.text(), \
+            "the depth plot's aperture area survived into a cut"
+    finally:
+        dialog.close()
+
+
+def test_a_cut_says_why_the_background_and_line_groups_are_inert(loaded_viewer):
+    """The reason a group is disabled must not be greyed out along with it.
+
+    `lbl_line_info` lives inside SPECTRAL LINE LIST, so the one sentence explaining the
+    mode was dimmed with everything it explained. The status line under both groups is
+    outside them and stays readable.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.combo_type.setCurrentText("Vertical Cut")
+        assert "Depth Plot" in dialog.lbl_bg_info.text(), \
+            "nothing readable explains the disabled groups"
+    finally:
+        dialog.close()
+
+
+def test_a_horizontal_cut_honours_a_circular_aperture(tmp_path):
+    """`Shape: Circle` must mean a circle in every plot type.
+
+    The cut branches sliced the ROI's bounding box, so a circular aperture silently
+    measured its corners -- the control stated one thing and the arithmetic did another.
+    """
+    viewer = _cut_viewer(tmp_path, spike_at=(17, 17))   # a corner of the 17..23 box
+    dialog = DepthPlotDialog(image_viewer=viewer, initial_center=(20, 20))
+    try:
+        assert (int(dialog.roi.pos().x()), int(dialog.roi.pos().y())) == (17, 17), \
+            "the aperture is not where this test placed the spike"
+
+        dialog.combo_shape.setCurrentText("Circle")
+        dialog.combo_calc.setCurrentText("Total")
+        dialog.combo_type.setCurrentText("Horizontal Cut")
+
+        _, cut = dialog.plot_data.getData()
+        assert cut is not None and len(cut) > 0, "the cut drew nothing"
+        assert cut[0] < 100.0, \
+            f"the corner pixel outside the circle was included: {cut[0]}"
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_vertical_cut_honours_a_circular_aperture(tmp_path):
+    viewer = _cut_viewer(tmp_path, spike_at=(17, 17))
+    dialog = DepthPlotDialog(image_viewer=viewer, initial_center=(20, 20))
+    try:
+        dialog.combo_shape.setCurrentText("Circle")
+        dialog.combo_calc.setCurrentText("Total")
+        dialog.combo_type.setCurrentText("Vertical Cut")
+
+        _, cut = dialog.plot_data.getData()
+        assert cut is not None and len(cut) > 0, "the cut drew nothing"
+        assert cut[0] < 100.0, \
+            f"the corner pixel outside the circle was included: {cut[0]}"
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_rectangular_cut_still_measures_the_whole_box(tmp_path):
+    """The mask follows the shape control; it is not applied unconditionally."""
+    viewer = _cut_viewer(tmp_path, spike_at=(17, 17))
+    dialog = DepthPlotDialog(image_viewer=viewer, initial_center=(20, 20))
+    try:
+        dialog.combo_shape.setCurrentText("Rectangle")
+        dialog.combo_calc.setCurrentText("Total")
+        dialog.combo_type.setCurrentText("Horizontal Cut")
+
+        _, cut = dialog.plot_data.getData()
+        assert cut[0] > 100.0, \
+            f"a rectangle dropped a pixel inside it: {cut[0]}"
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_the_legend_lists_only_the_curves_that_are_drawn(loaded_viewer):
+    """Three entries with two of them empty describes a plot that is not on screen."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert _legend_names(dialog) == ["Source"], \
+            "Background and Subtracted are listed before anything is subtracted"
+
+        dialog.chk_enable_bg.setChecked(True)
+        assert _legend_names(dialog) == ["Source", "Background", "Subtracted"]
+
+        dialog.combo_type.setCurrentText("Horizontal Cut")
+        assert _legend_names(dialog) == ["Source"], \
+            "a cut draws one curve and must say so"
+    finally:
+        dialog.close()
+
+
+def test_the_legend_is_anchored_away_from_the_start_of_the_spectrum(loaded_viewer):
+    """At the top left the box covers the first channels of every curve."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert dialog.plot_legend.offset[0] < 0, \
+            "the legend still sits over the leading edge of the data"
+    finally:
+        dialog.close()
+
+
+def test_source_and_subtracted_differ_by_more_than_colour(loaded_viewer):
+    """Two solid curves separable only by hue are not separable for every reader."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        assert dialog.plot_sub.opts['pen'].style() != dialog.plot_data.opts['pen'].style()
+    finally:
+        dialog.close()
+
+
+def test_a_vertical_cut_does_not_keep_the_previous_background_curve(loaded_viewer):
+    """The vertical branch cleared `plot_sub` but not `plot_bg`.
+
+    A background measured for a depth plot stayed drawn over a cut it had no part in.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        assert len(dialog.plot_bg.getData()[0]) > 0, "no background curve to leave behind"
+
+        dialog.combo_type.setCurrentText("Vertical Cut")
+        x_bg, _ = dialog.plot_bg.getData()
+        assert x_bg is None or len(x_bg) == 0, \
+            "the depth plot's background curve survived into a cut"
     finally:
         dialog.close()
