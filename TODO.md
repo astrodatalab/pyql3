@@ -7,6 +7,23 @@
   from the active tab on every tab switch.
 - Zenodo integration of release versions so the tool is citeable
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
+- Depth Plot's drag Y-freeze applies to `cuts.py` too: it wires `sigRegionChanged`
+  straight to `update_plot()` with auto-ranging axes, so every drag step throws away the
+  AxisItem picture cache. Same fix, ~15 lines. Measured 39.6% on the Depth Plot (a second
+  run measured 40.1%).
+- The Depth Plot's drag Y-freeze does not cover `BaseToolDialog.custom_mouse_drag` (the
+  "Draw Region" drag that draws out a new aperture from scratch): it drives `self.roi` with
+  `blockSignals(True)` around `setPos`/`setSize` and calls `on_roi_changed()` directly, so
+  neither `sigRegionChangeStarted` nor `sigRegionChangeFinished` fires and that drag pays
+  full `AxisItem` regeneration on every step. Fixing it means touching `base_tool.py`, which
+  five other tool dialogs share.
+- `DepthPlotDialog.remove_bg_roi()` sets `self.bg_roi = None` synchronously rather than
+  retiring the item through the deferred `_retired` list `base_tool.py` uses, and
+  `toggle_roi_shape()` immediately constructs a replacement calling `addScaleHandle()` --
+  the exact "collector ran inside `GraphicsObject.__init__`" pattern documented as a
+  reproducible segfault in `BUGS.md` M18. Not observed in the wild and the suite is clean,
+  but the shape matches; worth retiring `bg_roi` the same way the base class retires ROIs
+  before it is next touched.
 # DONE
 - Background subtraction from a sky annulus in the Depth Plot, so each channel is an aperture
   photometry measurement. The Depth Plot now opens on a circular aperture with an explicit
