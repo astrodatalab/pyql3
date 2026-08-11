@@ -808,3 +808,69 @@ def test_a_line_list_entry_carries_its_full_path(loaded_viewer):
             "the file behind a list entry is not recoverable"
     finally:
         dialog.close()
+
+
+def _drag(dialog, roi, positions):
+    """Emulate a mouse drag of `roi`, the way pyqtgraph's drag handler does it."""
+    roi.sigRegionChangeStarted.emit(roi)
+    for pos in positions:
+        roi.setPos(list(pos), finish=False)
+    roi.sigRegionChangeFinished.emit(roi)
+
+
+def test_dragging_the_aperture_holds_the_y_range_until_release(loaded_viewer):
+    """The AxisItem caches its rendering in a QPicture that a Y-range change throws away,
+    so re-ranging on every mouse-move event made a drag cost 37.7% more than it needed to.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        vb = dialog.plot_widget.getViewBox()
+        assert vb.autoRangeEnabled()[1], "the Y axis should auto-range before any drag"
+
+        dialog.roi.sigRegionChangeStarted.emit(dialog.roi)
+        frozen = list(vb.viewRange()[1])
+
+        for pos in ((5, 5), (12, 18), (25, 9)):
+            dialog.roi.setPos(list(pos), finish=False)
+            assert list(vb.viewRange()[1]) == frozen, \
+                f"the Y range moved to {vb.viewRange()[1]} mid-drag"
+
+        dialog.roi.sigRegionChangeFinished.emit(dialog.roi)
+        assert vb.autoRangeEnabled()[1], "releasing the drag must restore auto-range"
+    finally:
+        dialog.close()
+
+
+def test_a_fixed_y_range_is_not_re_enabled_by_a_drag(loaded_viewer):
+    """`Fix Y` means fixed. The thaw restores what auto-range was, not what it might be."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.plot_widget.setYRange(0.0, 5.0, padding=0)
+        dialog.chk_fix_y.setChecked(True)
+        vb = dialog.plot_widget.getViewBox()
+
+        _drag(dialog, dialog.roi, [(5, 5), (12, 18)])
+
+        assert not vb.autoRangeEnabled()[1], "a drag re-enabled auto-range over 'Fix Y'"
+        assert list(vb.viewRange()[1]) == [0.0, 5.0]
+    finally:
+        dialog.close()
+
+
+def test_a_manual_y_zoom_survives_a_drag(loaded_viewer):
+    """Zooming the Y axis with the wheel disables auto-range without ticking `Fix Y`, so
+    restoring from the checkbox rather than the view would discard the user's zoom.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        vb = dialog.plot_widget.getViewBox()
+        vb.setYRange(1.0, 9.0, padding=0)          # as a wheel zoom does
+        assert not vb.autoRangeEnabled()[1]
+        assert not dialog.chk_fix_y.isChecked(), "this test is about the two disagreeing"
+
+        _drag(dialog, dialog.roi, [(5, 5), (12, 18)])
+
+        assert not vb.autoRangeEnabled()[1], "the drag threw away a manual Y zoom"
+        assert list(vb.viewRange()[1]) == [1.0, 9.0]
+    finally:
+        dialog.close()
