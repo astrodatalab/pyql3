@@ -607,16 +607,25 @@ class DepthPlotDialog(BaseToolDialog):
 
         `sigRegionChanged` fires on every mouse-move event of a drag, and each one changes
         the spectrum, the Y auto-range, and therefore the `AxisItem` QPicture cache -- which
-        is regenerated tick string by tick string. Measured at 37.7% of the cost of a drag
-        step, against 6% for the photometry the drag is actually for.
+        is regenerated tick string by tick string. Measured with this freeze in place: 39.6%
+        faster per drag step (a second run measured 40.1%), against 6% for the photometry the
+        drag is actually for.
         """
         roi.sigRegionChangeStarted.connect(self._freeze_y_for_drag)
         roi.sigRegionChangeFinished.connect(self._thaw_y_after_drag)
 
     def _freeze_y_for_drag(self):
-        """Stop the Y axis re-ranging until the drag finishes."""
+        """Stop the Y axis re-ranging until the drag finishes.
+
+        The guard below also has to catch a *stale* `_y_autorange_before_drag` left by a
+        drag whose teardown path forgot to thaw -- that looks identical to "already frozen"
+        from in here, and silently swallows the next drag's freeze for the whole dialog. The
+        real fix is making sure every path that destroys an ROI mid-drag calls
+        `_thaw_y_after_drag()` first, not this guard.
+        """
         if self._y_autorange_before_drag is not None:
-            return  # already frozen; a second ROI, or a re-entrant signal
+            return  # already frozen: a second ROI, a re-entrant signal, or a stale value
+                     # left behind by a drag that was never thawed
         enabled = bool(self.plot_widget.getViewBox().autoRangeEnabled()[1])
         self._y_autorange_before_drag = enabled
         if enabled:
@@ -943,6 +952,9 @@ class DepthPlotDialog(BaseToolDialog):
         self.on_bg_roi_changed()
 
     def remove_bg_roi(self):
+        # The bg ROI is about to be destroyed, so no sigRegionChangeFinished is coming for
+        # a drag in progress. Unconditional: a no-op when nothing is frozen.
+        self._thaw_y_after_drag()
         if self.bg_roi is not None and self.image_viewer is not None:
             import warnings
             with warnings.catch_warnings():

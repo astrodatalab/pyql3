@@ -106,6 +106,12 @@ class would reach the other five ROI tools for no benefit — none of them has a
 freeze — and this change is meant to stay inside one file. Calling the thaw when no drag is
 in progress is a no-op, so both call sites are unconditional.
 
+**Not every drag path is wired.** `BaseToolDialog.custom_mouse_drag` — the "Draw Region" drag
+that draws a new aperture from scratch — moves `self.roi` with `blockSignals(True)` around
+`setPos`/`setSize` and calls `on_roi_changed()` directly, so neither signal this mechanism
+relies on ever fires; that drag pays the full `AxisItem` regeneration cost and is left for a
+future change, since fixing it means touching `base_tool.py`.
+
 ## Testing
 
 Three tests in `tests/test_depth_plot.py`, driving the signals directly. No timing assertions —

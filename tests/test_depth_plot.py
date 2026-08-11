@@ -820,7 +820,13 @@ def _drag(dialog, roi, positions):
 
 def test_dragging_the_aperture_holds_the_y_range_until_release(loaded_viewer):
     """The AxisItem caches its rendering in a QPicture that a Y-range change throws away,
-    so re-ranging on every mouse-move event made a drag cost 37.7% more than it needed to.
+    so re-ranging on every mouse-move event made a drag cost 39.6% more than it needed to.
+
+    `viewRange()` only reflects a pending auto-range after `prepareForPaint()` runs -- that
+    is the only place `ViewBox.updateAutoRange()` is called from, and nothing paints
+    offscreen with no display. Without it, `vb.viewRange()[1]` never moves from its initial
+    `[0, 1]` regardless of whether the freeze is wired at all, and the mid-drag assertion
+    below is comparing `[0, 1]` to itself.
     """
     dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
     try:
@@ -828,10 +834,13 @@ def test_dragging_the_aperture_holds_the_y_range_until_release(loaded_viewer):
         assert vb.autoRangeEnabled()[1], "the Y axis should auto-range before any drag"
 
         dialog.roi.sigRegionChangeStarted.emit(dialog.roi)
+        vb.prepareForPaint()
         frozen = list(vb.viewRange()[1])
 
         for pos in ((5, 5), (12, 18), (25, 9)):
             dialog.roi.setPos(list(pos), finish=False)
+            vb.prepareForPaint()
+            assert not vb.autoRangeEnabled()[1], "the Y axis is still auto-ranging mid-drag"
             assert list(vb.viewRange()[1]) == frozen, \
                 f"the Y range moved to {vb.viewRange()[1]} mid-drag"
 
@@ -886,10 +895,13 @@ def test_dragging_the_background_region_also_holds_the_y_range(loaded_viewer):
 
         vb = dialog.plot_widget.getViewBox()
         dialog.bg_roi.sigRegionChangeStarted.emit(dialog.bg_roi)
+        vb.prepareForPaint()
         frozen = list(vb.viewRange()[1])
 
         for pos in ((2, 2), (8, 14)):
             dialog.bg_roi.setPos(list(pos), finish=False)
+            vb.prepareForPaint()
+            assert not vb.autoRangeEnabled()[1], "the Y axis is still auto-ranging mid-drag"
             assert list(vb.viewRange()[1]) == frozen
 
         dialog.bg_roi.sigRegionChangeFinished.emit(dialog.bg_roi)
@@ -912,6 +924,32 @@ def test_an_interrupted_drag_does_not_leave_the_y_axis_frozen(loaded_viewer):
         dialog.combo_shape.setCurrentText("Rectangle")   # fires toggle_roi_shape()
 
         assert vb.autoRangeEnabled()[1], "the Y axis is still frozen after the ROI vanished"
+        assert dialog._y_autorange_before_drag is None
+    finally:
+        dialog.close()
+
+
+def test_disabling_the_background_mid_drag_does_not_leave_the_y_axis_frozen(loaded_viewer):
+    """`remove_bg_roi()` destroys the background ROI, which is also reached by unticking
+    Enable Background Subtraction (via `toggle_background()`) and by switching Mode back to
+    Annulus (via `on_bg_mode_changed()`) -- neither of which is `toggle_roi_shape()` or
+    `closeEvent()`, the two paths that already thaw. Without a thaw at the top of
+    `remove_bg_roi()` itself, a drag interrupted this way leaves the axis frozen for the
+    rest of the dialog's life.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.combo_bg_mode.setCurrentText("Region")
+        dialog.chk_enable_bg.setChecked(True)
+        assert dialog.bg_roi is not None
+
+        vb = dialog.plot_widget.getViewBox()
+        dialog.bg_roi.sigRegionChangeStarted.emit(dialog.bg_roi)
+        assert not vb.autoRangeEnabled()[1], "precondition: the drag froze the axis"
+
+        dialog.chk_enable_bg.setChecked(False)   # fires toggle_background() -> remove_bg_roi()
+
+        assert vb.autoRangeEnabled()[1], "the Y axis is still frozen after the bg ROI vanished"
         assert dialog._y_autorange_before_drag is None
     finally:
         dialog.close()
