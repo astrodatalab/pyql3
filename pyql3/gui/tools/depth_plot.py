@@ -939,6 +939,7 @@ class DepthPlotDialog(BaseToolDialog):
         else:
             self.image_viewer.imv.getView().addItem(self.bg_roi)
         self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
+        self._wire_drag_freeze(self.bg_roi)
         self.on_bg_roi_changed()
 
     def remove_bg_roi(self):
@@ -1037,6 +1038,7 @@ class DepthPlotDialog(BaseToolDialog):
         self.update_plot()
 
     def closeEvent(self, event):
+        self._thaw_y_after_drag()
         self.clear_line_overlays()
         self.remove_bg_roi()
         self.remove_annulus_rings()
@@ -1339,6 +1341,9 @@ class DepthPlotDialog(BaseToolDialog):
         self.lbl_line_info.setText(f"{len(visible_lines)} line(s) visible (out of {len(self.loaded_lines)} total)")
         
     def toggle_roi_shape(self):
+        # Both ROIs are about to be destroyed, so no sigRegionChangeFinished is coming for
+        # a drag in progress. Unconditional: a no-op when nothing is frozen.
+        self._thaw_y_after_drag()
         shape = self.combo_shape.currentText()
         pos = self.roi.pos()
         size = self.roi.size()
@@ -1373,6 +1378,7 @@ class DepthPlotDialog(BaseToolDialog):
             else:
                 self.image_viewer.imv.getView().addItem(self.bg_roi)
             self.bg_roi.sigRegionChanged.connect(self.on_bg_roi_changed)
+            self._wire_drag_freeze(self.bg_roi)
 
         # An annulus needs a circle to be concentric with, so over a rectangle the option is
         # *withdrawn*, not quietly ignored. Leaving the combo reading "Annulus" while the

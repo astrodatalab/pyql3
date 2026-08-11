@@ -874,3 +874,44 @@ def test_a_manual_y_zoom_survives_a_drag(loaded_viewer):
         assert list(vb.viewRange()[1]) == [1.0, 9.0]
     finally:
         dialog.close()
+
+
+def test_dragging_the_background_region_also_holds_the_y_range(loaded_viewer):
+    """The background region is dragged exactly as the aperture is, and costs the same."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.combo_bg_mode.setCurrentText("Region")
+        assert dialog.bg_roi is not None
+
+        vb = dialog.plot_widget.getViewBox()
+        dialog.bg_roi.sigRegionChangeStarted.emit(dialog.bg_roi)
+        frozen = list(vb.viewRange()[1])
+
+        for pos in ((2, 2), (8, 14)):
+            dialog.bg_roi.setPos(list(pos), finish=False)
+            assert list(vb.viewRange()[1]) == frozen
+
+        dialog.bg_roi.sigRegionChangeFinished.emit(dialog.bg_roi)
+        assert vb.autoRangeEnabled()[1]
+    finally:
+        dialog.close()
+
+
+def test_an_interrupted_drag_does_not_leave_the_y_axis_frozen(loaded_viewer):
+    """Switching shape destroys the ROI mid-drag, so `sigRegionChangeFinished` never
+    arrives. Without a thaw on that path the Y axis stays frozen for the life of the
+    dialog, which reads as a bug rather than as a fast drag.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        vb = dialog.plot_widget.getViewBox()
+        dialog.roi.sigRegionChangeStarted.emit(dialog.roi)
+        assert not vb.autoRangeEnabled()[1], "precondition: the drag froze the axis"
+
+        dialog.combo_shape.setCurrentText("Rectangle")   # fires toggle_roi_shape()
+
+        assert vb.autoRangeEnabled()[1], "the Y axis is still frozen after the ROI vanished"
+        assert dialog._y_autorange_before_drag is None
+    finally:
+        dialog.close()
