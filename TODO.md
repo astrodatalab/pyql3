@@ -7,6 +7,9 @@
   from the active tab on every tab switch.
 - Zenodo integration of release versions so the tool is citeable
 - In the Depth Plot tool, create a way to save the plotted spectrum into a 1D FITS file with the proper WCS information for the wavelengths. If the sky subtraction is being done, save the sky subtracted spectrum. Create an implementation plan for this for me to review. Try to add to the UI in a way that is compact.
+- Depth Plot's drag Y-freeze applies to `cuts.py` too: it wires `sigRegionChanged`
+  straight to `update_plot()` with auto-ranging axes, so every drag step throws away the
+  AxisItem picture cache. Same fix, ~15 lines. Measured 37.7% on the Depth Plot.
 # DONE
 - Background subtraction from a sky annulus in the Depth Plot, so each channel is an aperture
   photometry measurement. The Depth Plot now opens on a circular aperture with an explicit
