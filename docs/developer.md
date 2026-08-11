@@ -262,6 +262,78 @@ rather than skipping silently, so a typo cannot masquerade as "not configured".
 
 ---
 
+## 🔇 Console messages that are not ours
+
+Launching from a terminal on Linux prints things QuickLook 3 did not emit. Two are known and
+harmless; the point of this section is that you do not spend an afternoon on them again.
+
+### `qt.svg.draw: The requested buffer size is too big, ignoring`
+
+Usually in bursts of four or more, each time the **Open...** dialog appears:
+
+```
+qt.svg.draw: The requested buffer size is too big, ignoring
+qt.svg.draw: The requested filter is too big, ignoring
+```
+
+Both strings live in Qt's own `QtSvg`, which since the 6.7.x hardening refuses to allocate an
+oversized offscreen buffer for an SVG element. `QFileDialog` on Linux is Qt's own dialog — the
+PySide6 wheel ships no `platformthemes` plugin, so there is no GTK dialog to hand off to — and
+it asks `QFileIconProvider` for a dozen icons at once. Those resolve through `QIcon::fromTheme`
+to the desktop's **SVG** icon theme (Yaru, Adwaita) and render via the bundled `libqsvgicon`
+engine. `ignoring` means Qt skips that element and carries on; the dialog works.
+
+Nothing in QuickLook 3 is involved. We ship no SVG, we do not pass `DontUseNativeDialog`, and
+the only SVGs in the dependency tree are pyqtgraph's — all of which render clean at every size
+the app asks for. This is Qt's size heuristic disagreeing with a distribution's icon theme.
+
+To silence exactly those two messages and nothing else:
+
+```bash
+QT_LOGGING_RULES="qt.svg.draw=false" uv run python main.py
+```
+
+That is deliberately **not** set in `main.py`: it would suppress the category for every user on
+every platform, including a case where the refused SVG is one that matters.
+
+### `All-NaN slice encountered`
+
+From `pyqtgraph/graphicsItems/ImageItem.py`, building the histogram of a plane with no finite
+pixels — a dead channel. Cosmetic; the plane really is empty.
+
+### Diagnosing a message that is *not* listed here
+
+Neither numpy nor Qt names the caller: numpy reports where it *noticed* a bad value, and QtSvg
+never logs which file it is rendering. Run the app behind a `warnings` hook and a Qt message
+handler that print the Python stack, which is the only thing that places either one:
+
+```python
+# warn_trace.py — run instead of main.py, then reproduce the noise
+import os, runpy, sys, traceback, warnings
+os.environ["QT_LOGGING_RULES"] = "qt.svg*=true"      # before PySide6 is imported
+from PySide6 import QtCore
+
+def _trace(header):
+    print(f"\n=== {header}", file=sys.stderr)
+    traceback.print_stack()
+
+warnings.showwarning = lambda msg, cat, fn, ln, *a: _trace(f"{cat.__name__}: {msg} ({fn}:{ln})")
+warnings.simplefilter("always")
+QtCore.qInstallMessageHandler(lambda mode, ctx, msg: _trace(f"Qt {ctx.category}: {msg}"))
+
+sys.argv = ["main.py"] + sys.argv[1:]
+runpy.run_path("main.py", run_name="__main__")
+```
+
+A Qt message whose stack ends at `app.exec()` came from a pure-C++ paint — a dialog, a themed
+icon — and is not something our code chose. Add a de-duplicating `set` of `(message, stack)` if
+the output is too fast to read; a repaint can emit the same warning hundreds of times per
+second, and `warnings`' own once-per-location rule does not hold here (every
+`warnings.catch_warnings()` block clears the registry that implements it, and there are eight
+of them in the codebase).
+
+---
+
 ## 📦 Building Application Packages
 
 Build standalone application bundles for macOS (`.app` / `.dmg`) or Windows (`.exe`):

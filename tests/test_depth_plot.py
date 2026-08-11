@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.depth_plot import DepthPlotDialog, latex_to_html
@@ -688,11 +689,12 @@ def test_the_legend_is_anchored_away_from_the_start_of_the_spectrum(loaded_viewe
         dialog.close()
 
 
-def test_source_and_subtracted_differ_by_more_than_colour(loaded_viewer):
-    """Two solid curves separable only by hue are not separable for every reader."""
+def test_every_spectrum_curve_is_drawn_solid(loaded_viewer):
+    """Dashes read as gaps in the spectrum, so the curves separate by colour alone."""
     dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
     try:
-        assert dialog.plot_sub.opts['pen'].style() != dialog.plot_data.opts['pen'].style()
+        for curve in (dialog.plot_data, dialog.plot_bg, dialog.plot_sub):
+            assert curve.opts['pen'].style() == Qt.SolidLine
     finally:
         dialog.close()
 
@@ -711,5 +713,98 @@ def test_a_vertical_cut_does_not_keep_the_previous_background_curve(loaded_viewe
         x_bg, _ = dialog.plot_bg.getData()
         assert x_bg is None or len(x_bg) == 0, \
             "the depth plot's background curve survived into a cut"
+    finally:
+        dialog.close()
+
+
+def _label_positions(dialog):
+    return [text.pos().y() for _, text in dialog.line_items]
+
+
+def test_line_labels_are_placed_along_the_bottom(loaded_viewer):
+    """A spectrum has its headroom below the trace, not above it.
+
+    Moved to a gutter at the top these were harder to read and ran through the spectrum,
+    which sits near the top of the view whenever autoranging has to fit a subtracted curve
+    near zero as well. The floor is the room that is actually free.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_line_overlays()
+        assert dialog.line_items, "no line labels were drawn"
+
+        y_min, y_max = dialog.plot_widget.getViewBox().viewRange()[1]
+        middle = (y_min + y_max) / 2.0
+        above = [y for y in _label_positions(dialog) if y >= middle]
+        assert not above, f"{len(above)} labels are anchored in the upper half of the view"
+    finally:
+        dialog.close()
+
+
+def test_crowded_line_labels_still_stagger(loaded_viewer):
+    """The gutter must not cost the stagger that keeps neighbouring names apart."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        # Four lines far closer together than the stagger threshold, inside the view.
+        # Taken from the drawn curve, not `viewRange()`: with no window on screen the view
+        # is still (0, 1) and `update_line_overlays` falls back to the data extent itself.
+        x_data, _ = dialog.plot_data.getData()
+        x_min, x_max = float(x_data[0]), float(x_data[-1])
+        mid = (x_min + x_max) / 2.0
+        step = (x_max - x_min) * 1e-4
+        dialog.loaded_lines = [(mid + i * step, f"X {i}") for i in range(4)]
+        dialog.update_line_overlays()
+
+        rows = _label_positions(dialog)
+        assert len(rows) == 4, "the crowded lines were not all drawn"
+        assert len(set(rows)) == 4, f"crowded names landed on the same row: {rows}"
+    finally:
+        dialog.close()
+
+
+def test_line_labels_rise_from_their_row(loaded_viewer):
+    """Rotated text extends from its anchor, and from the floor it must extend upwards."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_line_overlays()
+        for _, text in dialog.line_items:
+            assert text.anchor.x() == 0.0 and text.anchor.y() == 0.5, \
+                f"label anchor {text.anchor} does not stand the text up from its row"
+    finally:
+        dialog.close()
+
+
+def test_line_lists_are_offered_by_filename(loaded_viewer):
+    """A line list is data, and the name on screen has to be the file it came from.
+
+    Titles like "NIR Stellar Lines" read better and cost more than they are worth: they
+    break the association with the file on disk that the numbers can be checked against.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer)
+    try:
+        items = [dialog.combo_linelist.itemText(i)
+                 for i in range(dialog.combo_linelist.count())]
+        assert "nir_stellar_lines.txt" in items, f"line lists are not named by file: {items}"
+        assert "arcturus_molecular_lines.txt" in items
+        assert dialog.combo_linelist.currentText() == "nir_stellar_lines.txt"
+    finally:
+        dialog.close()
+
+
+def test_a_line_list_entry_carries_its_full_path(loaded_viewer):
+    """The filename says which file; the tooltip says which copy of it.
+
+    Several data directories can supply a list (a frozen bundle, the repo, a browsed file),
+    and the names collide. The path is carried alongside without changing what is displayed.
+    """
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer)
+    try:
+        idx = dialog.combo_linelist.findText("nir_stellar_lines.txt")
+        assert idx >= 0
+        assert dialog.combo_linelist.itemData(idx).endswith("nir_stellar_lines.txt"), \
+            "the file behind a list entry is not recoverable"
     finally:
         dialog.close()

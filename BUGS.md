@@ -1697,6 +1697,61 @@ confirmation — so it runs on every platform, which is what would have caught t
 full build is well under fifteen minutes, so the next hang of any kind is reported in a
 quarter of an hour instead of six hours.
 
+## M23. A NaN world coordinate was formatted, flooding stderr on Linux
+
+- **Status:** ✅ FIXED — `gui/viewers/image_viewer.py` (`_finite()`, used in `mouse_moved`),
+  covered by three tests in `tests/test_image_viewer.py`
+- **Severity:** medium — a wrong readout on every platform, and unusable terminal output on
+  Linux
+- **Reported by a user**, while dragging the Depth Plot aperture across the image.
+
+### Symptom
+
+Dragging a tool's ROI printed, over and over:
+
+```
+/…/numpy/lib/_function_base_impl.py:2610: RuntimeWarning: invalid value encountered in do_format (vectorized)
+  outputs = ufunc(*args, out=...)
+```
+
+Nothing in the message names our code, and it never appeared on macOS.
+
+### Root cause
+
+Three things had to line up.
+
+`do_format` exists in exactly one place in the dependency tree:
+`astropy/coordinates/angles/core.py:375`, the inner function `Angle.to_string()` runs through
+`np.vectorize`. The warning therefore means **a non-finite angle is being formatted**, and
+`mouse_moved()` formats whatever the WCS hands back with no check. A WCS that has lost
+keywords, or that is asked about a pixel its projection cannot reach, returns NaN rather than
+raising, so the `except Exception` around that block never saw it: the readout displayed the
+literal `WCS: RA: nan  |  DEC: nan`. Reproduced by stubbing `pixel_to_world_values`.
+
+The drag is not special. `mouse_moved` is wired to the scene's mouse-move proxy, so the
+readout recomputes on *every* mouse event; a drag is simply the longest stream of them a user
+generates. A probe driving the aperture across the frame counts one `Angle.to_string()` call
+per event.
+
+It is Linux-only because numpy reports this by reading the FPU invalid flag at the ufunc
+boundary. x86-64 sets that flag on a quiet-NaN compare; arm64 does not. Confirmed directly —
+a `np.vectorize`d function doing `float(nan) > 0` warns on x86 and is silent on an arm64 Mac.
+**The Mac is not unaffected, only quiet**; the wrong label is on both.
+
+Why it repeated rather than printing once, as Python's once-per-location rule promises:
+`warnings.catch_warnings()` bumps the filter version on exit, which clears the registry that
+implements the rule. There are eight of those blocks in the codebase.
+
+### Fix
+
+`_finite()` guards both branches of the readout — the 2D `SkyCoord` path and the 3D
+per-axis path — and a non-finite coordinate now reads `WCS: N/A`, the same thing a failed
+transform already showed. Nothing non-finite reaches a formatter, so the warning has no
+source.
+
+`agent_tests/probes/warn_trace.py` (scratch) prints a full caller stack per warning; the bare
+numpy message names only where numpy noticed, never who asked.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |

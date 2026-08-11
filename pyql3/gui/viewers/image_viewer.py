@@ -17,6 +17,24 @@ try:
 except ImportError:
     pass
 
+def _finite(*values):
+    """True when every value is a real number worth putting in a coordinate readout.
+
+    A WCS missing keywords, or asked about a pixel its projection cannot reach, returns
+    NaN rather than raising, so the `except Exception` below never sees it. Formatting
+    that NaN wrote a literal `RA: nan` into the readout, and `Angle.to_string()` runs
+    through `np.vectorize`, where a NaN comparison sets the x86 invalid flag: numpy then
+    reports `invalid value encountered in do_format (vectorized)` once per mouse-move
+    event, so dragging a tool's ROI across the image floods stderr on Linux. (Silent on
+    arm64 macOS, which does not raise the flag on quiet-NaN compares — the bad readout is
+    the platform-independent half of the symptom.)
+    """
+    try:
+        return bool(np.all(np.isfinite(np.asarray(values, dtype=float))))
+    except (TypeError, ValueError):
+        return False
+
+
 class JumpSlider(QSlider):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1642,9 +1660,15 @@ class ImageViewer(QWidget):
                             p1 = orig_x; p2 = orig_y
                             world = self.wcs.pixel_to_world(p1, p2)
                             if hasattr(world, 'ra') and hasattr(world, 'dec'):
-                                self.lbl_wcs.setText(f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  {world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
+                                if not _finite(world.ra.deg, world.dec.deg):
+                                    self.lbl_wcs.setText("WCS: N/A")
+                                else:
+                                    self.lbl_wcs.setText(f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  {world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
                             elif isinstance(world, (list, tuple)) and len(world) >= 2:
-                                self.lbl_wcs.setText(f"WCS: {world[0]:.5g}  {world[1]:.5g}")
+                                if not _finite(world[0], world[1]):
+                                    self.lbl_wcs.setText("WCS: N/A")
+                                else:
+                                    self.lbl_wcs.setText(f"WCS: {world[0]:.5g}  {world[1]:.5g}")
                             else:
                                 self.lbl_wcs.setText(f"WCS: {world}")
                         elif self.wcs.naxis >= 3 and self.wcs_z_idx is not None:
@@ -1674,6 +1698,9 @@ class ImageViewer(QWidget):
                                 ax_idx = int(ax.split()[-1]) - 1
                                 if ax_idx < len(vals):
                                     val = vals[ax_idx]
+                                    if not _finite(val):
+                                        wcs_parts = []
+                                        break
                                     phys = self.wcs.world_axis_physical_types[ax_idx]
                                     if phys == 'pos.eq.ra':
                                         coord = SkyCoord(ra=val*u.deg, dec=0*u.deg)
@@ -1685,8 +1712,8 @@ class ImageViewer(QWidget):
                                         unit = self.wcs.world_axis_units[ax_idx]
                                         wcs_parts.append(f"{phys}: {val:.5g} {unit}")
                             wcs_text = "  |  ".join(wcs_parts)
-                                
-                            self.lbl_wcs.setText(f"WCS: {wcs_text}")
+
+                            self.lbl_wcs.setText(f"WCS: {wcs_text}" if wcs_text else "WCS: N/A")
                     except Exception:
                         self.lbl_wcs.setText("WCS: N/A")
                 else:

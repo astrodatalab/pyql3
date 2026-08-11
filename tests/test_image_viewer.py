@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 import pyqtgraph as pg
+from types import SimpleNamespace
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.core.fits_reader import FitsReader
 
@@ -599,3 +600,46 @@ def test_osiris_default_axis_selection_on_real_data(qapp, real_osiris_fits):
         assert np.array_equal(viewer.raw_data, reader.data)
     finally:
         reader.close()
+
+
+def _hover_centre(viewer):
+    """Drive `mouse_moved` over the middle of the frame and return the WCS readout."""
+    x = viewer.display_data.shape[1] // 2
+    y = viewer.display_data.shape[2] // 2
+    scene_pos = viewer.imv.getView().mapViewToScene(pg.Point(x + 0.5, y + 0.5))
+    viewer.mouse_moved([scene_pos])
+    return viewer.lbl_wcs.text()
+
+
+def test_a_wcs_that_returns_nan_reads_out_as_not_available(loaded_viewer):
+    """A WCS that has lost its keywords returns NaN instead of raising.
+
+    Handing that to `Angle.to_string()` put the literal `RA: nan  |  DEC: nan` in the
+    readout, and on x86 made numpy report `invalid value encountered in do_format
+    (vectorized)` -- once per mouse-move event, so dragging a tool's ROI across the
+    image flooded stderr.
+    """
+    loaded_viewer.wcs.pixel_to_world_values = \
+        lambda *args, **kwargs: (np.float64(2.2e-6), np.float64(np.nan), np.float64(np.nan))
+
+    assert _hover_centre(loaded_viewer) == "WCS: N/A"
+
+
+def test_a_two_axis_wcs_that_returns_nan_reads_out_as_not_available(loaded_viewer):
+    """The 2D branch of the readout formats a SkyCoord directly, and needs the same guard."""
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    loaded_viewer.wcs = SimpleNamespace(
+        naxis=2,
+        pixel_to_world=lambda *a, **k: SkyCoord(ra=np.nan * u.deg, dec=np.nan * u.deg),
+    )
+    loaded_viewer.wcs_z_idx = None
+
+    assert _hover_centre(loaded_viewer) == "WCS: N/A"
+
+
+def test_a_finite_wcs_still_reads_out(loaded_viewer):
+    """The guard must not swallow the ordinary case."""
+    text = _hover_centre(loaded_viewer)
+    assert "N/A" not in text and "nan" not in text, text

@@ -93,8 +93,15 @@ Line list wavelengths $\lambda$ are mapped directly onto the plot in wavelength 
 
 #### D. Spectral Line Overlay & Staggering
 - Overlaid spectral line labels feature 90° vertical rotation.
-- To prevent overlapping labels when spectral lines are closely spaced, label heights are automatically staggered across 4 discrete vertical offset levels.
+- Labels stand up from a band along the **bottom** of the view, where a spectrum has its free
+  space; the trace itself is pushed towards the top whenever autoranging also has to fit a
+  background-subtracted curve near zero.
+- To prevent overlapping labels when spectral lines are closely spaced, label heights are automatically staggered across 4 discrete vertical offset levels within that band.
 - LaTeX mathematical expressions enclosed in `$$...$$` (e.g. `$$H_\alpha$$`, `$$P_{2f}6.5$$`) are automatically parsed and formatted.
+
+Line lists are listed under their own filenames, so a curve can always be traced back to the
+file it was drawn from. Hovering an entry shows the full path, which distinguishes copies of
+the same filename coming from different data directories.
 
 #### E. Exporting Spectra & Figures (CSV, PNG, SVG)
 

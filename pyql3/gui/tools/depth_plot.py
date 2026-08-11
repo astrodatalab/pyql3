@@ -25,6 +25,17 @@ SKY_WIDTH = 2.0
 DEFAULT_INNER_RADIUS = DEFAULT_APERTURE_RADIUS + SKY_INNER_GAP
 DEFAULT_OUTER_RADIUS = DEFAULT_INNER_RADIUS + SKY_WIDTH
 
+#: Where a spectral line's name sits, as a fraction of the view height measured *up from the
+#: bottom*, with the name standing up from its row. Four rows, so names too close together to
+#: read side by side step up instead of colliding.
+#:
+#: The floor, not the ceiling: a spectrum has its free space below the trace. Moved to a
+#: gutter at the top these were harder to read *and* still crossed the spectrum, because
+#: whenever autoranging has to fit a subtracted curve near zero the continuum is pushed hard
+#: against the top of the view. The rows are stepped only slightly apart -- they are there to
+#: separate horizontally crowded names, not to spread labels over half the plot.
+GUTTER_LEVELS = (0.08, 0.16, 0.24, 0.32)
+
 #: Colour of the two sky rings. The same orange as the Background curve, so the annulus on
 #: the image and the line on the plot are visibly one thing.
 _RING_COLOR = (255, 140, 0)
@@ -154,10 +165,10 @@ class DepthPlotDialog(BaseToolDialog):
         # Built without `name=`, which would enrol them in the legend before they have data.
         # `sync_legend()` owns membership: see there for why an empty curve is not listed.
         self.plot_data = self.plot_widget.plot([], [], pen=pg.mkPen('k', width=2.5))
-        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=2.5, style=Qt.DashLine))
-        # Dash-dot, not another solid line: Source and Subtracted are the two curves most
-        # often compared, and hue is the one channel a colour-blind reader may not have.
-        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=2.5, style=Qt.DashDotLine))
+        # Solid, like Source: a dashed line breaks up narrow spectral features, and a
+        # reader cannot tell a gap in the dash from a gap in the spectrum.
+        self.plot_bg = self.plot_widget.plot([], [], pen=pg.mkPen((255, 140, 0), width=2.5))
+        self.plot_sub = self.plot_widget.plot([], [], pen=pg.mkPen('r', width=2.5))
         self.plot_legend.addItem(self.plot_data, "Source")
         
         # Crosshair / Hover Label
@@ -1019,6 +1030,25 @@ class DepthPlotDialog(BaseToolDialog):
 
         return pyql3_dir / "data"
 
+    def add_linelist_item(self, filepath, index=None):
+        """Put one line list in the combo, under its own filename.
+
+        The filename *is* the name: a line list is data, and prettifying `nir_stellar_lines.txt`
+        into "NIR Stellar Lines" breaks the association with the file on disk that the numbers
+        can be checked against. The full path rides along in the item data and tooltip, which
+        says which *copy* was loaded -- a frozen bundle, the repo, a browsed file -- without
+        changing what is displayed.
+        """
+        name = os.path.basename(filepath)
+        self.linelist_files[name] = filepath
+        if index is None:
+            self.combo_linelist.addItem(name, filepath)
+            index = self.combo_linelist.count() - 1
+        else:
+            self.combo_linelist.insertItem(index, name, filepath)
+        self.combo_linelist.setItemData(index, filepath, Qt.ToolTipRole)
+        return index
+
     def populate_linelists(self):
         self.combo_linelist.blockSignals(True)
         self.combo_linelist.clear()
@@ -1028,22 +1058,16 @@ class DepthPlotDialog(BaseToolDialog):
         if data_dir.exists():
             for p in sorted(data_dir.glob("*")):
                 if p.suffix.lower() in [".txt", ".csv"]:
-                    display_name = p.name
-                    self.linelist_files[display_name] = str(p)
-                    self.combo_linelist.addItem(display_name)
+                    self.add_linelist_item(str(p))
 
         self.combo_linelist.addItem("Load Custom CSV...")
 
-        if "nir_stellar_lines.txt" in self.linelist_files:
-            self.combo_linelist.setCurrentText("nir_stellar_lines.txt")
-            self.loaded_lines = self.parse_line_list(self.linelist_files["nir_stellar_lines.txt"])
-        elif "rayner_arcturus_atomic_line_list_reformat.txt" in self.linelist_files:
-            self.combo_linelist.setCurrentText("rayner_arcturus_atomic_line_list_reformat.txt")
-            self.loaded_lines = self.parse_line_list(self.linelist_files["rayner_arcturus_atomic_line_list_reformat.txt"])
-        elif self.linelist_files:
-            first_name = list(self.linelist_files.keys())[0]
-            self.combo_linelist.setCurrentText(first_name)
-            self.loaded_lines = self.parse_line_list(self.linelist_files[first_name])
+        default = ("nir_stellar_lines.txt" if "nir_stellar_lines.txt" in self.linelist_files
+                   else next(iter(self.linelist_files), None))
+
+        if default is not None:
+            self.combo_linelist.setCurrentText(default)
+            self.loaded_lines = self.parse_line_list(self.linelist_files[default])
         else:
             self.combo_linelist.setCurrentText("Load Custom CSV...")
             self.loaded_lines = []
@@ -1090,15 +1114,9 @@ class DepthPlotDialog(BaseToolDialog):
             self, "Select Spectral Line List CSV", initial_dir, "CSV / Text Files (*.csv *.txt);;All Files (*)"
         )
         if filepath:
-            name = os.path.basename(filepath)
-            self.linelist_files[name] = filepath
             idx = self.combo_linelist.findText("Load Custom CSV...")
-            if idx >= 0:
-                self.combo_linelist.insertItem(idx, name)
-                self.combo_linelist.setCurrentIndex(idx)
-            else:
-                self.combo_linelist.addItem(name)
-                self.combo_linelist.setCurrentText(name)
+            idx = self.add_linelist_item(filepath, index=idx if idx >= 0 else None)
+            self.combo_linelist.setCurrentIndex(idx)
             self.loaded_lines = self.parse_line_list(filepath)
             self.update_line_overlays()
         else:
@@ -1237,7 +1255,6 @@ class DepthPlotDialog(BaseToolDialog):
                 pass
 
         pen = pg.mkPen(color=(0, 100, 220), style=Qt.PenStyle.DotLine, width=1.5)
-        stagger_levels = [0.08, 0.22, 0.36, 0.50]
         last_x = -9999.0
         level = 0
         y_span = view_y_max - view_y_min
@@ -1245,13 +1262,12 @@ class DepthPlotDialog(BaseToolDialog):
 
         for idx, (x_pos, name, _wl_um) in enumerate(visible_lines):
             if abs(x_pos - last_x) < min_spacing:
-                level = (level + 1) % len(stagger_levels)
+                level = (level + 1) % len(GUTTER_LEVELS)
             else:
                 level = 0
             last_x = x_pos
 
-            pos_val = stagger_levels[level]
-            y_pos = view_y_min + pos_val * y_span
+            y_pos = view_y_min + GUTTER_LEVELS[level] * y_span
 
             html_content = latex_to_html(name)
             html_text = f'<span style="color: rgb(0, 70, 180); font-size: 12pt; font-weight: bold;">{html_content}</span>'
@@ -1267,6 +1283,9 @@ class DepthPlotDialog(BaseToolDialog):
                 text_item.setVisible(True)
             else:
                 line_item = pg.InfiniteLine(pos=x_pos, angle=90, pen=pen)
+                # anchor=(0.0, 0.5) with setAngle(90) stands the name *up* from its row,
+                # which is what a row near the floor needs. (1.0, 0.5) hangs it downwards
+                # instead -- the two are not interchangeable if the rows ever move.
                 text_item = pg.TextItem(html=html_text, anchor=(0.0, 0.5))
                 line_item.dataBounds = lambda ax, *args, **kwargs: (None, None)
                 text_item.dataBounds = lambda ax, *args, **kwargs: (None, None)
