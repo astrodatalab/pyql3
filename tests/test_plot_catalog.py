@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QHeaderView
 
 from pyql3.gui.tools.plot_catalog import (
     DEC_COLUMN_NAMES,
+    cell_text,
+    column_texts,
     PlotCatalogDialog,
     X_COLUMN_NAMES,
     Y_COLUMN_NAMES,
@@ -279,7 +281,7 @@ def test_fits_catalog_plots_its_sources(viewer, fits_catalog_file):
 def test_fits_catalog_labels_are_text_not_byte_reprs(viewer, fits_catalog_file):
     dlg = _open_dialog(viewer, fits_catalog_file)
     assert dlg.combo_name.currentText() == 'NAME'
-    assert dlg.table.item(0, 0).text() == 'Src0'
+    assert dlg.table.model().index(0, 0).data() == 'Src0'
     assert [txt.toPlainText() for txt in dlg.text_items][:1] == ['Src0']
     dlg.close()
 
@@ -459,8 +461,8 @@ def test_a_selection_can_be_cleared(qapp, loaded_viewer):
         dialog.clear_selection()
 
         assert not dialog.highlight_item.isVisible(), "the highlight stayed on the image"
-        assert dialog.table.selectedItems() == []
-        assert dialog.table.currentItem() is None, "the row still reads as current"
+        assert dialog.table.selectionModel().selectedRows() == []
+        assert not dialog.table.currentIndex().isValid(), "the row still reads as current"
     finally:
         dialog.close()
 
@@ -583,7 +585,7 @@ def test_the_table_header_is_not_left_auto_resizing(viewer, fits_catalog_file):
     dlg = _open_dialog(viewer, fits_catalog_file)
     try:
         header = dlg.table.horizontalHeader()
-        for col in range(dlg.table.columnCount()):
+        for col in range(dlg.table.model().columnCount()):
             assert header.sectionResizeMode(col) != QHeaderView.ResizeToContents, (
                 f"column {col} left in ResizeToContents; the next load will be quadratic")
     finally:
@@ -608,10 +610,10 @@ def test_reloading_replaces_the_rows_rather_than_stacking_them(viewer, fits_cata
     try:
         dlg.load_catalog_file(fits_catalog_file, hdu='SOURCES')
         dlg.load_catalog_file(fits_catalog_file, hdu='BACKUP')
-        assert dlg.table.rowCount() == 2
-        assert dlg.table.columnCount() == 2
+        assert dlg.table.model().rowCount() == 2
+        assert dlg.table.model().columnCount() == 2
         header = dlg.table.horizontalHeader()
-        for col in range(dlg.table.columnCount()):
+        for col in range(dlg.table.model().columnCount()):
             assert header.sectionResizeMode(col) != QHeaderView.ResizeToContents
     finally:
         dlg.close()
@@ -724,5 +726,157 @@ def test_a_kept_choice_keeps_its_coordinate_type(viewer, tmp_path):
 
         assert dlg.combo_coord_type.currentIndex() == 0
         assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('x_fit', 'y_fit')
+    finally:
+        dlg.close()
+
+
+# --------------------------------------------------------------------------------------
+# The model-backed table: every row present, and a view row is the catalog row
+# --------------------------------------------------------------------------------------
+
+
+def test_every_row_of_a_large_catalog_is_present_and_readable(viewer, tmp_path):
+    """The point of the model is *when* the cells are formatted, not how many are shown.
+
+    A user who loads a catalog expects to be able to look at all of it, so this asserts the
+    count and reads the last row — a truncating implementation passes a count check alone.
+    """
+    n = 20000
+    path = tmp_path / "large.fits"
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.BinTableHDU.from_columns([
+            fits.Column(name='x_fit', format='D', array=np.arange(n, dtype=float)),
+            fits.Column(name='y_fit', format='D', array=np.arange(n, dtype=float) * 2),
+        ], name='CAT'),
+    ]).writeto(path)
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(str(path))
+        model = dlg.table.model()
+        assert model.rowCount() == n, "rows went missing"
+        assert model.index(n - 1, 0).data() == f"{float(n - 1):.5g}"
+        assert model.index(n - 1, 1).data() == f"{float((n - 1) * 2):.5g}"
+        assert f"Loaded: {n} sources" in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_a_masked_cell_still_reads_as_a_dash(viewer, fits_catalog_file):
+    """What `str(np.ma.masked)` produced when each cell was formatted on its own."""
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(fits_catalog_file, hdu='MASKED')
+        assert dlg.table.model().index(1, 0).data() == '--'
+        assert dlg.table.model().index(0, 0).data() == '11'
+    finally:
+        dlg.close()
+
+
+def test_searching_hides_rows_without_dropping_them(viewer, fits_catalog_file):
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    try:
+        dlg.filter_table('Src3')
+        assert dlg.table.model().rowCount() == 6, "the catalog itself must not shrink"
+        assert not dlg.table.isRowHidden(3)
+        assert dlg.table.isRowHidden(0)
+
+        dlg.filter_table('')
+        assert [dlg.table.isRowHidden(r) for r in range(6)] == [False] * 6
+    finally:
+        dlg.close()
+
+
+def test_a_row_selected_while_filtered_highlights_that_same_source(viewer, fits_catalog_file):
+    """The trap a QSortFilterProxyModel would have introduced.
+
+    `on_table_selection` and `delete_row` both index `catalog_data` with the view's row
+    number, so the two have to stay the same row. Filtering must not renumber anything.
+    """
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    try:
+        dlg.filter_table('Src3')          # only row 3 is left visible
+        dlg.table.selectRow(3)
+        expected = dlg.catalog_data[3]
+
+        x, y = dlg.highlight_item.getData()
+        assert (x[0], y[0]) == (expected['X'] + 0.5, expected['Y'] + 0.5)
+    finally:
+        dlg.close()
+
+
+def test_deleting_a_row_while_filtered_removes_the_selected_source(viewer, fits_catalog_file):
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    try:
+        dlg.filter_table('Src3')
+        dlg.table.selectRow(3)
+        doomed = float(dlg.catalog_data[3]['X'])
+        before = len(dlg.catalog_data)
+
+        next(a for a in dlg.build_context_menu(3).actions()
+             if a.text() == "Delete Marker").trigger()
+
+        assert len(dlg.catalog_data) == before - 1
+        assert dlg.table.model().rowCount() == before - 1
+        assert not np.any(np.asarray(dlg.catalog_data['X']) == doomed)
+    finally:
+        dlg.close()
+
+
+def test_a_search_still_in_the_box_survives_a_reload(viewer, fits_catalog_file):
+    """A model reset clears Qt's hidden rows, so the filter has to be re-applied."""
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    try:
+        dlg.filter_table('Src3')
+        dlg.search_bar.setText('Src3')
+
+        dlg.load_catalog_file(fits_catalog_file, hdu='SOURCES')
+
+        assert not dlg.table.isRowHidden(3)
+        assert dlg.table.isRowHidden(0), "the search was silently dropped by the reload"
+    finally:
+        dlg.close()
+
+
+def test_column_texts_matches_cell_by_cell_formatting(fits_catalog_file):
+    """The column-wise read is an optimisation, so it has to produce the same strings."""
+    table, _ = read_fits_table(fits_catalog_file, 'MASKED')
+    for cname in table.colnames:
+        assert column_texts(table[cname]) == [cell_text(v) for v in table[cname]]
+
+
+def test_filtering_updates_the_scroll_range(qapp, viewer, tmp_path):
+    """Guards the batching in `filter_table`.
+
+    `setRowHidden` re-lays the view out on every call, so a filter pass over 66k rows costs
+    1.26 s unless it is bracketed by `setUpdatesEnabled(False)` (0.02 s). Blocking the vertical
+    header's signals as well is the tempting next step and is wrong: it is no faster and the
+    scroll bar keeps its unfiltered range, so the view scrolls through empty space.
+    """
+    n = 2000
+    path = tmp_path / "scroll.fits"
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.BinTableHDU.from_columns([
+            fits.Column(name='x_fit', format='D', array=np.arange(n, dtype=float)),
+            fits.Column(name='y_fit', format='D', array=np.zeros(n)),
+        ], name='CAT'),
+    ]).writeto(path)
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(str(path))
+        dlg.show()
+        dlg.table.resize(400, 300)
+        qapp.processEvents()
+        unfiltered = dlg.table.verticalScrollBar().maximum()
+        assert unfiltered > 0, "the view never laid out, so this proves nothing"
+
+        dlg.filter_table('1999')
+        qapp.processEvents()
+        assert sum(0 if dlg.table.isRowHidden(r) else 1 for r in range(n)) == 1
+        assert dlg.table.verticalScrollBar().maximum() < unfiltered, (
+            "the scroll range still covers the hidden rows")
     finally:
         dlg.close()

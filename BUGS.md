@@ -1814,6 +1814,66 @@ Two neighbouring faults surfaced from the same report and are fixed with it:
   on the guess. The X/Y/name/type choice now survives a reload whenever the new table still has
   those columns, and only falls back to guessing when it cannot be honoured.
 
+## M29. A 66k-row catalog took 7.7 s and 1.1 GB to display 30 visible rows
+
+- **Status:** ✅ FIXED — `gui/tools/plot_catalog.py` (`CatalogTableModel`, `column_texts`,
+  `populate_table`, `filter_table`, `delete_row`), covered by the model-backed tests at the end
+  of `tests/test_plot_catalog.py`
+- **Severity:** medium — the tool worked, but a large catalog took ten seconds to appear and
+  cost a gigabyte for the rest of the session
+- **Reported by a user**, loading `jw01939003001_02101_00001_nrcb3_cal_priors_cat_FINAL.fits`
+  (66196 rows x 34 columns, 18 MB).
+
+### Symptom
+
+About 10 s to load, against 0.6 s for a 4704-row catalog of the same shape, and resident memory
+up by ~1.1 GB. Found immediately after `M28`, and asked as "is this an astropy problem?"
+
+### Root cause
+
+Not astropy's reader: `read_fits_table` takes **0.02 s** for the whole 18 MB. Two costs, both
+per-cell, over 66196 x 34 = 2.25 M cells:
+
+- **`QTableWidget` needs one `QTableWidgetItem` per cell.** 2.25 M objects: 2.85 s and
+  **1027 MB**, at about 480 bytes each. That is essentially all of the memory.
+- **Reading cells through `Table.Row` costs ~1.7 us each.** `row[col]` goes through numpy's
+  masked-array machinery — `MaskedArray.view` -> `__array_finalize__` -> `_update_from` ->
+  `_check_fill_value` — building a fresh masked scalar per cell: **3.89 s**. Reading the same
+  values column-wise as whole numpy arrays produces byte-identical strings in **0.24 s**.
+
+All of it was spent so that the ~30 rows which fit on screen could be drawn.
+
+### Fix
+
+`CatalogTableModel`, a `QAbstractTableModel` behind a `QTableView`. A cell is formatted when Qt
+asks for it, so a load costs nothing per row. **Every row is still present and scrollable** —
+what changed is when the work happens, not how much of the catalog is shown; a test asserts the
+count *and* reads the last row, since a count check alone passes for a truncating
+implementation.
+
+Measured on the reported file: **0.58 s and +62 MB**, from 7.7 s and +1100 MB. The 4704-row
+catalog went from 0.6 s to 0.13 s. Search went from 1.59 s per keystroke to 0.04 s.
+
+Three decisions worth keeping:
+
+- **Rows are hidden on the view, not filtered through a `QSortFilterProxyModel`.** A view row is
+  then always the catalog row, and both `on_table_selection` and `delete_row` index
+  `catalog_data` with it; through a proxy each needs `mapToSource`, and getting that wrong
+  deletes a source the user never selected. The proxy is also slower — 1.47 s against 0.02 s.
+  `test_a_row_selected_while_filtered_highlights_that_same_source` pins the invariant.
+- **`filter_table` brackets its pass in `setUpdatesEnabled(False)`**: `setRowHidden` re-lays the
+  view out on every call otherwise, 1.26 s against 0.02 s over 66k rows. Blocking the vertical
+  header's signals as well looks like the same optimisation and is **wrong** — no faster, and
+  the scroll bar keeps its unfiltered range (1985301 instead of 155691), so the view scrolls
+  through empty space. `test_filtering_updates_the_scroll_range` catches it.
+- **Column widths sample `COLUMN_WIDTH_SAMPLE_ROWS` (100) rows.** Every sampled cell is a Python
+  call into the model, so Qt's default of 1000 costs 0.76 s on this catalog against 0.06 s.
+
+Still outstanding: with 66196 sources in view, ticking **Labels** builds one `pg.TextItem` per
+visible source and rebuilds them all 200 ms after every pan. Measured 77 MB for 1954 items,
+which extrapolates to ~2.6 GB here. `region_layer.INTERACTIVE_LIMIT` is the pattern to copy —
+deliberately left for a follow-up.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |

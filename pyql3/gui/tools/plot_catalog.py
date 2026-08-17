@@ -4,11 +4,11 @@ from collections import namedtuple
 import numpy as np
 from PySide6.QtWidgets import (
     QHBoxLayout, QPushButton, QLabel,
-    QComboBox, QSpinBox, QCheckBox, QTableWidget, QTableWidgetItem,
-    QFileDialog, QHeaderView, QAbstractItemView, QColorDialog, QLineEdit,
+    QComboBox, QSpinBox, QCheckBox, QTableView,
+    QFileDialog, QAbstractItemView, QColorDialog, QLineEdit,
     QGroupBox, QMenu, QApplication, QInputDialog
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QAbstractTableModel, QModelIndex
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 import pyqtgraph as pg
 import astropy.io.ascii as ascii
@@ -200,6 +200,136 @@ def to_float(val):
     return f if np.isfinite(f) else None
 
 
+# What a masked cell (a FITS TNULL, or an undefined value) reads as in the table. This is
+# what `str(np.ma.masked)` produced when every cell was formatted individually, and it is
+# kept so the table looks the same as it always has.
+MASKED_TEXT = '--'
+
+# How many rows to sample when fitting the column widths. Qt's default is 1000, which costs
+# 0.76 s on a 66k-row catalog because every sampled cell is a Python call into the model;
+# 100 rows is 0.06 s and picks the same widths for every catalog tried.
+COLUMN_WIDTH_SAMPLE_ROWS = 100
+
+# The "no parent" index a table model is asked about. Held as a singleton because Qt always
+# passes a parent, so the override signatures have to accept one, and constructing a
+# QModelIndex in a default argument builds it once at import anyway.
+NO_PARENT = QModelIndex()
+
+
+def cell_text(value):
+    """One catalog cell as the string the table shows."""
+    if value is None or value is np.ma.masked or np.ma.is_masked(value):
+        return MASKED_TEXT
+    if isinstance(value, (float, np.floating)):
+        return f"{value:.5g}"
+    if isinstance(value, bytes):
+        # FITS character columns can come through as bytes
+        return value.decode('utf-8', 'replace').strip()
+    return str(value)
+
+
+def column_texts(column):
+    """Every cell of one column as display strings, read as a whole column.
+
+    Reading cells one at a time through `Table.Row` costs about 1.7 us each — almost all of it
+    numpy re-wrapping a masked scalar per cell (`MaskedArray.view` -> `__array_finalize__` ->
+    `_update_from`) — which came to 3.9 s over a 66196 x 34 catalog. The same values read
+    column-wise take 0.24 s for byte-identical output.
+    """
+    values = np.asarray(column)
+    if values.dtype.kind == 'f':
+        texts = [f"{v:.5g}" for v in values.tolist()]
+    elif values.dtype.kind == 'S':
+        texts = [v.decode('utf-8', 'replace').strip() for v in values.tolist()]
+    else:
+        texts = [str(v) for v in values.tolist()]
+
+    # np.asarray on a MaskedColumn hands back the fill values, so the mask is applied after
+    mask = np.ma.getmaskarray(column) if np.ma.isMaskedArray(column) else None
+    if mask is not None and mask.any():
+        texts = [MASKED_TEXT if m else t
+                 for t, m in zip(texts, mask.tolist(), strict=True)]
+    return texts
+
+
+class CatalogTableModel(QAbstractTableModel):
+    """A read-only view of an astropy `Table` for the catalog table.
+
+    Nothing is built per row. `QTableWidget` needed one `QTableWidgetItem` per cell, which on a
+    66196 x 34 JWST prior catalog meant 2.25 M objects — 7.7 s and 1.03 GB before the window
+    came back, spent so that the ~30 rows which fit on screen could be drawn. A model formats
+    a cell only when Qt asks for it, so a load costs nothing per row: the same catalog loads in
+    0.57 s and adds 67 MB.
+
+    **Every row is still present and scrollable** — this trades when the work happens, not how
+    much of the catalog is shown.
+    """
+
+    def __init__(self, table=None, parent=None):
+        super().__init__(parent)
+        self._table = None
+        self._colnames = []
+        self._search_rows = None
+        if table is not None:
+            self.set_table(table)
+
+    # -- the astropy table behind the view ---------------------------------------------
+
+    def set_table(self, table):
+        """Show a different catalog."""
+        self.beginResetModel()
+        self._table = table
+        self._colnames = list(table.colnames) if table is not None else []
+        self._search_rows = None
+        self.endResetModel()
+
+    def remove_row(self, row):
+        """Drop one row, telling Qt about that row rather than resetting the whole view."""
+        if self._table is None or not 0 <= row < len(self._table):
+            return
+        self.beginRemoveRows(NO_PARENT, row, row)
+        self._table.remove_row(row)
+        self._search_rows = None
+        self.endRemoveRows()
+
+    def search_rows(self):
+        """One lower-cased string per row, for the search box; built on first use.
+
+        Built column-wise for the reason `column_texts` documents, kept until the table
+        changes, and not built at all for a catalog nobody searches.
+        """
+        if self._search_rows is None:
+            parts = [''] * self.rowCount()
+            for cname in self._colnames:
+                for i, text in enumerate(column_texts(self._table[cname])):
+                    parts[i] = f"{parts[i]} {text}"
+            self._search_rows = [p.lower() for p in parts]
+        return self._search_rows
+
+    # -- QAbstractTableModel -----------------------------------------------------------
+
+    def rowCount(self, parent=NO_PARENT):
+        if parent.isValid() or self._table is None:
+            return 0
+        return len(self._table)
+
+    def columnCount(self, parent=NO_PARENT):
+        return 0 if parent.isValid() else len(self._colnames)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole or not index.isValid():
+            return None
+        column = self._table[self._colnames[index.column()]]
+        return cell_text(column[index.row()])
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return self._colnames[section]
+        return str(section + 1)
+
+
 def map_to_display(image_viewer, orig_x, orig_y):
     """Map a FITS-axis pixel coordinate to display coordinates.
 
@@ -327,12 +457,18 @@ class PlotCatalogDialog(BaseToolDialog):
         search_row.addWidget(self.btn_clear_selection)
         self.layout.addLayout(search_row)
         
-        # Table
-        self.table = QTableWidget()
+        # Table. A model-backed QTableView rather than a QTableWidget, so that a large
+        # catalog costs nothing per row -- see CatalogTableModel for the measurements.
+        self.table_model = CatalogTableModel(parent=self)
+        self.table = QTableView()
+        self.table.setModel(self.table_model)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.itemSelectionChanged.connect(self.on_table_selection)
+        self.table.horizontalHeader().setResizeContentsPrecision(COLUMN_WIDTH_SAMPLE_ROWS)
+        # The selection model survives the model resets in set_table, so this connection is
+        # made once. Reconnecting it per load would fire the handler for the reset itself.
+        self.table.selectionModel().selectionChanged.connect(self.on_table_selection)
         
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
@@ -496,36 +632,14 @@ class PlotCatalogDialog(BaseToolDialog):
             
         cols = self.catalog_data.colnames
 
-        # `ResizeToContents` is a *persistent* mode, not a one-shot sizing, and leaving it on
-        # made the next load quadratic: every setItem() invalidated its column, so Qt
-        # re-measured all `len(table)` cells of that column before the next insert. On a real
-        # 4704 x 31 JWST prior catalog the first load took 0.7 s and the second had not
-        # finished after 144 s — 145,824 inserts x 4704 measurements each. Size the columns
-        # once, after the cells are in, then hand the header back to the user (which also
-        # makes the columns draggable, as ResizeToContents did not).
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.setUpdatesEnabled(False)
-        try:
-            self.table.setColumnCount(len(cols))
-            self.table.setHorizontalHeaderLabels(cols)
-            self.table.setRowCount(len(self.catalog_data))
-
-            for i, row in enumerate(self.catalog_data):
-                for j, col in enumerate(cols):
-                    val = row[col]
-                    # Format floats nicely, otherwise just string
-                    if isinstance(val, (float, np.floating)):
-                        text = f"{val:.5g}"
-                    elif isinstance(val, bytes):
-                        # FITS character columns can come through as bytes
-                        text = val.decode('utf-8', 'replace').strip()
-                    else:
-                        text = str(val)
-                    item = QTableWidgetItem(text)
-                    self.table.setItem(i, j, item)
-        finally:
-            self.table.setUpdatesEnabled(True)
+        # Handing the table to the model is the whole of it: no cell is touched until Qt
+        # paints one. The header is left Interactive (QTableView's default), never
+        # ResizeToContents -- that mode is persistent, and leaving it on made the *next* load
+        # quadratic, freezing the window for minutes (see BUGS.md M28).
+        self.table_model.set_table(self.catalog_data)
         self.table.resizeColumnsToContents()
+        # A model reset clears the hidden rows, so a search still in the box is re-applied
+        self.filter_table(self.search_bar.text())
 
         # Update combos
         self.combo_x.blockSignals(True)
@@ -545,15 +659,29 @@ class PlotCatalogDialog(BaseToolDialog):
         self.combo_name.blockSignals(False)
         
     def filter_table(self, text):
-        text = text.lower()
-        for row in range(self.table.rowCount()):
-            match = False
-            for col in range(self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item and text in item.text().lower():
-                    match = True
-                    break
-            self.table.setRowHidden(row, not match)
+        """Hide the rows that do not contain `text`. No row is ever dropped.
+
+        Rows are hidden on the view rather than filtered through a `QSortFilterProxyModel`,
+        for two reasons. A view row is then always *the* catalog row, and the highlight and
+        Delete Marker both index `catalog_data` with it — through a proxy each would need
+        `mapToSource`, and getting that wrong deletes a source the user never selected. It is
+        also the faster of the two: 0.02 s against the proxy's 1.47 s over 66k rows.
+
+        The pass is bracketed by `setUpdatesEnabled(False)`, because `setRowHidden` re-lays the
+        view out on each of those 66k calls otherwise — 1.26 s against 0.02 s. Blocking the
+        vertical header's signals as well looks like more of the same optimisation and is not:
+        it is no faster, and it leaves the scroll bar's range at its unfiltered value.
+        """
+        needle = text.lower()
+        shown = ([needle in hay for hay in self.table_model.search_rows()] if needle
+                 else [True] * self.table_model.rowCount())
+
+        self.table.setUpdatesEnabled(False)
+        try:
+            for row, visible in enumerate(shown):
+                self.table.setRowHidden(row, not visible)
+        finally:
+            self.table.setUpdatesEnabled(True)
             
     def auto_assign_columns(self):
         if self.catalog_data is None:
@@ -905,7 +1033,7 @@ class PlotCatalogDialog(BaseToolDialog):
         wherever the selection happened to leave things would be its own surprise.
         """
         self.table.clearSelection()
-        self.table.setCurrentItem(None)
+        self.table.selectionModel().clearCurrentIndex()
         if self.highlight_item is not None:
             self.highlight_item.clear()
             self.highlight_item.setVisible(False)
@@ -916,7 +1044,7 @@ class PlotCatalogDialog(BaseToolDialog):
         if self.highlight_item is None or self.catalog_data is None:
             return
             
-        selected_rows = self.table.selectedItems()
+        selected_rows = self.table.selectionModel().selectedRows()
         if hasattr(self, 'btn_clear_selection'):
             self.btn_clear_selection.setEnabled(bool(selected_rows))
         if not selected_rows:
@@ -985,13 +1113,20 @@ class PlotCatalogDialog(BaseToolDialog):
                 f"X: {row_data[x_col]}, Y: {row_data[y_col]}")
 
     def delete_row(self, row_idx):
-        self.catalog_data.remove_row(row_idx)
-        self.populate_table()
-        self.auto_assign_columns()
+        """Drop one source from the catalog.
+
+        Tells the model about the single row instead of rebuilding the table, and leaves the
+        column choice alone: deleting a row cannot change which columns hold the coordinates,
+        and re-guessing here discarded a manual choice exactly as a reload used to (M28).
+        """
+        self.table_model.remove_row(row_idx)
+        # Every row below the deleted one has shifted up, so the search has to be re-applied
+        # rather than left pointing at the rows its flags were computed for
+        self.filter_table(self.search_bar.text())
         self.update_plot()
 
     def show_context_menu(self, pos):
-        selected_rows = self.table.selectedItems()
+        selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
             return
 
