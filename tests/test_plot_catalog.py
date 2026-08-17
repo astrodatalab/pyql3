@@ -3,8 +3,14 @@ import pyqtgraph as pg
 import pytest
 from astropy.io import fits
 
+from PySide6.QtWidgets import QHeaderView
+
 from pyql3.gui.tools.plot_catalog import (
+    DEC_COLUMN_NAMES,
     PlotCatalogDialog,
+    X_COLUMN_NAMES,
+    Y_COLUMN_NAMES,
+    coord_column_rank,
     fits_table_extensions,
     looks_like_fits,
     read_fits_table,
@@ -547,3 +553,176 @@ def test_the_context_menu_still_copies_and_deletes(qapp, loaded_viewer):
         assert len(dialog.catalog_data) == before - 1
     finally:
         dialog.close()
+
+
+# --------------------------------------------------------------------------------------
+# Reloading a catalog: the table header, and the columns the user chose
+# --------------------------------------------------------------------------------------
+
+
+def _write_named_table(path, colnames, nrows=4):
+    """A one-extension FITS table whose columns are named as asked, all of them numeric."""
+    cols = [fits.Column(name=name, format='D',
+                        array=np.arange(nrows, dtype=float) + 1.0 + i)
+            for i, name in enumerate(colnames)]
+    fits.HDUList([fits.PrimaryHDU(),
+                  fits.BinTableHDU.from_columns(cols, name='CAT')]).writeto(path)
+    return str(path)
+
+
+def test_the_table_header_is_not_left_auto_resizing(viewer, fits_catalog_file):
+    """Loading a second catalog froze the window for minutes.
+
+    `QHeaderView.ResizeToContents` is a *persistent* mode, not a one-shot sizing. Leaving it
+    on made the next load quadratic: each of the `rows x cols` setItem() calls invalidated
+    its column, so Qt re-measured every cell of that column before the next insert. Measured
+    on a real 4704 x 31 JWST prior catalog: 0.7 s for the first load, still running after
+    144 s for the second, and an isolated QTableWidget refill of the same size reproduced it
+    with no pyql3 code involved.
+    """
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    try:
+        header = dlg.table.horizontalHeader()
+        for col in range(dlg.table.columnCount()):
+            assert header.sectionResizeMode(col) != QHeaderView.ResizeToContents, (
+                f"column {col} left in ResizeToContents; the next load will be quadratic")
+    finally:
+        dlg.close()
+
+
+def test_the_columns_are_still_sized_to_their_contents(viewer, fits_catalog_file):
+    """Releasing the resize mode must not give up the fitted widths it was there for."""
+    dlg = _open_dialog(viewer, fits_catalog_file)
+    try:
+        cols = dlg.catalog_data.colnames
+        wide = dlg.table.columnWidth(cols.index('NAME'))
+        narrow = dlg.table.columnWidth(cols.index('X'))
+        assert wide > narrow, "columns were left at Qt's uniform default width"
+    finally:
+        dlg.close()
+
+
+def test_reloading_replaces_the_rows_rather_than_stacking_them(viewer, fits_catalog_file):
+    """The second load has to leave the table holding exactly the new catalog."""
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(fits_catalog_file, hdu='SOURCES')
+        dlg.load_catalog_file(fits_catalog_file, hdu='BACKUP')
+        assert dlg.table.rowCount() == 2
+        assert dlg.table.columnCount() == 2
+        header = dlg.table.horizontalHeader()
+        for col in range(dlg.table.columnCount()):
+            assert header.sectionResizeMode(col) != QHeaderView.ResizeToContents
+    finally:
+        dlg.close()
+
+
+@pytest.mark.parametrize("xname,yname", [
+    ('x_fit', 'y_fit'),            # photutils PSF photometry
+    ('X_FIT', 'Y_FIT'),            # ... in upper case
+    ('x-pos', 'y-pos'),            # any separator after the axis letter
+    ('XWIN_IMAGE', 'YWIN_IMAGE'),  # SExtractor, no separator after the letter
+    ('xcentroid', 'ycentroid'),    # photutils segmentation
+])
+def test_pixel_columns_are_recognised_by_their_axis_letter(viewer, tmp_path, xname, yname):
+    path = _write_named_table(tmp_path / f"{xname}.fits", ['flux', xname, yname])
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(path)
+        assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == (xname, yname)
+        assert dlg.combo_coord_type.currentIndex() == 1, "should be FITS Pixels"
+    finally:
+        dlg.close()
+
+
+def test_the_fitted_position_outranks_the_initial_guess(viewer, tmp_path):
+    """x_init comes first in the file; x_fit is the measurement, so it is the one to plot."""
+    path = _write_named_table(tmp_path / "both.fits",
+                              ['x_init', 'y_init', 'flux_init', 'x_fit', 'y_fit'])
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(path)
+        assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('x_fit', 'y_fit')
+    finally:
+        dlg.close()
+
+
+def test_the_two_axes_are_kept_on_one_spelling(viewer, tmp_path):
+    """y_init precedes y_fit, but pairing x_fit with y_init would plot a mixed coordinate."""
+    path = _write_named_table(tmp_path / "mixed.fits", ['x_fit', 'y_init', 'y_fit'])
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(path)
+        assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('x_fit', 'y_fit')
+    finally:
+        dlg.close()
+
+
+def test_a_word_that_merely_begins_with_the_axis_letter_is_not_a_coordinate():
+    """`year` must not be read as a Y column, nor `xray_flux` as an X column."""
+    assert coord_column_rank('year', Y_COLUMN_NAMES, 'y') is None
+    assert coord_column_rank('ymag', Y_COLUMN_NAMES, 'y') is None
+    assert coord_column_rank('xray', X_COLUMN_NAMES, 'x') is None
+    # and the ones that are
+    assert coord_column_rank('x_fit', X_COLUMN_NAMES, 'x') is not None
+    assert coord_column_rank('XWIN_IMAGE', X_COLUMN_NAMES, 'x') is not None
+    # RA/Dec have no axis letter, so they match by name only
+    assert coord_column_rank('delta_j2000', DEC_COLUMN_NAMES) is not None
+    assert coord_column_rank('dust', DEC_COLUMN_NAMES) is None
+
+
+def test_a_manual_column_choice_survives_reloading_the_same_catalog(viewer, fits_catalog_file):
+    """B: a reload re-ran the guess and silently threw away the user's own choice.
+
+    The reported sequence was exactly this -- set X to x_fit and Y to y_fit by hand, reload,
+    and land back on the guessed columns with the overlay in the wrong place.
+    """
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(fits_catalog_file, hdu='SOURCES')
+        dlg.combo_x.setCurrentText('FLUX')
+        dlg.combo_y.setCurrentText('X')
+        dlg.combo_name.setCurrentText('Y')
+
+        dlg.load_catalog_file(fits_catalog_file, hdu='SOURCES')
+
+        assert dlg.combo_x.currentText() == 'FLUX'
+        assert dlg.combo_y.currentText() == 'X'
+        assert dlg.combo_name.currentText() == 'Y'
+    finally:
+        dlg.close()
+
+
+def test_a_choice_the_new_table_cannot_honour_falls_back_to_guessing(viewer, fits_catalog_file):
+    """BACKUP has no FLUX column, so keeping half the pair would plot a coordinate nobody
+    asked for. Guess again instead."""
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(fits_catalog_file, hdu='SOURCES')
+        dlg.combo_x.setCurrentText('FLUX')
+        dlg.combo_y.setCurrentText('X')
+
+        dlg.load_catalog_file(fits_catalog_file, hdu='BACKUP')
+
+        assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('X', 'Y')
+    finally:
+        dlg.close()
+
+
+def test_a_kept_choice_keeps_its_coordinate_type(viewer, tmp_path):
+    """The type and the columns are one decision: restoring x_fit/y_fit while resetting the
+    type back to Display Pixels would move every marker."""
+    path = _write_named_table(tmp_path / "typed.fits", ['x_fit', 'y_fit'])
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(path)
+        dlg.combo_coord_type.setCurrentIndex(0)   # Display Pixels, by hand
+        dlg.combo_x.setCurrentText('x_fit')
+        dlg.combo_y.setCurrentText('y_fit')
+
+        dlg.load_catalog_file(path)
+
+        assert dlg.combo_coord_type.currentIndex() == 0
+        assert (dlg.combo_x.currentText(), dlg.combo_y.currentText()) == ('x_fit', 'y_fit')
+    finally:
+        dlg.close()

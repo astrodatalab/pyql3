@@ -29,18 +29,90 @@ FITS_SUFFIXES = (
 )
 
 
-# Column names recognised when guessing which columns hold coordinates. FITS source
-# tables rarely use the bare names a hand-written CSV does, so the photutils
-# (`xcentroid`) and SExtractor (`X_IMAGE`, `ALPHA_J2000`) spellings are included.
-# Comparison is done in lower case.
+# Column names recognised when guessing which columns hold coordinates, **best match
+# first** — the tuple order is the ranking. FITS source tables rarely use the bare names a
+# hand-written CSV does, so the photutils (`xcentroid`, `x_fit`) and SExtractor
+# (`X_IMAGE`, `ALPHA_J2000`) spellings are included. `x_fit` outranks `x_init` because the
+# fitted position is the measurement and the initial one is only the guess the fit started
+# from. Comparison is done in lower case.
 RA_COLUMN_NAMES = ('ra', 'right ascension', 'alpha', 'raj2000', 'ra_j2000',
                    'alpha_j2000', 'ra_deg', 'radeg')
 DEC_COLUMN_NAMES = ('dec', 'declination', 'delta', 'decj2000', 'dec_j2000',
                     'delta_j2000', 'dec_deg', 'decdeg')
 X_COLUMN_NAMES = ('x', 'xcenter', 'xc', 'x_c', 'xcentroid', 'x_image', 'xpix',
-                  'x_pix', 'xpos', 'x_pos')
+                  'x_pix', 'xpos', 'x_pos', 'x_fit', 'x_init')
 Y_COLUMN_NAMES = ('y', 'ycenter', 'yc', 'y_c', 'ycentroid', 'y_image', 'ypix',
-                  'y_pix', 'ypos', 'y_pos')
+                  'y_pix', 'ypos', 'y_pos', 'y_fit', 'y_init')
+
+# A name list can never keep up with what pipelines actually emit, so a pixel column is
+# also recognised from its axis letter. Anything after the letter is accepted when a
+# separator says the letter stood on its own (`x_fit`, `X-POS`, `x.1`); without a separator
+# the remainder has to be a coordinate word, so that `xwin_image` is recognised while
+# `year` and `ymag` are not. RA/Dec have no such letter and match by name only.
+_COORD_SEPARATORS = '_-. '
+_COORD_WORDS = ('centroid', 'center', 'centre', 'cen', 'coord', 'image',
+                'pixel', 'pix', 'pos', 'win', 'world', 'fit', 'init', 'c')
+
+# Rank bands, compared against the index into the name tuples above. An explicit name beats
+# a separated spelling, which beats a run-on coordinate word.
+_RANK_SEPARATED = 100
+_RANK_WORD = 200
+
+
+def coord_column_rank(colname, explicit, letter=None):
+    """How well `colname` matches one coordinate axis. Lower is better; None is no match.
+
+    `explicit` is the ordered tuple of known spellings for that axis. `letter` enables the
+    axis-letter heuristic described above and is `'x'` or `'y'` for pixel columns, None for
+    RA/Dec.
+    """
+    name = colname.lower()
+    if name in explicit:
+        return explicit.index(name)
+    if letter is None or not name.startswith(letter):
+        return None
+    rest = name[1:]
+    if not rest:
+        return None
+    if rest[0] in _COORD_SEPARATORS:
+        return _RANK_SEPARATED
+    if any(rest.startswith(word) for word in _COORD_WORDS):
+        return _RANK_WORD
+    return None
+
+
+def best_coord_column(colnames, explicit, letter=None):
+    """Index of the column most likely to hold this axis, or None if nothing matches.
+
+    Ties go to the column that comes first in the table, so a catalog listing the same
+    spelling twice behaves predictably.
+    """
+    best_rank = None
+    best_idx = None
+    for idx, cname in enumerate(colnames):
+        rank = coord_column_rank(cname, explicit, letter)
+        if rank is not None and (best_rank is None or rank < best_rank):
+            best_rank, best_idx = rank, idx
+    return best_idx
+
+
+def paired_column(colnames, chosen_idx, letter, mate_letter):
+    """Index of `chosen_idx`'s counterpart on the other axis, spelled the same way.
+
+    A catalog carrying both `x_init`/`y_init` and `x_fit`/`y_fit` offers two valid pairs, and
+    taking the best X with the first-listed Y mixes them: `x_fit` with `y_init` is a position
+    no row ever had. Returns None when the counterpart is absent.
+    """
+    if chosen_idx is None:
+        return None
+    name = colnames[chosen_idx].lower()
+    if not name.startswith(letter):
+        return None
+    mate = mate_letter + name[1:]
+    for idx, cname in enumerate(colnames):
+        if cname.lower() == mate:
+            return idx
+    return None
 
 
 def looks_like_fits(filepath):
@@ -143,6 +215,9 @@ class PlotCatalogDialog(BaseToolDialog):
         super().__init__(parent, image_viewer, "Plot Catalog")
         self.resize(600, 500)
         
+        # Held above setup_ui, because update_plot is a slot the widgets it builds connect to
+        self._plot_suspended = 0
+
         self.catalog_table = None
         self.catalog_data = None
         self.scatter_item = None
@@ -353,35 +428,105 @@ class PlotCatalogDialog(BaseToolDialog):
         """
         self.catalog_data = table
         self.lbl_file.setText(name)
+
+        # A reload must not undo a column choice made by hand. Re-running the guess on every
+        # load meant a manual x_fit/y_fit selection was silently replaced the next time the
+        # file was read, putting the overlay back where the guess wanted it.
+        keep = self._column_choice()
         self.populate_table()
-        self.auto_assign_columns()
+        # Assigning the columns reaches update_plot through update_columns_for_type;
+        # suspending it keeps a load to one O(rows) plotting pass instead of two.
+        self._plot_suspended += 1
+        try:
+            if not self._restore_column_choice(keep):
+                self.auto_assign_columns()
+        finally:
+            self._plot_suspended -= 1
         self.update_plot()
+
+    def _column_choice(self):
+        """The current X/Y/name/type choice, or None if nothing has been chosen yet.
+
+        Read *before* `populate_table` refills the combo boxes, which forgets it.
+        """
+        if self.combo_x.count() == 0:
+            return None
+        return {
+            'coord_type': self.combo_coord_type.currentIndex(),
+            'x': self.combo_x.currentText(),
+            'y': self.combo_y.currentText(),
+            'name': self.combo_name.currentText(),
+        }
+
+    def _restore_column_choice(self, keep):
+        """Re-apply a remembered choice. False if the new table cannot honour it.
+
+        Both X and Y have to be present: restoring one of the pair would plot a coordinate
+        no row ever had. The coordinate type comes back with them, since keeping x_fit/y_fit
+        while resetting the type would move every marker. The name column is optional — a
+        missing label costs only the label, so the usual guess covers it.
+        """
+        if not keep:
+            return False
+        cols = self.catalog_data.colnames
+        if keep['x'] not in cols or keep['y'] not in cols:
+            return False
+
+        for combo, value in ((self.combo_coord_type, keep['coord_type']),
+                             (self.combo_x, keep['x']),
+                             (self.combo_y, keep['y'])):
+            combo.blockSignals(True)
+            if isinstance(value, int):
+                combo.setCurrentIndex(value)
+            else:
+                combo.setCurrentText(value)
+            combo.blockSignals(False)
+
+        if keep['name'] in cols:
+            self.combo_name.blockSignals(True)
+            self.combo_name.setCurrentText(keep['name'])
+            self.combo_name.blockSignals(False)
+        else:
+            self._assign_name_column()
+        return True
 
     def populate_table(self):
         if self.catalog_data is None:
             return
             
         cols = self.catalog_data.colnames
-        self.table.setColumnCount(len(cols))
-        self.table.setHorizontalHeaderLabels(cols)
-        self.table.setRowCount(len(self.catalog_data))
-        
-        for i, row in enumerate(self.catalog_data):
-            for j, col in enumerate(cols):
-                val = row[col]
-                # Format floats nicely, otherwise just string
-                if isinstance(val, (float, np.floating)):
-                    text = f"{val:.5g}"
-                elif isinstance(val, bytes):
-                    # FITS character columns can come through as bytes
-                    text = val.decode('utf-8', 'replace').strip()
-                else:
-                    text = str(val)
-                item = QTableWidgetItem(text)
-                self.table.setItem(i, j, item)
-                
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        
+
+        # `ResizeToContents` is a *persistent* mode, not a one-shot sizing, and leaving it on
+        # made the next load quadratic: every setItem() invalidated its column, so Qt
+        # re-measured all `len(table)` cells of that column before the next insert. On a real
+        # 4704 x 31 JWST prior catalog the first load took 0.7 s and the second had not
+        # finished after 144 s — 145,824 inserts x 4704 measurements each. Size the columns
+        # once, after the cells are in, then hand the header back to the user (which also
+        # makes the columns draggable, as ResizeToContents did not).
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setColumnCount(len(cols))
+            self.table.setHorizontalHeaderLabels(cols)
+            self.table.setRowCount(len(self.catalog_data))
+
+            for i, row in enumerate(self.catalog_data):
+                for j, col in enumerate(cols):
+                    val = row[col]
+                    # Format floats nicely, otherwise just string
+                    if isinstance(val, (float, np.floating)):
+                        text = f"{val:.5g}"
+                    elif isinstance(val, bytes):
+                        # FITS character columns can come through as bytes
+                        text = val.decode('utf-8', 'replace').strip()
+                    else:
+                        text = str(val)
+                    item = QTableWidgetItem(text)
+                    self.table.setItem(i, j, item)
+        finally:
+            self.table.setUpdatesEnabled(True)
+        self.table.resizeColumnsToContents()
+
         # Update combos
         self.combo_x.blockSignals(True)
         self.combo_y.blockSignals(True)
@@ -413,73 +558,83 @@ class PlotCatalogDialog(BaseToolDialog):
     def auto_assign_columns(self):
         if self.catalog_data is None:
             return
-            
-        cols = [c.lower() for c in self.catalog_data.colnames]
-        
+
+        cols = self.catalog_data.colnames
+
         # Auto detect RA/DEC vs X/Y
-        has_ra = any(c in RA_COLUMN_NAMES for c in cols)
-        has_dec = any(c in DEC_COLUMN_NAMES for c in cols)
-        has_x = any(c in X_COLUMN_NAMES for c in cols)
-        has_y = any(c in Y_COLUMN_NAMES for c in cols)
-        
+        has_x = best_coord_column(cols, X_COLUMN_NAMES, 'x') is not None
+        has_y = best_coord_column(cols, Y_COLUMN_NAMES, 'y') is not None
+        has_ra = best_coord_column(cols, RA_COLUMN_NAMES) is not None
+        has_dec = best_coord_column(cols, DEC_COLUMN_NAMES) is not None
+
         self.combo_coord_type.blockSignals(True)
         if has_x and has_y:
             self.combo_coord_type.setCurrentIndex(1) # Default to FITS Pixels
         elif has_ra and has_dec:
             self.combo_coord_type.setCurrentIndex(2) # World
         self.combo_coord_type.blockSignals(False)
-        
+
         self.update_columns_for_type()
-        
-        # Auto detect name column
-        for i, c in enumerate(cols):
-            if c in ['name', 'id', 'object', 'source']:
+        self._assign_name_column()
+
+    def _assign_name_column(self):
+        """Point the label combo at whichever column reads as a source name.
+
+        Signals are blocked because `update_plot` runs once at the end of the load; leaving
+        them live spent a second full O(rows) plotting pass on every catalog opened.
+        """
+        self.combo_name.blockSignals(True)
+        for i, c in enumerate(self.catalog_data.colnames):
+            if c.lower() in ('name', 'id', 'object', 'source'):
                 self.combo_name.setCurrentIndex(i)
                 break
-                
+        self.combo_name.blockSignals(False)
+
+    def _numeric_column_indices(self):
+        """Indices of the columns holding numbers, as a last resort for the coordinate guess.
+
+        Tested on the column's dtype rather than by calling `float()` on row 0. The old test
+        accepted a string column of digits — which is how a JWST prior catalog's `id` came to
+        be plotted as an X coordinate — and warned on a masked first element.
+        """
+        return [i for i, cname in enumerate(self.catalog_data.colnames)
+                if np.issubdtype(self.catalog_data[cname].dtype, np.number)]
+
     def update_columns_for_type(self):
         if self.catalog_data is None:
             return
-            
-        cols = [c.lower() for c in self.catalog_data.colnames]
+
+        cols = self.catalog_data.colnames
         is_world = self.combo_coord_type.currentIndex() == 2
-        
+
         self.combo_x.blockSignals(True)
         self.combo_y.blockSignals(True)
-        
-        found_x = False
-        found_y = False
-        
-        x_names = RA_COLUMN_NAMES if is_world else X_COLUMN_NAMES
-        y_names = DEC_COLUMN_NAMES if is_world else Y_COLUMN_NAMES
 
-        for i, c in enumerate(cols):
-            if not found_x and c in x_names:
-                self.combo_x.setCurrentIndex(i)
-                found_x = True
-            elif not found_y and c in y_names:
-                self.combo_y.setCurrentIndex(i)
-                found_y = True
-                    
-        # Fallback to numeric columns if explicit names were not found
-        if not found_x or not found_y:
-            numeric_cols = []
-            for i, cname in enumerate(self.catalog_data.colnames):
-                try:
-                    val = self.catalog_data[cname][0]
-                    if isinstance(val, (float, int, np.number)):
-                        numeric_cols.append(i)
-                    else:
-                        float(val)
-                        numeric_cols.append(i)
-                except (ValueError, TypeError, IndexError):
-                    pass
-                    
-            if not found_x and len(numeric_cols) > 0:
-                self.combo_x.setCurrentIndex(numeric_cols[0])
-            if not found_y and len(numeric_cols) > 1:
-                self.combo_y.setCurrentIndex(numeric_cols[1])
-                    
+        if is_world:
+            x_idx = best_coord_column(cols, RA_COLUMN_NAMES)
+            y_idx = best_coord_column(cols, DEC_COLUMN_NAMES)
+        else:
+            x_idx = best_coord_column(cols, X_COLUMN_NAMES, 'x')
+            y_idx = best_coord_column(cols, Y_COLUMN_NAMES, 'y')
+            # Keep both axes on one spelling once X is settled
+            mate = paired_column(cols, x_idx, 'x', 'y')
+            if mate is not None:
+                y_idx = mate
+
+        # Fallback to numeric columns if no name matched
+        if x_idx is None or y_idx is None:
+            numeric = [i for i in self._numeric_column_indices()
+                       if i not in (x_idx, y_idx)]
+            if x_idx is None and numeric:
+                x_idx = numeric.pop(0)
+            if y_idx is None and numeric:
+                y_idx = numeric.pop(0)
+
+        if x_idx is not None:
+            self.combo_x.setCurrentIndex(x_idx)
+        if y_idx is not None:
+            self.combo_y.setCurrentIndex(y_idx)
+
         self.combo_x.blockSignals(False)
         self.combo_y.blockSignals(False)
         self.update_plot()
@@ -574,6 +729,10 @@ class PlotCatalogDialog(BaseToolDialog):
         return map_to_display(self.image_viewer, orig_x, orig_y)
 
     def update_plot(self):
+        # Suspended while a load assigns the columns: each assignment would otherwise cost a
+        # full pass over every row for a plot that is about to be replaced anyway.
+        if self._plot_suspended:
+            return
         if self.image_viewer is None or self.catalog_data is None:
             return
             

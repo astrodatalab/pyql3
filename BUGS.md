@@ -1752,6 +1752,68 @@ source.
 `agent_tests/probes/warn_trace.py` (scratch) prints a full caller stack per warning; the bare
 numpy message names only where numpy noticed, never who asked.
 
+## M28. Loading a second catalog froze the window for minutes
+
+- **Status:** ✅ FIXED — `gui/tools/plot_catalog.py` (`populate_table`, and the column-guessing
+  helpers beside it), covered by the reload and column-guess tests at the end of
+  `tests/test_plot_catalog.py`
+- **Severity:** high — the application was unusable, with no indication it would ever return
+- **Reported by a user**, loading `jw01939001001_02103_00001_nrcb3_cal_priors_cat_FINAL.fits`
+  (4704 rows x 31 columns) onto `jw01939003001_02101_00001_nrcb3_cal.fits`.
+
+### Symptom
+
+The *first* catalog loaded in 0.7 s. Loading a second one — or reloading the same file —
+beachballed the window and drove resident memory to several GB. Nothing was logged, and the
+first load being fine is what made it look like a data problem rather than a code one.
+
+### Root cause
+
+`populate_table` ended by setting the table header's resize mode:
+
+```python
+self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+```
+
+`ResizeToContents` is a **persistent mode, not a one-shot sizing**. On the first load the
+header is still `Interactive` while the cells go in, so the 4704 x 31 = 145,824 `setItem()`
+calls are cheap and the measurement happens once at the end. On every load after that the mode
+is *already* `ResizeToContents`, so each `setItem()` invalidates its column and Qt re-measures
+all 4704 cells of it before the next insert — about **7 x 10⁸ text measurements on the GUI
+thread**.
+
+Measured, real Cocoa platform: first load 0.72 s; second load still running when killed at
+144 s. An isolated `QTableWidget` refill of the same dimensions reproduces it with no pyql3
+code involved, which is what confirmed the mechanism.
+
+The multi-GB memory did not reproduce in a script (RSS held at 0.40 GB through a 2.5-minute
+freeze, and the label items neither leak nor accumulate), so it is most likely queued event
+and paint state piling up against a main thread that never returns — a consequence of the
+freeze rather than a second defect. Noted rather than proven.
+
+### Fix
+
+Size the columns once, after the cells are in, and leave the header `Interactive` — which also
+makes the columns draggable, as `ResizeToContents` did not. Every load is now 0.59 s with flat
+memory. The fill is wrapped in `setUpdatesEnabled(False)`, and `update_plot` is suspended while
+the columns are assigned, so a load costs one O(rows) plotting pass instead of the three it was
+spending.
+
+Two neighbouring faults surfaced from the same report and are fixed with it:
+
+- **The guess could not read the catalog's column names.** `X_COLUMN_NAMES` knew `xcentroid`
+  and `x_image` but not photutils' PSF-photometry spelling `x_fit`, so the fallback picked "the
+  first two numeric columns" — `id` and `group_id`, because the old numeric test called
+  `float()` on row 0 and a string column of digits passes it. 2744 of 4704 sources plotted out
+  of bounds. Names are now ranked (`coord_column_rank`), a column is also recognised from its
+  axis letter when a separator or a coordinate word follows it, the two axes are kept on one
+  spelling (`x_fit` pairs with `y_fit`, never `y_init`), and the numeric fallback tests dtype.
+  The same catalog now plots 4703 of 4704.
+- **A reload silently discarded the user's own column choice.** `set_catalog_table` called
+  `auto_assign_columns` unconditionally, so hand-setting X to `x_fit` and reloading landed back
+  on the guess. The X/Y/name/type choice now survives a reload whenever the new table still has
+  those columns, and only falls back to guessing when it cannot be honoured.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |
