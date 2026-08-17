@@ -28,6 +28,13 @@ from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, Signal
 
 from pyql3.core import coords
 from pyql3.core.regions_model import Arrow, Box, Circle, Region, Text, resolve_color
+from pyql3.gui.label_policy import (
+    LABEL_CULL_MARGIN,
+    LABEL_REDRAW_DELAY_MS,
+    LABEL_SAFETY_LIMIT,
+    LabelDensityGuard,
+    grown_for_labels,
+)
 
 #: Shapes `begin_draw` understands, by the name used in the file format.
 DRAWABLE = ("circle", "box", "arrow", "text")
@@ -58,25 +65,9 @@ INTERACTIVE_LIMIT = 500
 #: Length of an arrowhead barb in the aggregate overlay, as a fraction of the arrow's length.
 BULK_BARB = 0.2
 
-#: How long after panning stops before labels come back, in milliseconds.
-#:
-#: Text is the most expensive thing on the overlay to paint: measured at 34.9 ms per pan frame for
-#: 400 labelled regions against 25.4 ms with the labels hidden — 27% of the frame. `plot_catalog`
-#: found the same and hides its catalogue labels the same way, with the same delay.
-LABEL_REDRAW_DELAY_MS = 200
-
-#: The visible rect is grown by this fraction before culling labels, so text just off the edge —
-#: which still paints into the view — is not dropped.
-LABEL_CULL_MARGIN = 0.1
-
-#: A ceiling on labels built at once, to stop an enormous set from locking the window up.
-#:
-#: This is a hang guard, not a judgement about readability: whether a crowd of labels is useful is
-#: the user's call, made with **Region ➔ Show Region Labels**, exactly as the catalogue tool offers
-#: a *Show Names* checkbox. Labels are culled to the visible rect and hidden while panning, so the
-#: cost of a large set falls on the redraw after the view settles — measured at ~0.18 ms per label,
-#: so this ceiling is about a second in the worst case.
-LABEL_SAFETY_LIMIT = 5000
+#: Label policy — the redraw delay, the cull margin and the safety ceiling — is shared with the
+#: catalog tool and documented in `pyql3.gui.label_policy`. Imported above rather than restated,
+#: and still reachable as `region_layer.LABEL_SAFETY_LIMIT` for anything that reads it from here.
 
 
 class _Entry:
@@ -268,8 +259,8 @@ class RegionLayer(QObject):
         self._retired = []
         #: Whether labels are drawn at all. The user's choice, not the layer's.
         self._labels_visible = True
-        #: True while the safety ceiling is suppressing labels.
-        self._labels_hidden_for_density = False
+        #: Applies the safety ceiling and reports when that verdict changes.
+        self._label_guard = LabelDensityGuard(on_change=self.labels_suppressed.emit)
 
         #: Set while the view is being panned or zoomed, so labels stay hidden until it settles.
         self._panning = False
@@ -508,15 +499,15 @@ class RegionLayer(QObject):
         """True if `count` labels can be drawn, and tell the window when that answer changes.
 
         Only the safety ceiling refuses here. How many labels are worth looking at is the user's
-        decision, made with the *Show Region Labels* toggle.
+        decision, made with the *Show Region Labels* toggle — which is why the toggle is checked
+        first and does not touch the guard's state.
+
+        The ceiling is read from the module global on every call, so a test can monkeypatch
+        `region_layer.LABEL_SAFETY_LIMIT` after the layer has been built.
         """
         if not self._labels_visible:
             return False
-        too_many = count > LABEL_SAFETY_LIMIT
-        if too_many != self._labels_hidden_for_density:
-            self._labels_hidden_for_density = too_many
-            self.labels_suppressed.emit(count if too_many else 0)
-        return not too_many
+        return self._label_guard.allows(count, LABEL_SAFETY_LIMIT)
 
     # ------------------------------------------------------------ aggregate overlay
 
@@ -636,13 +627,12 @@ class RegionLayer(QObject):
         return rect.contains(self._label_view_position(label))
 
     def _view_rect(self):
+        """The visible rect, grown so that text just off the edge is not culled."""
         try:
             rect = self.viewer.imv.getView().viewRect()
         except Exception:
             return None
-        margin_x = rect.width() * LABEL_CULL_MARGIN
-        margin_y = rect.height() * LABEL_CULL_MARGIN
-        return rect.adjusted(-margin_x, -margin_y, margin_x, margin_y)
+        return grown_for_labels(rect, LABEL_CULL_MARGIN)
 
     def _label_view_position(self, label):
         """A label's anchor in view coordinates.

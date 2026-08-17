@@ -1874,6 +1874,70 @@ visible source and rebuilds them all 200 ms after every pan. Measured 77 MB for 
 which extrapolates to ~2.6 GB here. `region_layer.INTERACTIVE_LIMIT` is the pattern to copy —
 deliberately left for a follow-up.
 
+## M30. Catalog labels were rebuilt on every pan, with no ceiling
+
+- **Status:** ✅ FIXED — new `gui/label_policy.py` (shared with `region_layer`), and
+  `gui/tools/plot_catalog.py` (`update_visible_text_labels`, `_trim_label_pool`,
+  `_on_labels_suppressed`), covered by `tests/test_label_policy.py` and the label-density tests at
+  the end of `tests/test_plot_catalog.py`
+- **Severity:** high — ticking *Labels* on a large catalog locked the window up indefinitely
+- **Found while fixing `M29`**, on the same 66196-row catalog, and confirmed by measurement rather
+  than by hitting it: the ceiling was added before anyone had to sit through it.
+
+### Symptom
+
+With *Labels* ticked and a wide view, one pan of a 20,000-source catalog took **23.9 s**, and the
+redraw repeats 200 ms after every pan. At 66,196 sources it would not finish in any useful time.
+
+### Root cause
+
+`update_visible_text_labels` destroyed every `pg.TextItem` and built a fresh one for each source in
+view, on every redraw, with **no upper bound on the count**. Two things made that worse than it
+looks:
+
+- **The per-label cost is superlinear** in the items already in the scene — 0.22 ms at 1000 labels,
+  0.29 ms at 5000, 0.85 ms at 20,000 — because each `view.addItem` walks the ViewBox and the
+  scene's item index degrades as it fills. The same O(live items) effect `AGENTS.md` records for
+  `ViewBox.updateAllViewLists`.
+- **The region layer had already solved this and the catalog tool had not.** `region_layer` hides
+  labels while panning, culls to the visible rect *grown by* `LABEL_CULL_MARGIN`, refuses more than
+  `LABEL_SAFETY_LIMIT` at once and says so through `labels_suppressed`, and rebuilds nothing in its
+  interactive path. `plot_catalog` had only the first of those four, and its culling used a bare
+  `rect.contains()`, so edge labels flickered in and out while panning.
+
+### Fix
+
+The policy — redraw delay, cull margin, density ceiling — moved into **`pyql3/gui/label_policy.py`**
+and both overlays now import it. It holds no Qt import, so it is unit-tested without a display. The
+ceiling is passed to `LabelDensityGuard.allows` rather than held by it, which keeps each overlay's
+limit its own and keeps `region_layer`'s existing "monkeypatch the module constant" test working.
+
+Item *creation* stays per-tool, and the lifecycles differ deliberately: a region's label is built
+once with its region and toggled, because the region count is whatever the user drew; a catalog is
+asked for one per row, so `plot_catalog` keeps a **pool sized to what is in view** and re-texts it,
+trimmed back through the `_retired` + timer + `gc.collect()` pattern from `M18`/`M27`.
+
+Measured, catalog labels, first build against redraw after a pan:
+
+| labels | first build | pan redraw before | pan redraw after |
+|--------|-------------|-------------------|------------------|
+| 1,000  | 0.22 s      | 0.25 s            | **0.01 s** |
+| 5,000  | 1.44 s      | 1.86 s            | **0.03 s** |
+| 10,000 | 4.80 s      | —                 | **0.11 s** |
+| 20,000 | 20.87 s     | 23.91 s           | **0.12 s** |
+
+`CATALOG_LABEL_LIMIT = 5000` because the first column is superlinear and 5000 is a 1.4 s one-off —
+the same value the region overlay settled on for a comparable ~1 s. On the reported catalog, ticking
+*Labels* with all 66,196 in view now takes 0.52 s and says *"66,196 labels in view — more than the
+5,000 that can be drawn at once. Zoom in to label fewer sources"*; zooming to 991 labels draws them
+in 0.35 s, and five pans after that cost 0.54 s in total. Memory across the whole sequence went
+435 -> 527 MB, against the ~2.6 GB the old path extrapolated to.
+
+Two smaller things fixed with it: the recovery path used to call `update_plot` from inside
+`update_visible_text_labels`, which re-entered the method that called it — it now just restores the
+status line the plot last wrote; and `update_plot` no longer destroys the label pool on every
+refresh.
+
 ## B15. Minor items
 
 | # | File | Issue | Fix |

@@ -262,10 +262,25 @@ Four Qt traps here each cost real time. They are not hypothetical:
    overrides that walk (`BUGS.md` M12). The same mixin must check for an inherited
    `mouseClickEvent` before calling it — `pg.TextItem` has none (`BUGS.md` M16).
 
-**`plot_catalog.py` is the reference implementation for drawing many things over the image.**
-Culling to the visible rect, hiding text while panning, and a *Show Names* toggle came from
-there; the region layer copies all three rather than inventing a rule about how many labels a
-user should want.
+**Overlay label policy lives in `pyql3/gui/label_policy.py`, and only the policy (CRITICAL).**
+Culling to the visible rect, hiding text while panning, and refusing to build an enormous set at
+once are shared by the region layer and `plot_catalog.py`: the redraw delay, the cull margin
+(`grown_for_labels`) and the safety ceiling (`LabelDensityGuard`) are defined there once. They were
+written twice before, and the second copy was already missing the margin and the ceiling entirely —
+the same drift `coords.py` exists to prevent. The module holds no Qt import, so it is testable
+without a display (`tests/test_label_policy.py`).
+
+**Making the items stays with each tool, and the two differ on purpose.** A region's label carries
+that region's colour, font and offset; a catalog's carries a column value. More importantly the
+*lifecycle* differs: a region's label is built once with its region and then only toggled, because
+the region count is whatever the user drew — while a catalog is asked for one label per row, 66,196
+in the reported case, so `plot_catalog` keeps a **pool sized to what is in view** and re-texts it.
+Building one item per row would move the blowup from pan time to load time. Each tool passes its own
+ceiling, because their per-label costs differ: `LABEL_SAFETY_LIMIT` for regions,
+`CATALOG_LABEL_LIMIT` for the catalog. That cost is **superlinear** in the items already in the
+scene — 0.22 ms per label at 1000, 0.85 ms at 20,000, because each `addItem` walks the ViewBox —
+which is why a ceiling is needed at all, and why reusing items beats rebuilding them
+(`BUGS.md` M30).
 
 #### ds9 `.reg` interop, verified in ds9 itself
 

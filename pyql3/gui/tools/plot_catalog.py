@@ -1,3 +1,4 @@
+import gc
 import os
 from collections import namedtuple
 
@@ -18,6 +19,11 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
 
+from pyql3.gui.label_policy import (
+    LABEL_REDRAW_DELAY_MS,
+    LabelDensityGuard,
+    grown_for_labels,
+)
 from pyql3.gui.tools.base_tool import BaseToolDialog
 
 # Suffixes that make a file worth trying as a FITS table before handing it to
@@ -210,6 +216,34 @@ MASKED_TEXT = '--'
 # 100 rows is 0.06 s and picks the same widths for every catalog tried.
 COLUMN_WIDTH_SAMPLE_ROWS = 100
 
+#: A ceiling on catalog labels built at once. A hang guard, exactly as
+#: `label_policy.LABEL_SAFETY_LIMIT` is for regions, but measured for this overlay: a catalog can
+#: be asked for one label per row, and a JWST prior catalog has 66,196 of them.
+#:
+#: Pooling made the repeat cost almost free, so this bounds only the *first* build of a set — what
+#: it costs to tick *Labels*, or to zoom out until that many sources are in view. Measured with the
+#: pool in place, first build against redraw after a pan:
+#:
+#: ===========  ===========  ===========
+#: labels       first build  pan redraw
+#: ===========  ===========  ===========
+#: 1,000        0.22 s       0.01 s
+#: 5,000        1.44 s       0.03 s
+#: 10,000       4.80 s       0.11 s
+#: 20,000       20.87 s      0.12 s
+#: ===========  ===========  ===========
+#:
+#: The first column is superlinear because each new item's `addItem` walks the ViewBox, so the
+#: ceiling has to sit where a one-off stall is still tolerable: 5000 is 1.4 s, and the same value
+#: the region overlay settled on for a comparable ~1 s. 10,000 would be five seconds.
+CATALOG_LABEL_LIMIT = 5000
+
+#: How much larger than the visible set the label pool may grow before it is trimmed, and the
+#: floor below which trimming is not worth the churn. A pan that changes the count slightly should
+#: reuse what is there rather than free and rebuild it.
+LABEL_POOL_SLACK = 1.5
+LABEL_POOL_MIN = 200
+
 # The "no parent" index a table model is asked about. Held as a singleton because Qt always
 # passes a parent, so the override signatures have to accept one, and constructing a
 # QModelIndex in a default argument builds it once at import anyway.
@@ -353,6 +387,12 @@ class PlotCatalogDialog(BaseToolDialog):
         self.scatter_item = None
         self.highlight_item = None
         self.text_items = []
+        #: The status line update_plot last wrote, restored when the label ceiling lifts.
+        self._plot_status = ""
+        #: Label items taken out of the scene but not yet released. See `_retire_items`.
+        self._retired = []
+        #: Applies CATALOG_LABEL_LIMIT and reports when that verdict changes.
+        self._label_guard = LabelDensityGuard(on_change=self._on_labels_suppressed)
         
         # Default marker settings
         self.marker_color = QColor(255, 165, 0) # Orange default
@@ -874,9 +914,10 @@ class PlotCatalogDialog(BaseToolDialog):
             self.highlight_item = pg.ScatterPlotItem()
             self.highlight_item.setZValue(11)
             self.highlight_item.setParentItem(img_item)
-        # Clean up old text items
-        self._clear_text_items()
-
+        # Hide the labels, keeping the pool: this method ends by calling
+        # update_visible_text_labels, which reuses the items for whatever is now in view.
+        # Destroying them here is what made every plot refresh pay to rebuild them.
+        self._hide_all_labels()
 
         if not hasattr(self, 'chk_master_toggle'):
             return
@@ -941,6 +982,8 @@ class PlotCatalogDialog(BaseToolDialog):
         status = f"Loaded: {len(self.catalog_data)} sources | {len(pts_x)} plotted | {oob_count} out of bounds"
         if bad_count:
             status += f" | {bad_count} unusable coordinates"
+        # Kept so that _on_labels_suppressed can put it back after its own message
+        self._plot_status = status
         self.lbl_status.setText(status)
 
         # Connect view range changes for debounced hide-on-pan / show-on-stop
@@ -948,7 +991,7 @@ class PlotCatalogDialog(BaseToolDialog):
         if not getattr(self, '_range_connected', False):
             self._label_timer = QTimer()
             self._label_timer.setSingleShot(True)
-            self._label_timer.setInterval(200)  # ms delay after panning stops
+            self._label_timer.setInterval(LABEL_REDRAW_DELAY_MS)
             self._label_timer.timeout.connect(self.update_visible_text_labels)
             view.sigRangeChanged.connect(self._on_view_range_changed)
             self._range_connected = True
@@ -991,41 +1034,131 @@ class PlotCatalogDialog(BaseToolDialog):
 
     def _on_view_range_changed(self):
         """Called on every pan/zoom frame. Hides text instantly and debounces re-render."""
-        # Hide all text items immediately for smooth panning
-        for txt in self.text_items:
-            txt.setVisible(False)
-        # Restart debounce timer — labels re-appear 200ms after panning stops
+        # Hidden, not destroyed: the items are reused on the redraw after the view settles
+        self._hide_all_labels()
+        # Restart debounce timer — labels re-appear LABEL_REDRAW_DELAY_MS after panning stops
         if hasattr(self, '_label_timer'):
             self._label_timer.start()
 
+    def _on_labels_suppressed(self, count):
+        """Say why the labels went away, once, when the ceiling starts or stops refusing them.
+
+        Without this the checkbox looks broken: it is ticked and no text appears. `MainWindow`
+        does the same for regions from `RegionLayer.labels_suppressed`.
+        """
+        if count:
+            self.lbl_status.setText(
+                f"{count:,} labels in view — more than the {CATALOG_LABEL_LIMIT:,} that can be "
+                "drawn at once. Zoom in to label fewer sources.")
+        else:
+            # Only the message needs undoing. The pass that called this is about to draw the
+            # labels itself, and re-running update_plot from inside it would recurse.
+            self.lbl_status.setText(self._plot_status)
+
+    def _hide_all_labels(self):
+        """Hide every pooled label without giving up the items."""
+        for txt in self.text_items:
+            txt.setVisible(False)
+
     def update_visible_text_labels(self):
-        """Viewport culling: Renders text labels ONLY for catalog sources within current screen viewport."""
+        """Draw labels for the catalog sources in view, reusing the items from last time.
+
+        Three things bound the cost, all of them shared with the region overlay
+        (`pyql3.gui.label_policy`): labels are hidden while the view moves and rebuilt
+        `LABEL_REDRAW_DELAY_MS` after it settles, culled to the visible rect grown by
+        `LABEL_CULL_MARGIN`, and refused outright above `CATALOG_LABEL_LIMIT`.
+
+        The items are **pooled**, which is where this differs from the region overlay. A region's
+        label is built once with its region and then only toggled, because the region count is
+        whatever the user drew; a catalog's count is whatever the file has, and building one item
+        per row for a 66k-row catalog would move the same blowup from pan time to load time.
+        Rebuilding the visible set from scratch on every redraw was what made a pan cost 23.9 s at
+        20,000 labels — the per-label cost rises with the number of items already in the scene
+        (0.22 ms at 1000, 0.85 ms at 20,000), because each `addItem` walks the ViewBox. Reusing
+        the items skips all of that: only the text and the position change.
+        """
         if self.image_viewer is None or not hasattr(self.image_viewer, 'imv'):
             return
 
-        view = self.image_viewer.imv.getView()
-
-        # Remove old visible text items
-        self._clear_text_items()
-
         if not hasattr(self, 'chk_show_name') or not self.chk_show_name.isChecked():
+            self._hide_all_labels()
             return
 
         if not getattr(self, 'all_label_points', None):
+            self._hide_all_labels()
             return
 
-        rect = view.viewRect()
+        view = self.image_viewer.imv.getView()
         img_item = self.image_viewer.imv.getImageItem()
+        rect = grown_for_labels(view.viewRect())
 
+        wanted = []
         for px, py, name_str in self.all_label_points:
-            parent_pt = img_item.mapToParent(pg.QtCore.QPointF(px, py)) if img_item else pg.QtCore.QPointF(px, py)
-            if rect.contains(parent_pt.x(), parent_pt.y()):
-                txt = pg.TextItem(name_str, color=self.marker_color.name(), anchor=(0, 1))
-                txt.setZValue(12)
-                txt.setPos(parent_pt.x(), parent_pt.y())
-                view.addItem(txt)
-                self.text_items.append(txt)
-        
+            point = pg.QtCore.QPointF(px, py)
+            parent_pt = img_item.mapToParent(point) if img_item else point
+            if rect is None or rect.contains(parent_pt):
+                wanted.append((parent_pt, name_str))
+
+        if not self._label_guard.allows(len(wanted), CATALOG_LABEL_LIMIT):
+            self._hide_all_labels()
+            return
+
+        # Grow the pool to what is needed; it is only ever added to here, and trimmed back
+        # deliberately in _trim_label_pool
+        colour = self.marker_color.name()
+        while len(self.text_items) < len(wanted):
+            txt = pg.TextItem(color=colour, anchor=(0, 1))
+            txt.setZValue(12)
+            view.addItem(txt)
+            self.text_items.append(txt)
+
+        for txt, (parent_pt, name_str) in zip(self.text_items, wanted, strict=False):
+            txt.setColor(colour)
+            txt.setText(name_str)
+            txt.setPos(parent_pt)
+            txt.setVisible(True)
+        for txt in self.text_items[len(wanted):]:
+            txt.setVisible(False)
+
+        self._trim_label_pool(len(wanted))
+
+    def _trim_label_pool(self, needed):
+        """Give back the pool once it is far larger than the view needs.
+
+        Without this the pool sits at its high-water mark for the life of the dialog, so zooming
+        out once and back in would keep a view's worth of labels alive at ~35 kB each. The slack
+        factor stops a pan that shifts the count slightly from churning items.
+
+        Retired items go through `_retire_items`, never straight out of scope: dropping the last
+        Python reference to a `QGraphicsItem` can segfault (`BUGS.md` M18, M27).
+        """
+        keep = max(LABEL_POOL_MIN, int(needed * LABEL_POOL_SLACK))
+        if len(self.text_items) <= keep:
+            return
+        excess = self.text_items[keep:]
+        del self.text_items[keep:]
+        for txt in excess:
+            self._remove_scene_item(txt)
+        self._retire_items(excess)
+
+    def _retire_items(self, items):
+        """Hold `items` until the event loop is back, then release them with a collection.
+
+        The pattern `region_layer` arrived at the hard way: these items sit in reference cycles,
+        so dropping the list frees nothing without an explicit `gc.collect()`, and freeing them
+        inside the call that replaced them is what crashed (`BUGS.md` M18).
+        """
+        if not items:
+            return
+        self._retired.extend(items)
+        QTimer.singleShot(0, self._release_retired)
+
+    def _release_retired(self):
+        if not self._retired:
+            return
+        self._retired.clear()
+        gc.collect()
+
     def clear_selection(self):
         """Drop the selected row and its highlight, leaving the view where it is.
 

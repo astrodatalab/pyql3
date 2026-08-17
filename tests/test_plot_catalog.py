@@ -135,18 +135,27 @@ def test_reopening_redraws_the_markers(viewer, catalog_file):
     dlg2.close()
 
 
-def test_text_labels_are_replaced_not_leaked_on_refresh(viewer, catalog_file):
-    """update_visible_text_labels re-renders on every pan; the old items must go."""
+def test_text_labels_are_reused_not_rebuilt_on_refresh(viewer, catalog_file):
+    """update_visible_text_labels runs after every pan, so the items have to be reused.
+
+    This test used to assert the opposite — that the previous generation of items had left the
+    scene — because the labels were destroyed and rebuilt on every redraw. That is what made one
+    pan cost 23.9 s at 20,000 labels (`BUGS.md` M30), so the contract is now reuse: the same
+    objects are repositioned and re-texted, and nothing accumulates in the scene.
+    """
     dlg = _open_dialog(viewer, catalog_file)
     first = list(dlg.text_items)
     assert first
 
     dlg.update_visible_text_labels()
 
+    assert len(dlg.text_items) == len(first)
+    assert all(a is b for a, b in zip(dlg.text_items, first, strict=True)), (
+        "labels were rebuilt instead of reused")
     for txt in first:
-        assert txt.scene() is None, "previous label generation left in the scene"
+        assert txt.scene() is not None, "a reused label was dropped from the scene"
     live = [it for it in _marker_items(viewer) if isinstance(it, pg.TextItem)]
-    assert len(live) == len(dlg.text_items)
+    assert len(live) == len(dlg.text_items), "labels accumulated in the scene"
     dlg.close()
 
 
@@ -878,5 +887,119 @@ def test_filtering_updates_the_scroll_range(qapp, viewer, tmp_path):
         assert sum(0 if dlg.table.isRowHidden(r) else 1 for r in range(n)) == 1
         assert dlg.table.verticalScrollBar().maximum() < unfiltered, (
             "the scroll range still covers the hidden rows")
+    finally:
+        dlg.close()
+
+
+# --------------------------------------------------------------------------------------
+# Label density: the ceiling, the cull margin and the item pool
+# --------------------------------------------------------------------------------------
+
+
+def _labelled_catalog(tmp_path, n, spread=40.0):
+    """`n` named sources evenly along the diagonal of a `spread`-pixel box.
+
+    Deliberately deterministic: these tests set a view range and assert how many labels fall in
+    it, so randomly placed sources would make "a small view" mean a different count each run.
+    """
+    step = (spread / n) if n else 0.0
+    coords = np.arange(n, dtype=float) * step
+    path = tmp_path / f"labels{n}.fits"
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.BinTableHDU.from_columns([
+            fits.Column(name='id', format='10A',
+                        array=np.array([f"S{i}" for i in range(n)])),
+            fits.Column(name='x_fit', format='D', array=coords),
+            fits.Column(name='y_fit', format='D', array=coords),
+        ], name='CAT'),
+    ]).writeto(path)
+    return str(path)
+
+
+def test_too_many_labels_are_refused_as_a_hang_guard(viewer, tmp_path, monkeypatch):
+    """A ceiling so an enormous catalog cannot lock the window up, not a readability rule.
+
+    At 20,000 labels one redraw took 23.9 s, and the per-label cost climbs with the number of
+    items already in the scene, so a 66k-row catalog could not be drawn at all.
+    """
+    from pyql3.gui.tools import plot_catalog as module
+
+    monkeypatch.setattr(module, "CATALOG_LABEL_LIMIT", 5)
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(_labelled_catalog(tmp_path, 20))
+        dlg.chk_show_name.setChecked(True)
+        dlg.update_visible_text_labels()
+
+        assert not any(txt.isVisible() for txt in dlg.text_items)
+        assert "20 labels in view" in dlg.lbl_status.text()
+        assert "Zoom in" in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_labels_come_back_once_few_enough_are_in_view(viewer, tmp_path, monkeypatch):
+    """The ceiling counts what is *in view*, so zooming in is the way back to labels."""
+    from pyql3.gui.tools import plot_catalog as module
+
+    monkeypatch.setattr(module, "CATALOG_LABEL_LIMIT", 5)
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(_labelled_catalog(tmp_path, 20))
+        dlg.chk_show_name.setChecked(True)
+        dlg.update_visible_text_labels()
+        assert dlg._label_guard.suppressing
+
+        # sources sit every 2 px along the diagonal, so this view holds three of them
+        viewer.imv.getView().setRange(xRange=(0, 5), yRange=(0, 5), padding=0)
+        dlg.update_visible_text_labels()
+
+        assert not dlg._label_guard.suppressing
+        assert any(txt.isVisible() for txt in dlg.text_items), "labels never came back"
+    finally:
+        dlg.close()
+
+
+def test_a_label_just_off_the_edge_is_still_drawn(viewer, tmp_path):
+    """Culling on the exact visible rect makes edge text flicker as the user pans.
+
+    `label_policy.grown_for_labels` grows the rect first, as the region overlay has always done;
+    the catalog tool used a bare `rect.contains()`.
+    """
+    path = _labelled_catalog(tmp_path, 1, spread=0.0)   # one source, at (0, 0)
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(path)
+        dlg.chk_show_name.setChecked(True)
+        # A view starting just past the source: inside the grown rect, outside the exact one
+        viewer.imv.getView().setRange(xRange=(1.0, 21.0), yRange=(1.0, 21.0), padding=0)
+        dlg.update_visible_text_labels()
+
+        assert any(txt.isVisible() for txt in dlg.text_items), (
+            "a label just outside the view was culled, so it will flicker while panning")
+    finally:
+        dlg.close()
+
+
+def test_the_label_pool_is_given_back_when_the_view_needs_far_fewer(viewer, tmp_path,
+                                                                   monkeypatch):
+    """Otherwise the pool sits at its high-water mark for the life of the dialog."""
+    from pyql3.gui.tools import plot_catalog as module
+
+    monkeypatch.setattr(module, "LABEL_POOL_MIN", 4)
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(_labelled_catalog(tmp_path, 60, spread=40.0))
+        dlg.chk_show_name.setChecked(True)
+        viewer.imv.getView().setRange(xRange=(0, 40), yRange=(0, 40), padding=0)
+        dlg.update_visible_text_labels()
+        crowded = len(dlg.text_items)
+        assert crowded > 10, f"expected a crowded view, got {crowded} labels"
+
+        viewer.imv.getView().setRange(xRange=(0, 1), yRange=(0, 1), padding=0)
+        dlg.update_visible_text_labels()
+
+        assert len(dlg.text_items) < crowded, "the pool was never given back"
     finally:
         dlg.close()
