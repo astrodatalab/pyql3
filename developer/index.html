@@ -566,6 +566,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#console-messages-that-are-not-ours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔇 Console messages that are not ours
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="🔇 Console messages that are not ours">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#qtsvgdraw-the-requested-buffer-size-is-too-big-ignoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        qt.svg.draw: The requested buffer size is too big, ignoring
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#all-nan-slice-encountered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        All-NaN slice encountered
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#diagnosing-a-message-that-is-not-listed-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Diagnosing a message that is not listed here
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#building-application-packages" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -787,6 +837,56 @@
     <span class="md-ellipsis">
       
         Tests that need real instrument data
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#console-messages-that-are-not-ours" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🔇 Console messages that are not ours
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="🔇 Console messages that are not ours">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#qtsvgdraw-the-requested-buffer-size-is-too-big-ignoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        qt.svg.draw: The requested buffer size is too big, ignoring
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#all-nan-slice-encountered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        All-NaN slice encountered
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#diagnosing-a-message-that-is-not-listed-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Diagnosing a message that is not listed here
       
     </span>
   </a>
@@ -1050,7 +1150,8 @@ swallows <code>print</code> and does not support <code>--pdb</code>.</p>
 <ul>
 <li><code>tests/test_fits_reader.py</code>: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.</li>
 <li><code>tests/test_image_viewer.py</code>: <code>raw_data</code> / <code>transposed_data</code> / <code>display_data</code> separation, view rotations, display scaling, colormaps, and z-slice plane accessors.</li>
-<li><code>tests/test_depth_plot.py</code>: Spectrum extraction, background subtraction, line list parsing, LaTeX label formatting, and Y-auto scaling.</li>
+<li><code>tests/test_depth_plot.py</code>: Spectrum extraction, background subtraction (both the sky annulus and the independent region), line list parsing, LaTeX label formatting, and Y-auto scaling.</li>
+<li><code>tests/test_spectral_photometry.py</code>: The Qt-free per-channel aperture photometry behind the Depth Plot's circular extraction — flux recovery over a known sky, the <code>(x, y)</code> vs <code>(y, x)</code> axis convention, NaN and edge handling, and agreement with the Aperture Photometry tool plane by plane.</li>
 <li><code>tests/test_analysis_tools.py</code>: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.</li>
 <li><code>tests/test_cuts.py</code>: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.</li>
 <li><code>tests/test_plot_catalog.py</code>: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns.</li>
@@ -1084,6 +1185,58 @@ uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </sp
 </code></pre></div>
 <p>They always skip in CI, where no such cube exists. A path that is set but unreadable warns
 rather than skipping silently, so a typo cannot masquerade as "not configured".</p>
+<hr />
+<h2 id="console-messages-that-are-not-ours">🔇 Console messages that are not ours</h2>
+<p>Launching from a terminal on Linux prints things QuickLook 3 did not emit. Two are known and
+harmless; the point of this section is that you do not spend an afternoon on them again.</p>
+<h3 id="qtsvgdraw-the-requested-buffer-size-is-too-big-ignoring"><code>qt.svg.draw: The requested buffer size is too big, ignoring</code></h3>
+<p>Usually in bursts of four or more, each time the <strong>Open...</strong> dialog appears:</p>
+<div class="highlight"><pre><span></span><code>qt.svg.draw: The requested buffer size is too big, ignoring
+qt.svg.draw: The requested filter is too big, ignoring
+</code></pre></div>
+<p>Both strings live in Qt's own <code>QtSvg</code>, which since the 6.7.x hardening refuses to allocate an
+oversized offscreen buffer for an SVG element. <code>QFileDialog</code> on Linux is Qt's own dialog — the
+PySide6 wheel ships no <code>platformthemes</code> plugin, so there is no GTK dialog to hand off to — and
+it asks <code>QFileIconProvider</code> for a dozen icons at once. Those resolve through <code>QIcon::fromTheme</code>
+to the desktop's <strong>SVG</strong> icon theme (Yaru, Adwaita) and render via the bundled <code>libqsvgicon</code>
+engine. <code>ignoring</code> means Qt skips that element and carries on; the dialog works.</p>
+<p>Nothing in QuickLook 3 is involved. We ship no SVG, we do not pass <code>DontUseNativeDialog</code>, and
+the only SVGs in the dependency tree are pyqtgraph's — all of which render clean at every size
+the app asks for. This is Qt's size heuristic disagreeing with a distribution's icon theme.</p>
+<p>To silence exactly those two messages and nothing else:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">QT_LOGGING_RULES</span><span class="o">=</span><span class="s2">&quot;qt.svg.draw=false&quot;</span><span class="w"> </span>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>main.py
+</code></pre></div>
+<p>That is deliberately <strong>not</strong> set in <code>main.py</code>: it would suppress the category for every user on
+every platform, including a case where the refused SVG is one that matters.</p>
+<h3 id="all-nan-slice-encountered"><code>All-NaN slice encountered</code></h3>
+<p>From <code>pyqtgraph/graphicsItems/ImageItem.py</code>, building the histogram of a plane with no finite
+pixels — a dead channel. Cosmetic; the plane really is empty.</p>
+<h3 id="diagnosing-a-message-that-is-not-listed-here">Diagnosing a message that is <em>not</em> listed here</h3>
+<p>Neither numpy nor Qt names the caller: numpy reports where it <em>noticed</em> a bad value, and QtSvg
+never logs which file it is rendering. Run the app behind a <code>warnings</code> hook and a Qt message
+handler that print the Python stack, which is the only thing that places either one:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># warn_trace.py — run instead of main.py, then reproduce the noise</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span><span class="o">,</span><span class="w"> </span><span class="nn">runpy</span><span class="o">,</span><span class="w"> </span><span class="nn">sys</span><span class="o">,</span><span class="w"> </span><span class="nn">traceback</span><span class="o">,</span><span class="w"> </span><span class="nn">warnings</span>
+<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;QT_LOGGING_RULES&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;qt.svg*=true&quot;</span>      <span class="c1"># before PySide6 is imported</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">PySide6</span><span class="w"> </span><span class="kn">import</span> <span class="n">QtCore</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_trace</span><span class="p">(</span><span class="n">header</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">=== </span><span class="si">{</span><span class="n">header</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">file</span><span class="o">=</span><span class="n">sys</span><span class="o">.</span><span class="n">stderr</span><span class="p">)</span>
+    <span class="n">traceback</span><span class="o">.</span><span class="n">print_stack</span><span class="p">()</span>
+
+<span class="n">warnings</span><span class="o">.</span><span class="n">showwarning</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">msg</span><span class="p">,</span> <span class="n">cat</span><span class="p">,</span> <span class="n">fn</span><span class="p">,</span> <span class="n">ln</span><span class="p">,</span> <span class="o">*</span><span class="n">a</span><span class="p">:</span> <span class="n">_trace</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">cat</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2"> (</span><span class="si">{</span><span class="n">fn</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">ln</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+<span class="n">warnings</span><span class="o">.</span><span class="n">simplefilter</span><span class="p">(</span><span class="s2">&quot;always&quot;</span><span class="p">)</span>
+<span class="n">QtCore</span><span class="o">.</span><span class="n">qInstallMessageHandler</span><span class="p">(</span><span class="k">lambda</span> <span class="n">mode</span><span class="p">,</span> <span class="n">ctx</span><span class="p">,</span> <span class="n">msg</span><span class="p">:</span> <span class="n">_trace</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Qt </span><span class="si">{</span><span class="n">ctx</span><span class="o">.</span><span class="n">category</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">))</span>
+
+<span class="n">sys</span><span class="o">.</span><span class="n">argv</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;main.py&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+<span class="n">runpy</span><span class="o">.</span><span class="n">run_path</span><span class="p">(</span><span class="s2">&quot;main.py&quot;</span><span class="p">,</span> <span class="n">run_name</span><span class="o">=</span><span class="s2">&quot;__main__&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>A Qt message whose stack ends at <code>app.exec()</code> came from a pure-C++ paint — a dialog, a themed
+icon — and is not something our code chose. Add a de-duplicating <code>set</code> of <code>(message, stack)</code> if
+the output is too fast to read; a repaint can emit the same warning hundreds of times per
+second, and <code>warnings</code>' own once-per-location rule does not hold here (every
+<code>warnings.catch_warnings()</code> block clears the registry that implements it, and there are eight
+of them in the codebase).</p>
 <hr />
 <h2 id="building-application-packages">📦 Building Application Packages</h2>
 <p>Build standalone application bundles for macOS (<code>.app</code> / <code>.dmg</code>) or Windows (<code>.exe</code>):</p>

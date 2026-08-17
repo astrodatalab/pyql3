@@ -1436,9 +1436,59 @@
 <li><strong>Total (Sum)</strong>:
   $<span class="arithmatex">\(S(z) = \sum_{(x,y) \in \text{ROI}} I(x, y, z)\)</span>$</li>
 </ul>
+<p>The tool opens on a <strong>circular</strong> aperture combined with <strong>Total</strong>. That is the combination
+for which background subtraction has a single unambiguous definition (§B), and it is the
+same quantity the Aperture Photometry tool reports for one plane.</p>
+<p>Everything that defines what is measured is in the <strong>EXTRACTION APERTURE</strong> group: the shape,
+how its pixels are combined, and its geometry in the form that shape is parameterised —
+<strong>Center X / Y</strong> and <strong>Radius</strong> for a circle, <strong>X Region / Y Region</strong> for a rectangle. The
+geometry controls swap with the shape rather than describing a circle by its bounding box.
+The <strong>BACKGROUND</strong> group likewise shows only the controls its current mode uses. An annulus
+is offered only for a circular aperture, since it has nothing to be concentric with
+otherwise; selecting a rectangle withdraws the option rather than ignoring it.</p>
+<p>For a circular aperture the pixels on the boundary are weighted by the fraction <span class="arithmatex">\(w_i\)</span> of
+each pixel the circle covers, so <span class="arithmatex">\(N = \sum_i w_i\)</span> rather than a count of whole pixels. This
+matters at the small radii typical of an IFU field: a 3 px aperture quantised to whole
+pixels is wrong by several percent. A median cannot be weighted meaningfully, so the
+<strong>Median</strong> method instead uses the whole pixels whose centres fall inside.</p>
 <h4 id="b-background-subtraction">B. Background Subtraction</h4>
-<p>When <strong>Enable Background Subtraction</strong> is checked, a secondary background ROI is defined. The background spectrum <span class="arithmatex">\(S_{\text{bg}}(z)\)</span> is calculated using the selected background method (Median, Mean, or Total), and the background-subtracted spectrum is computed as:</p>
-<div class="arithmatex">\[S_{\text{subtracted}}(z) = S_{\text{signal}}(z) - S_{\text{bg}}(z)\]</div>
+<p>Background subtraction estimates one background level <span class="arithmatex">\(b(z)\)</span> per channel and removes it from
+every pixel of the aperture before the pixels are combined. Two modes set where <span class="arithmatex">\(b(z)\)</span> is
+measured:</p>
+<ul>
+<li><strong>Annulus</strong> (default) — a sky annulus concentric with the extraction aperture, with inner
+  radius <span class="arithmatex">\(r_{\text{in}}\)</span> and outer radius <span class="arithmatex">\(r_{\text{out}}\)</span>. The annulus is <em>not</em> independent:
+  its centre is the centre of the extraction circle and follows it whenever the aperture is
+  moved or resized. This is aperture photometry applied channel by channel.</li>
+<li><strong>Region</strong> — an independently placed and sized ROI, for a background that must be measured
+  somewhere specific.</li>
+</ul>
+<p>With <span class="arithmatex">\(b(z)\)</span> the level over the annulus (its <strong>Median</strong>, the default, or its <strong>Average</strong>) and
+<span class="arithmatex">\(A = \sum_i w_i\)</span> the aperture area:</p>
+<div class="arithmatex">\[
+S_{\text{subtracted}}(z) =
+\begin{cases}
+\sum_i w_i\, I_i(z) \;-\; b(z)\,A &amp; \text{Total} \\[4pt]
+\dfrac{\sum_i w_i\, I_i(z)}{A} \;-\; b(z) &amp; \text{Average} \\[4pt]
+\operatorname{median}_i I_i(z) \;-\; b(z) &amp; \text{Median}
+\end{cases}
+\]</div>
+<p>The <strong>Total</strong> line is the standard photometric estimator, <span class="arithmatex">\(\text{aperture\_sum} -
+\text{median(annulus)} \times \text{area}\)</span>; the other two are the same quantity expressed per
+pixel. A background <strong>Total</strong> is offered only in Region mode: summing an annulus and then
+subtracting that sum from each pixel would scale with however wide the annulus happened to
+be drawn, so it is disabled for an annulus.</p>
+<p>A NaN pixel contributes to neither <span class="arithmatex">\(\sum_i w_i I_i\)</span> nor <span class="arithmatex">\(A\)</span>, so a masked or dead pixel inside
+the aperture reduces the area rather than poisoning the channel. A channel that is entirely
+NaN within the annulus yields a NaN background for that channel alone. Geometry that cannot
+be measured at all — an aperture off the edge of the cube, <span class="arithmatex">\(r_{\text{in}} \ge r_{\text{out}}\)</span>
+— is reported beneath the controls instead of being drawn as a flat line.</p>
+<p>Because the aperture is circular and the view transforms are flips and multiples of 90°, the
+extracted spectrum is invariant to how the image is currently oriented. Note that a circle in
+pixel space is a circle on sky only for square spatial pixels, which OSIRIS has and some
+instruments do not.</p>
+<p>The arithmetic lives in <code>pyql3/core/spectral_photometry.py</code>, which imports no Qt and is
+tested directly, including against the Aperture Photometry tool's independent implementation.</p>
 <h4 id="c-wavelength-primary-x-axis-dual-axis-display">C. Wavelength Primary X-Axis &amp; Dual Axis Display</h4>
 <p>When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths <span class="arithmatex">\(\lambda\)</span> (<span class="arithmatex">\(\mu\text{m}\)</span>). The top X-axis (<code>PixelIndexAxis</code>) dynamically renders the corresponding 0-indexed channel slice numbers (<span class="arithmatex">\(z \in [0, N-1]\)</span>). </p>
 <p>This setup allows users to click the <strong>Export...</strong> button on the top control bar (or right-click the plot and select <strong>Export...</strong>) to save wavelength-resolved spectra (<span class="arithmatex">\(xData = \lambda\)</span>, <span class="arithmatex">\(yData = \text{Intensity}\)</span>) to CSV, vector graphics, or images.</p>
@@ -1446,9 +1496,15 @@
 <h4 id="d-spectral-line-overlay-staggering">D. Spectral Line Overlay &amp; Staggering</h4>
 <ul>
 <li>Overlaid spectral line labels feature 90° vertical rotation.</li>
-<li>To prevent overlapping labels when spectral lines are closely spaced, label heights are automatically staggered across 4 discrete vertical offset levels.</li>
+<li>Labels stand up from a band along the <strong>bottom</strong> of the view, where a spectrum has its free
+  space; the trace itself is pushed towards the top whenever autoranging also has to fit a
+  background-subtracted curve near zero.</li>
+<li>To prevent overlapping labels when spectral lines are closely spaced, label heights are automatically staggered across 4 discrete vertical offset levels within that band.</li>
 <li>LaTeX mathematical expressions enclosed in <code>$$...$$</code> (e.g. <code>$$H_\alpha$$</code>, <code>$$P_{2f}6.5$$</code>) are automatically parsed and formatted.</li>
 </ul>
+<p>Line lists are listed under their own filenames, so a curve can always be traced back to the
+file it was drawn from. Hovering an entry shows the full path, which distinguishes copies of
+the same filename coming from different data directories.</p>
 <h4 id="e-exporting-spectra-figures-csv-png-svg">E. Exporting Spectra &amp; Figures (CSV, PNG, SVG)</h4>
 <p>Astronomers can export the extracted 1D spectra and plot graphics by clicking the <strong>Export...</strong> button on the top control bar (or right-clicking anywhere on the plot canvas and selecting <strong>Export...</strong>):</p>
 <ol>
@@ -1482,6 +1538,11 @@
 </ul>
 <h3 id="algorithm">Algorithm</h3>
 <p>For multi-pixel cut widths, intensity values perpendicular to the cut vector are averaged or collapsed using Median, Mean, or Total sum.</p>
+<p>A cut collapses one axis of the <strong>EXTRACTION APERTURE</strong>, so it measures the same figure the
+Depth Plot does: with <strong>Shape</strong> set to <em>Circle</em>, pixels outside the circle are excluded rather
+than the ROI's bounding box being taken whole. The <strong>BACKGROUND</strong> and <strong>SPECTRAL LINE LIST</strong>
+groups have no meaning for a cut and are disabled, which the status line under the two groups
+says in as many words.</p>
 <hr />
 <h2 id="3-2d-peak-line-fitting">3. 2D Peak &amp; Line Fitting</h2>
 <p>The <strong>Peak Fit</strong> tool fits analytical 2D spatial surface models to stars, emission lines, or compact sources within a selected ROI.</p>
