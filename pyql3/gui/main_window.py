@@ -798,7 +798,9 @@ class MainWindow(QMainWindow):
             self.image_viewer.combo_scale.blockSignals(True)
             self.image_viewer.combo_scale.setCurrentIndex(idx)
             self.image_viewer.combo_scale.blockSignals(False)
-            self.image_viewer.update_image_display()
+            # The same path as the Scale combo box, which keeps the manual Min/Max and, in
+            # Z Range or Boxcar mode, the timeline (R57)
+            self.image_viewer.apply_contrast()
             
     def sync_scaling_from_viewer(self):
         scale_opt = self.image_viewer.combo_scale.currentText()

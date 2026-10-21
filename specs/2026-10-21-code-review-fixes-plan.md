@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix R1–R83 from the 2026-10-21 code review, and add the shared helpers, signals and fixtures whose absence caused most of them.
+**Goal:** Fix R1–R84 from the 2026-10-21 code review, and add the shared helpers, signals and fixtures whose absence caused most of them.
 
 **Architecture:** Five shared changes carry most of the fixes, and they come first: one integration-time and WCS helper module (`pyql3/core/header_info.py`); one whole-pixel box helper in `coords.py`; one redisplay path and two new viewer signals (`plane_changed`, `view_rotation_changed`) in `ImageViewer`; one tool lifecycle (`BaseToolDialog.tear_down()` and `MainWindow._open_tool()`); and frame-aware direction mapping on `CelestialMap`. Everything after Phase 4 is a local fix in one file or one area, built on those.
 
 **Tech Stack:** PySide6, pyqtgraph, astropy (WCS, SkyCoord), photutils, `regions` 0.12, pytest + pytest-xdist. Everything runs through `uv run`.
 
-**Spec:** `BUGS.md`, section "Code review — 2026-10-21" (R1–R83; R80 was added in the Phase 1 review, R81–R83 from a NIFS reference cube). Each task names the entries it closes. The entry holds the reproduction, the measured numbers and the proposed regression test; read it before starting the task. Where a task below differs from an entry's "Fix (proposed)", the task wins and says why.
+**Spec:** `BUGS.md`, section "Code review — 2026-10-21" (R1–R84; R80 was added in the Phase 1 review, R81–R83 from a NIFS reference cube, R84 in the Phase 2 review). Each task names the entries it closes. The entry holds the reproduction, the measured numbers and the proposed regression test; read it before starting the task. Where a task below differs from an entry's "Fix (proposed)", the task wins and says why.
 
 ## Global Constraints
 
@@ -160,7 +160,8 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - Produces: `ImageViewer.plane_changed = Signal()` — emitted **once** each time the values on screen change: at the end of `apply_z_range` and `apply_z_slice`, in `on_slider_changed`'s single-slice `setCurrentIndex` branch, and in `set_data`'s 2-D path. `refresh_display` emits it only through `show_current_plane`.
 - Produces: `ImageViewer.view_rotation_changed = Signal(float)` — emitted by `apply_view_rotation(angle)`. `set_data` resets the rotation by calling `apply_view_rotation(0.0)` after the new plane is shown, instead of assigning `self.view_rotation = 0.0`.
 - Produces: `ImageViewer.item_to_view(x, y) -> tuple[float, float]` and `view_to_item(x, y) -> tuple[float, float]`, through the ImageItem's `mapToView` / `mapFromView`.
-- `display_changed` keeps its meaning: the plane's geometry changed (flip, rot90, axis mapping, new data).
+- `display_changed` keeps its meaning: the plane's geometry changed (flip, rot90, axis mapping, new data); it is also emitted on a unit change, which redisplays through `refresh_display`.
+- **Signal order (contract, added in the Phase 2 review).** `display_changed` is always emitted together with `plane_changed` and after it (P, then D), on the 2-D and the 3-D path alike; `plane_changed` alone means only the values changed (slider step, boxcar or Z Range change). `set_data` emits `view_rotation_changed(0.0)` last, after P and D. The one exception is R84 (an unparsable Z field in Z Range mode emits D without P). Covered by `test_image_viewer.py::test_viewer_signals_arrive_in_one_order`.
 
 - [ ] **Step 1: Write the failing tests.** `::test_plane_changed_fires_once_per_change`, parametrized: slider step, boxcar change, Z Range apply, flip, unit change, `set_data` (2-D and 3-D) — a counter connected to `plane_changed` reads exactly 1. `::test_view_rotation_changed_fires_with_the_angle`. `::test_item_to_view_round_trips_under_a_view_rotation` at 0, 37, 90, 180° on the 66×51 plane of `osiris_like_fits`. `::test_view_rotation_pivots_on_the_plane_centre` (R67: on a 51×66 plane, a 180° rotation leaves `item_to_view(25.5, 33.0)` at the same view point as before).
 - [ ] **Step 2: Run them and see them fail.**
@@ -235,10 +236,11 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 **Interfaces:**
 - Consumes: `plane_changed`, `view_rotation_changed`, `display_changed` (Task 7); `tear_down` (Task 9); `roi_plane_pixels` (Task 4).
-- Produces: in `BaseToolDialog.__init__`, connections from the three viewer signals to private slots that call, only while `self.isVisible()` and not torn down, `on_plane_changed()`, `on_geometry_changed()` and `on_view_rotated(angle)`. Defaults: `on_plane_changed()` calls `self.on_roi_changed()`; `on_geometry_changed()` calls `self.on_plane_changed()`; `on_view_rotated(angle)` does nothing. `tear_down()` disconnects all three.
+- Produces: in `BaseToolDialog.__init__`, connections from the three viewer signals to private slots that call, only while `self.isVisible()` and not torn down, `on_plane_changed()`, `on_geometry_changed()` and `on_view_rotated(angle)`. Defaults: `on_plane_changed()` calls `self.on_roi_changed()` and is the recompute hook; `on_geometry_changed()` **does nothing**, because every `display_changed` is preceded by a `plane_changed` (Task 7's signal order), so a measuring tool has already recomputed when it arrives — calling `on_plane_changed()` from it would compute everything twice per flip, load or unit change; `on_view_rotated(angle)` does nothing. A tool whose output depends on the geometry and not on the plane overrides `on_geometry_changed()` (the Depth Plot, Task 12; the catalog, Task 13; the Rotate dialog, Task 16). `tear_down()` disconnects all three.
+- Reconcile `MainWindow.update_tools_for_unit()` (`main_window.py`, called by `set_display_unit` after `refresh_display()`). Today it calls each visible tool's `update_plot()` / `update_stats()` on a unit change. The unit change already emits `plane_changed` (then `display_changed`), so for every tool subscribed through `BaseToolDialog` that call is a second recompute: remove it for them. Keep it only for what still needs a unit-change notice that the signals do not give — a dialog in `TOOL_DIALOG_ATTRS` that is not a `BaseToolDialog` (check each entry when implementing and list them in the report), and any label that depends on `disp_as_dn` but not on the plane. If no such case remains, delete the loop and say so in the docstring of `set_display_unit`; update AGENTS.md's `TOOL_DIALOG_ATTRS` paragraph, which names `update_tools_for_unit()` as one of the two walkers of the list.
 - Cuts, Surface and Contour override `on_plane_changed()` to call `update_plot()`; their `imv.sigTimeChanged` connections are removed. Photometry and Strehl read `current_plane() * data_multiplier`, not `display_data[imv.currentIndex]`.
 
-- [ ] **Step 1: Write the failing tests.** `test_analysis_tools.py::test_tools_follow_the_displayed_plane` (R14). `test_cuts.py::test_cuts_follow_boxcar_and_range`. `test_analysis_tools.py::test_a_slider_step_does_not_recompute_overlay_tools` (Review Focus 1): spies on `PlotCatalogDialog.update_plot` and on `DepthPlotDialog.update_plot` in Depth mode record no call across ten slider steps.
+- [ ] **Step 1: Write the failing tests.** `test_analysis_tools.py::test_tools_follow_the_displayed_plane` (R14). `test_cuts.py::test_cuts_follow_boxcar_and_range`. `test_analysis_tools.py::test_a_slider_step_does_not_recompute_overlay_tools` (Review Focus 1): spies on `PlotCatalogDialog.update_plot` and on `DepthPlotDialog.update_plot` in Depth mode record no call across ten slider steps. `test_analysis_tools.py::test_each_change_recomputes_a_tool_once`, parametrized over a flip, a unit change through `MainWindow.set_display_unit`, a `set_data`, and **Apply after editing a Z field**: with focus in Z Min, type a new value and click Apply — focus leaving the field fires `editingFinished` and then the button's `clicked`, so `plane_changed` arrives twice (P, P; measured in the Phase 2 review). Add the same case for the Boxcar field and its Apply button, which are wired the same way (`txt_boxcar.editingFinished` and `btn_apply_slice.clicked` both run `apply_z_slice`). A spy on each open measuring tool's recompute (Statistics `update_stats`, Photometry, Peak Fit, Strehl, a Horizontal Cut's `update_plot`) records exactly one call per change. The Apply case fails until `apply_z_range` is not run twice for one edit (connect only one of the two, or skip a re-run whose range equals the one on screen); fix it in this task.
 - [ ] **Step 2: Run them and see them fail.** The last test keeps failing after this task: the default `on_plane_changed` reaches `DepthPlotDialog.on_roi_changed`, which recomputes. Mark it `xfail(strict=True)` here; Task 12 removes the mark. (The catalog half already passes: its `on_roi_changed` is the base no-op.)
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run the tests; they pass.**
@@ -252,7 +254,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 **Interfaces:**
 - Consumes: Task 11's hooks.
-- Produces: `DepthPlotDialog.on_plane_changed()` recomputes only in the cut modes; `on_geometry_changed()` always recomputes. `DepthPlotDialog._set_intensity_label() -> None` sets the left-axis label from `image_viewer.disp_as_dn`; all three label writes go through it.
+- Produces: `DepthPlotDialog.on_plane_changed()` recomputes only in the cut modes (a cut is taken through the plane on screen); `on_geometry_changed()` recomputes in Depth mode, because the Depth-mode spectrum depends on the geometry (which pixels the aperture covers, and the unit) and not on the plane. In a cut mode it does nothing: the `on_plane_changed()` that precedes every `display_changed` has already recomputed, and recomputing again would count each flip, load or unit change twice. So each flip, load or unit change recomputes the Depth Plot exactly once in either mode, and a slider step in Depth mode recomputes it not at all. Nothing else in this task may recompute on the same signal (no extra `display_changed` connection of its own). `DepthPlotDialog._set_intensity_label() -> None` sets the left-axis label from `image_viewer.disp_as_dn`; all three label writes go through it.
 
 - [ ] **Step 1: Write the failing tests.** `::test_a_new_cube_replaces_the_plotted_spectrum`, `::test_a_flip_replaces_the_plotted_spectrum`, `::test_a_2d_load_clears_every_curve` (R7), `::test_cut_modes_follow_the_slider`, `::test_the_intensity_label_follows_the_display_unit` (R28).
 - [ ] **Step 2: Run them and see them fail.**
@@ -268,7 +270,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 **Interfaces:**
 - Consumes: Task 11's hooks; `ImageViewer.display_axis_indices()`.
-- Produces: `PlotCatalogDialog._resolve_orig_positions() -> np.ndarray` — shape `(N, 2)`, orig coordinates of every row, NaN where a row cannot be placed; computed with whole-column arrays (one `SkyCoord`, one `world_to_pixel_values` through the `world_axis_physical_types` mapping for **every** `naxis`, then `orig_to_display` element-wise) and cached until the catalog, the coordinate columns, the coordinate type or the WCS changes. `replot_markers() -> None` redraws markers, labels and the highlight from that cache without moving the view. `on_plane_changed()` does nothing; `on_geometry_changed()` calls `replot_markers()`; `on_view_rotated(angle)` re-places the visible labels.
+- Produces: `PlotCatalogDialog._resolve_orig_positions() -> np.ndarray` — shape `(N, 2)`, orig coordinates of every row, NaN where a row cannot be placed; computed with whole-column arrays (one `SkyCoord`, one `world_to_pixel_values` through the `world_axis_physical_types` mapping for **every** `naxis`, then `orig_to_display` element-wise) and cached until the catalog, the coordinate columns, the coordinate type or the WCS changes. `replot_markers() -> None` redraws markers, labels and the highlight from that cache without moving the view. `on_plane_changed()` does nothing; `on_geometry_changed()` calls `replot_markers()`; `on_view_rotated(angle)` re-places the visible labels. On every `set_data`, `view_rotation_changed(0.0)` follows P and D (Task 7's signal order), so the labels are re-placed once more after `replot_markers()`; keep that re-place cheap (visible labels only) rather than redrawing markers.
 
 - [ ] **Step 1: Write the failing tests.** `::test_markers_follow_a_flip_and_a_new_image` (R8). `::test_markers_follow_a_view_rotation` (labels too). `::test_catalog_given_before_any_image_plots_when_one_arrives`. `::test_world_catalog_refresh_is_not_per_row` (R31; the 0.5 s bound for a marker-size change on 20,000 rows, positions equal to `wcs.world_to_pixel_values` for a sample). `::test_world_catalog_on_a_dec_first_2d_image` (R61).
 - [ ] **Step 2: Run them and see them fail.**
@@ -300,7 +302,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 **Interfaces:**
 - Consumes: `plane_changed`, `view_rotation_changed`, `item_to_view` (Task 7).
-- Produces: `RegionLayer.orig_to_view(x, y) -> tuple[float, float]` (orig → ImageItem via `_to_item`, then `item_to_view`), used by `zoom_to` and both label-culling paths. The layer connects `plane_changed` to `update_channel_visibility` and `view_rotation_changed` to a re-cull. `_current_channel()` returns `None` for non-3-D data and, in Collapse Region mode, the `(zmin, zmax)` range; `_in_channel_range` treats `None` as "show" and a range as "show if it overlaps".
+- Produces: `RegionLayer.orig_to_view(x, y) -> tuple[float, float]` (orig → ImageItem via `_to_item`, then `item_to_view`), used by `zoom_to` and both label-culling paths. The layer **replaces** its existing `slider_slice.valueChanged` connection (`region_layer.py:276`) with `plane_changed` → `update_channel_visibility`, rather than adding a second connection (both would fire on every slider step); geometry re-placement stays on `display_changed` → `refresh`, which always follows a `plane_changed`, so `refresh` need not update channel visibility again. `view_rotation_changed` connects to a re-cull; on every `set_data` it arrives last, after P and D. `_current_channel()` returns `None` for non-3-D data and, in Collapse Region mode, the `(zmin, zmax)` range; `_in_channel_range` treats `None` as "show" and a range as "show if it overlaps".
 
 - [ ] **Step 1: Write the failing tests.** `test_region_layer.py::test_channel_ranges_follow_a_collapse_range` (R36, overlap rule: `z_range=(0, 5)` hidden at 30–40, shown at 1–4 and at 4–9), `::test_a_channel_range_does_not_hide_a_region_on_a_2d_image` (R63, both render modes), `::test_labels_are_culled_in_view_coordinates_under_a_view_rotation` (R45, both modes). `test_region_ui.py::test_zoom_to_lands_on_the_region_under_a_view_rotation` (R45).
 - [ ] **Step 2: Run them and see them fail.**
@@ -316,7 +318,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 **Interfaces:**
 - Consumes: Task 11's hooks (`RotateDialog` is a `BaseToolDialog`).
-- Produces: `RotateDialog.on_view_rotated(angle)` sets its spin box to `angle` with signals blocked and calls `update_pa_info()`; `on_geometry_changed()` calls `update_pa_info()`.
+- Produces: `RotateDialog.on_view_rotated(angle)` sets its spin box to `angle` with signals blocked and calls `update_pa_info()`; `on_geometry_changed()` calls `update_pa_info()`. On every `set_data`, `view_rotation_changed(0.0)` arrives after P and D, so the dialog's final state comes from `on_view_rotated(0.0)`.
 
 - [ ] **Step 1: Write the failing test.** `::test_rotate_dialog_follows_a_reload`: rotate 30°, `set_data` the same cube, assert the spin box reads 0.0 and the North label matches `north_east_display_angles()`.
 - [ ] **Step 2: Run it and see it fail.**
@@ -753,14 +755,14 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 4: Run `tests/test_cli_install.py`; it passes.**
 - [ ] **Step 5: Close-out** for R73 and R74.
 
-### Task 43: Colorbar values and 1:1 zoom (R65, R66)
+### Task 43: Colorbar values, 1:1 zoom, and unparsable Z fields (R65, R66, R84)
 
 **Files:**
-- Modify: `pyql3/gui/viewers/image_viewer.py:834-854`, `:1784-1794`
+- Modify: `pyql3/gui/viewers/image_viewer.py:834-854`, `:1784-1794`, `apply_z_range` and the `txt_zmin` / `txt_zmax` / `txt_boxcar` construction
 - Test: `tests/test_image_viewer.py`
 
-- [ ] **Step 1: Write the failing tests.** `::test_colorbar_ticks_are_data_values_under_sqrt` (R65: with data 25–9825 under Sqrt, the colorbar's range is 25–9825 or its label names the scale). `::test_one_to_one_zoom_shows_one_data_pixel_per_screen_pixel` (R66: after 1:1 on a 300×200 image in a 900×900 view, `viewRect().width()` equals the ViewBox's width in screen pixels within 1).
+- [ ] **Step 1: Write the failing tests.** `::test_colorbar_ticks_are_data_values_under_sqrt` (R65: with data 25–9825 under Sqrt, the colorbar's range is 25–9825 or its label names the scale). `::test_one_to_one_zoom_shows_one_data_pixel_per_screen_pixel` (R66: after 1:1 on a 300×200 image in a 900×900 view, `viewRect().width()` equals the ViewBox's width in screen pixels within 1). `::test_an_unparsable_z_field_does_not_leave_a_stale_plane` (R84: Z Range mode, Sum over 4-8, Z Min set to "abc" and the cube reloaded ×10; the screen must not show channel 0 at the old levels — either "abc" cannot be entered, or the full range is collapsed with a message — and `display_data` equals what is painted).
 - [ ] **Step 2: Run them and see them fail.**
-- [ ] **Step 3: Implement:** map the colorbar's ticks back through the inverse of the active scale (keep the label "Pixel Value (<unit>)"); set the 1:1 range from the ViewBox's screen size, centred on the current view centre.
+- [ ] **Step 3: Implement:** map the colorbar's ticks back through the inverse of the active scale (keep the label "Pixel Value (<unit>)"); set the 1:1 range from the ViewBox's screen size, centred on the current view centre; put a `QIntValidator` on Z Min, Z Max and Boxcar, or fall back to the full range with a message (R84).
 - [ ] **Step 4: Run them; they pass.**
-- [ ] **Step 5: Close-out** for R65 and R66. **End of Phase 11: stop and report the staged diff.** All of R1–R83 should now be ticked in the checklist.
+- [ ] **Step 5: Close-out** for R65, R66 and R84. **End of Phase 11: stop and report the staged diff.** All of R1–R84 should now be ticked in the checklist.

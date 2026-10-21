@@ -2253,6 +2253,7 @@ running code unless its Status says otherwise, and each carries its reproduction
 `R`-numbered to distinguish these from the `B`, `M` and `S` series, and ordered by severity:
 **R1–R10 high, R11–R47 medium, R48–R64 low**, and R65–R80 in the minor-items table at the end.
 R81–R83 (medium) were added afterwards from a NIFS reference cube; they sit just before the table.
+R84 (minor) was added in the Phase 2 review and is the last row of the table.
 The implementation plan is `specs/2026-10-21-code-review-fixes-plan.md`.
 
 **Baseline.** `uv run pytest -q -n auto --dist loadfile`: 1081 passed, 6 skipped (the two
@@ -2555,7 +2556,7 @@ While the header editor is open, `MainWindow` should queue auto-loads, keeping o
 
 ## R5. Flip, rotate, unit change, axis change and reload replace a collapsed or boxcar plane with a single channel
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`show_current_plane`, which `refresh_display` now calls: `apply_z_range()` in Z Range mode, `apply_z_slice()` otherwise, and for a collapsed plane `_give_imageview_the_cube()` first so the timeline matches the new cube, and which puts the view rotation back after `imv.setImage` resets the ImageItem's transform; `apply_axis_mapping` writes Z Max only when the z length changed), `docs/developer.md`, covered by `test_redisplay_keeps_the_collapsed_plane`, `test_redisplay_keeps_the_boxcar_plane`, `test_reload_keeps_zmax_when_the_length_is_unchanged`, `test_a_collapse_keeps_the_timeline_of_the_new_cube` and `test_an_invalid_z_range_keeps_the_view_rotation` (`tests/test_image_viewer.py`)
 - **Severity:** high — the image is a different plane from the one the label and the tools describe, and this happens in the live-observing reload path
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1216-1225`, `pyql3/gui/viewers/image_viewer.py:1212`, `pyql3/gui/viewers/image_viewer.py:1565-1567`, `pyql3/gui/tools/rotate.py:121`, `pyql3/gui/tools/rotate.py:127`, `pyql3/gui/main_window.py:779`
 - **Related:** B4, which made a reload re-assert the slider's slice. That fix applies in Z Slice mode only. B17 made the tools read the collapsed plane, so the tools and the screen now disagree in the opposite direction.
@@ -2638,7 +2639,7 @@ unchanged. Add a boxcar variant using a cube with a different, non-monotonic val
 
 ## R6. The hover readout ignores the view rotation, so X, Y, Value and RA/Dec belong to a different pixel
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`mouse_moved` maps through the ImageItem and `coords.item_to_pixel`), covered by `test_readout_follows_the_view_rotation`, `test_readout_pixel_and_sky_position_agree_under_flip_and_rotation` and `test_readout_left_of_the_image_is_out_of_bounds` (`tests/test_image_viewer.py`)
 - **Severity:** high — wrong numbers presented as correct whenever **North Up** or any view angle is set
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1631-1632`
 - **Related:** M15. The right-click path (`on_view_clicked`, `:1608`) and the tool ROIs (`base_tool.py:191`, `:205`) map through the ImageItem; the hover readout is the one path that does not.
@@ -4003,7 +4004,7 @@ entries matching `combo_x` / `combo_y`.
 
 ## R27. Arrow keys, Home, End and Space on the image replace a collapsed plane with a single channel
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`on_imv_time_changed` redraws the collapse in Z Range mode; `eventFilter` ignores presses of the ImageView's frame keys in that mode, because Home at frame 0 and End at the last frame repaint a channel without emitting `sigTimeChanged`, and lets releases through; `z_mode_changed` stops playback on entering the mode; in Boxcar mode `apply_z_slice` keeps the ImageView's frame at the slider, `eventFilter` turns the stepping keys into slider moves, and `_after_playback_tick` stops playback at either end of the cube), `docs/developer.md`, covered by `test_frame_keys_do_not_replace_a_collapse` (range and boxcar), `test_boxcar_playback_at_the_end_keeps_the_median`, `test_switching_to_a_collapse_stops_playback` and `test_a_key_released_after_switching_to_a_collapse_is_not_left_pressed` (`tests/test_image_viewer.py`)
 - **Severity:** medium — an ordinary keyboard action shows a different plane while the label still says the range is collapsed
 - **Files:** `pyql3/gui/viewers/image_viewer.py:443-468`, `pyql3/gui/viewers/image_viewer.py:941-958`
 - **Related:** B4, which synced a timeline drag back to the slider in Z Slice mode. This is the keyboard path in Collapse Region mode, which that sync skips.
@@ -4011,8 +4012,16 @@ entries matching `combo_x` / `combo_y`.
 ### Symptom
 In Collapse Region mode (Sum over 4-8, displayed value 30), clicking the image and pressing **End**
 shows channel 19 (19.0) and **Home** shows channel 0 (0.0). Left/Right step through channels and
-Space plays them. In each case the label still reads "Collapsed: 4-8". Boxcar mode recovers, because
-there the slider sync re-collapses the plane.
+Space plays them. In each case the label still reads "Collapsed: 4-8". Boxcar mode has the same fault;
+see below.
+
+**Boxcar mode, found in the Phase 2 review.** The review first said Boxcar mode recovers. It does
+not. With Boxcar 5 and the slider moved to 10, the ImageView's own frame index stays at 0. **Home**
+then paints raw channel 0 (0.0) while the label reads "Slice (Boxcar): 8-12" and `current_plane()` is
+10.0, and **Right** from slider 10 steps the ImageView from frame 0 to 1, which moves the slider to 1.
+Playback has a related fault at the ends of the cube: pyqtgraph does not stop at the last frame, and
+each further tick repaints raw channel 19 (4.0 in place of the median 7.0) without emitting
+`sigTimeChanged`. The same behaviour is on HEAD.
 
 ### Reproduction
 ```python
@@ -4050,15 +4059,27 @@ pyqtgraph's `ImageView.keyPressEvent` calls `setCurrentIndex`, which repaints th
 that stored cube. The resulting `sigTimeChanged` reaches `on_imv_time_changed`, which returns early
 when Z Slice is not checked (`:452`), so nothing restores the collapse.
 
+In Boxcar mode the boxcar branch of `apply_z_slice` also draws with `bypass_imv=True` and never calls
+`imv.setCurrentIndex`, so the ImageView's frame stays wherever it last was. A frame key then steps
+from that stale frame, and Home at frame 0 (or a playback tick at either end) repaints a channel
+without a `sigTimeChanged`, which is the only path by which the slider sync could redraw the median.
+
 ### Fix (proposed)
 In `on_imv_time_changed`, when `radio_range` is checked, re-run `apply_z_range()` (or redraw the
 cached collapsed plane) instead of returning. Alternatively, install an event filter on the
 ImageView that ignores the frame keys in range mode.
 
+In Boxcar mode (as done): `apply_z_slice` calls `imv.setCurrentIndex(val)` under `_syncing_slice`
+before the boxcar paint; the event filter turns Left, Right, Home, End, PageUp and PageDown into
+clamped `slider_slice.setValue(...)` moves, so the median is drawn for the new centre; and a slot
+run after each playback tick stops playback at either end of the cube and redraws the median.
+
 ### Regression test (proposed)
 `tests/test_image_viewer.py::test_frame_keys_do_not_replace_a_collapse`: the channel cube collapsed
 over 4-8 with Sum; send End, Home and Right with `QTest.keyClick` to `imv.ui.graphicsView`, and
-assert that the rendered image is still 30.0 after each.
+assert that the rendered image is still 30.0 after each. Parametrized over range and boxcar; the
+boxcar case asserts the slider position after each key and that the rendered image is the median
+over `boxcar_range()`. `::test_boxcar_playback_at_the_end_keeps_the_median` covers the playback ticks.
 
 ---
 
@@ -5818,7 +5839,7 @@ that the fallback angles (with `wcs` set to `None`) equal the WCS angles to with
 
 ## R57. Display → Scaling (the menu) hides the timeline and discards the manual levels in Collapse or Boxcar mode
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/main_window.py` (`set_scaling` calls `ImageViewer.apply_contrast()`, the Scale combo box's path), covered by `test_scaling_menu_keeps_the_collapse_display` (`tests/test_menu_actions.py`)
 - **Severity:** low — no wrong numbers, but the timeline strip with the collapse range disappears and the user's Min/Max is replaced
 - **Files:** `pyql3/gui/main_window.py:756-763`, `pyql3/gui/viewers/image_viewer.py:864-876`
 - **Related:** R5. This is another redisplay path that does not take the z mode into account.
@@ -6374,13 +6395,13 @@ none.
 `tests/test_menu_actions.py::test_total_dn_is_offered_only_for_a_count_rate`: an MJy/sr cube and a
 cube without `BUNIT` leave "As Total DN" disabled with a tooltip; the OSIRIS fixture enables it.
 
-## R65–R80. Minor items
+## R65–R80, R84. Minor items
 
 | # | File | Issue | Fix (proposed) |
 |---|------|-------|-----|
 | R65 | `pyql3/gui/viewers/image_viewer.py:1784-1794` | The colorbar shows the scaled render values but is labelled "Pixel Value (DN/s)". For data from 25 to 9825 it reads 0 to 99.0 under Sqrt, 0 to 3.99 under Logarithmic and 0 to 1 under HistEq. | Label the axis with the scale in use for non-linear modes, or map its ticks back to data values through the inverse of the scale. |
 | R66 | `pyql3/gui/viewers/image_viewer.py:834-854` | The "1:1" buttons set the range to the whole image, so they behave like Fit. A 300×200 image in a 900×900 window shows 0.333 data px per screen px after 1:1 and 0.356 after Fit. QL2's 1:1 sets the zoom factor to 1. | Set the view range so that one data pixel covers one screen pixel (width and height of the ViewBox in screen pixels), centred on the current view. |
-| R67 | `pyql3/gui/viewers/image_viewer.py:1389-1391` | `apply_view_rotation` rotates about `((shape[-1]-1)/2, (shape[-2]-1)/2)`, which swaps x and y and drops the half-pixel offset of the ImageItem. On a 51×66 plane a 180° view rotation moves the image centre from (25.5, 33.0) to (39.5, 17.0). | Pivot on `(shape[-2] / 2, shape[-1] / 2)`, the centre of the ImageItem's bounding rect. |
+| R67 | `pyql3/gui/viewers/image_viewer.py:1389-1391` | ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`_set_view_transform`), covered by `tests/test_image_viewer.py::test_view_rotation_pivots_on_the_plane_centre`. `apply_view_rotation` rotates about `((shape[-1]-1)/2, (shape[-2]-1)/2)`, which swaps x and y and drops the half-pixel offset of the ImageItem. On a 51×66 plane a 180° view rotation moves the image centre from (25.5, 33.0) to (39.5, 17.0). | Pivot on `(shape[-2] / 2, shape[-1] / 2)`, the centre of the ImageItem's bounding rect. |
 | R68 | `pyql3/gui/viewers/image_viewer.py:1071`, `pyql3/gui/tools/rotate.py:95-116` | `set_data` resets `view_rotation` to 0 on every load, including each poller auto-load, but an open Rotate dialog is not told. After a 30.0° view rotation and a reload, the view is unrotated while the dialog shows 30.0 and "30.0° CCW from up". The Main Window review measured that after North Up, the next frame draws North at 55.0° with rotation 0 while the dialog still shows 35.0 and "North is Up". | Either keep the view rotation across a reload of the same field, or emit a signal from `set_data` that the Rotate dialog uses to reset its spin box and call `update_pa_info()`. |
 | R69 | `pyql3/gui/main_window.py:723` | `load_from_memory` applies `os.path.basename` to the Arithmetic expression, so any division keeps only the text after the `/`: `(ActiveImage / 2.0)` is titled `QuickLook 3 -  2.0)`, and `(a001.fits / a002.fits)` is titled ` a002.fits)`, which reads as if the window held `a002.fits`. | Use the title as given for in-memory data, and apply `basename` only to real file paths. |
 | R70 | `pyql3/services/poller.py:110-120`, `pyql3/core/fits_reader.py:259` | Saving the displayed file's header in place, inside a watched directory, replaces the file with `os.replace`. The poller re-announces it about one scan later, and the reload resets the view: a 5 x 5 px zoom on a 30 x 30 px frame came back as the full frame (a 31.5 x 32.4 px view). | In `MainWindow`, skip an auto-load whose path and `(st_size, st_mtime_ns, st_ino)` match what `fits_reader` itself just wrote. |
@@ -6394,6 +6415,7 @@ cube without `BUNIT` leave "As Total DN" disabled with a tooltip; the OSIRIS fix
 | R78 | `pyql3/core/regions_model.py:458-472` | `looks_like_ds9` needs ds9's header line, or a line that is exactly one of five frame words. Headerless files that ds9 accepts — `fk5;circle(...)` lines, a `j2000`/`fk4`/`b1950`/`ecliptic` frame line, or bare `circle(...)` lines — go to the YAML reader and fail with "should be a mapping with 'format' and 'regions' keys, found str". | Recognise any `_FRAME_RE` frame word, including inside `;`-separated statements, and a shape call in text that does not parse as a YAML mapping. |
 | R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
 | R80 | `pyql3/gui/tools/depth_plot.py:549-562` (`_circular_mask`), called from `_cut_region` `:524` and the background box `:1665` | With Shape set to Circle, a cut (Horizontal/Vertical Cut through the aperture) or a background box that hangs off the image builds its circular mask from the box *after* `coords.box_index_slices` has clipped it to the image. The mask is centred on the clipped box and its radius is half the clipped box's shorter side, so it measures a smaller circle shifted toward the image interior instead of the part of the drawn circle that is on the image. Pre-existing; found in the Phase 1 review (2026-10-21), and reachable more often since R19 made an off-edge box measure its on-image part. | Build the mask from the unclamped circle (the drawn box's centre and radius, in the clipped box's index frame) and intersect it with the image, so the pixels kept are the drawn circle's on-image pixels. |
+| R84 | `pyql3/gui/viewers/image_viewer.py` (`apply_z_range`, reached from `show_current_plane`) | An unparsable Z Min or Z Max ("abc") present during `set_data` or any redisplay in Z Range mode makes `apply_z_range` stop at "Collapsed: Invalid Range" after `_give_imageview_the_cube()` has already loaded the cube, so channel 0 stays painted with the previous image's levels and `display_data` is left as the full cube copy that `apply_axis_mapping` made, not the plane on screen. Measured: Sum over 4-8 of a cube whose channel k holds k + 100 (530.0, levels 530-531); Z Min set to "abc" and the cube reloaded ×10: the screen shows channel 0 (1000.0) at levels 530-531. No `plane_changed` is emitted, while `display_changed` is. Found in the Phase 2 review (2026-10-21). | Put a `QIntValidator` on Z Min, Z Max and the Boxcar field so an unparsable value cannot be entered, or fall back to the full range with a message in `lbl_slice_info`. |
 
 ## Working checklist — code review 2026-10-21
 
@@ -6402,8 +6424,8 @@ High
 - [x] R2 Apertures measured 0.5 px from the drawn circle (Depth Plot, Photometry, Strehl) — plan Task 2
 - [x] R3 Save FITS As drops every other HDU and the primary header — plan Task 3
 - [x] R4 Header editor + auto-load writes one frame's header onto another — plan Task 5
-- [ ] R5 Flip/rotate/unit/reload replaces a collapsed or boxcar plane with channel 0 — plan Task 6
-- [ ] R6 Hover readout ignores view rotation — plan Task 8
+- [x] R5 Flip/rotate/unit/reload replaces a collapsed or boxcar plane with channel 0 — plan Task 6
+- [x] R6 Hover readout ignores view rotation — plan Task 8
 - [ ] R7 Depth Plot not recomputed on load, flip, rotation or remap — plan Task 12
 - [ ] R8 Catalog markers not re-placed when the displayed image changes — plan Task 13
 - [x] R9 Statistics and Peak Fit sample interpolated values, zeros off the image — plan Task 4
@@ -6426,7 +6448,7 @@ Medium
 - [ ] R24 `AWAV` not recognised; stale WCS readout — plan Task 20
 - [ ] R25 Non-science extension set up from its own header only — plan Task 21
 - [ ] R26 Duplicate axis choice leaves `current_y_axis` wrong — plan Task 20
-- [ ] R27 Arrow keys / Home / End show a raw channel in collapse mode — plan Task 6
+- [x] R27 Arrow keys / Home / End show a raw channel in collapse mode — plan Task 6
 - [ ] R28 Depth Plot Y label not updated for Total DN — plan Task 12
 - [ ] R29 Catalog recentre wrong under view rotation — plan Task 14
 - [ ] R30 SExtractor `X_IMAGE`/`Y_IMAGE` plotted one pixel off — plan Task 28
@@ -6458,7 +6480,7 @@ Low
 - [ ] R54 Line lists keyed by file name; empty parse leaves old status — plan Task 23
 - [ ] R55 Depth Plot hidden rectangle spins go stale — plan Task 23
 - [ ] R56 ROTPOSN fallback compass uses 90 + PA — plan Task 20
-- [ ] R57 Display → Scaling menu drops timeline and manual levels — plan Task 6
+- [x] R57 Display → Scaling menu drops timeline and manual levels — plan Task 6
 - [ ] R58 Recent Files stale across windows and processes — plan Task 40
 - [ ] R59 Finder multi-select into one window; `--poll-dir` misses `.fits.gz` — plan Task 41
 - [ ] R60 Catalog control changes recentre the view — plan Task 14
@@ -6467,15 +6489,16 @@ Low
 - [ ] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
 - [ ] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
 
-Added after the review (NIFS reference cube)
+Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review)
 - [ ] R81 Non-OSIRIS cube without celestial axis types opens with wavelength on X — plan Task 20
 - [ ] R82 IRAF-style spectral axis (`LINEAR` + `WAT axtype=wave` / `DISPAXIS`) not recognised — plan Task 20
 - [ ] R83 Total DN offered whatever the data's unit; `EXPTIME` ignored — plan Task 44
+- [ ] R84 Unparsable Z field in range mode leaves channel 0 with old levels — plan Task 43
 
 Minor items (table)
 - [ ] R65 Colorbar shows transformed values — plan Task 43
 - [ ] R66 "1:1" zoom only fits the image — plan Task 43
-- [ ] R67 View-rotation pivot off-centre — plan Task 7
+- [x] R67 View-rotation pivot off-centre — plan Task 7
 - [ ] R68 Rotate dialog stale after a reload; North Up dropped per frame — plan Task 16
 - [ ] R69 Arithmetic result window title — plan Task 25
 - [ ] R70 In-place header save in a watched directory re-announces the file — plan Task 19

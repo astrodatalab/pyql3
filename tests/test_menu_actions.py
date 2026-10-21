@@ -53,6 +53,31 @@ def test_as_center_coercion(value, expected):
     assert as_center(value) == expected
 
 
+def test_scaling_menu_keeps_the_collapse_display(main_window, qapp):
+    """R57: Display > Scaling redisplayed through update_image_display's defaults, which
+    passed the 2-D collapsed plane to imv.setImage (hiding the timeline) and replaced the
+    manual Min/Max with automatic levels. The Scale combo box kept both."""
+    main_window.resize(900, 900)
+    main_window.show()
+    v = main_window.image_viewer
+    v.combo_collapse.setCurrentText("Sum")
+    v.txt_zmin.setText("20")
+    v.txt_zmax.setText("30")
+    v.radio_range.setChecked(True)
+    v.txt_min.setText("900")
+    v.txt_max.setText("1300")
+    v.apply_contrast()
+    qapp.processEvents()
+    assert v.imv.ui.roiPlot.isVisible()
+
+    main_window.set_scaling("Sqrt")
+    qapp.processEvents()
+
+    assert v.combo_scale.currentText() == "Sqrt"
+    assert v.imv.ui.roiPlot.isVisible(), "the timeline with the collapse range was hidden"
+    assert (v.txt_min.text(), v.txt_max.text()) == ("900", "1300")
+
+
 def test_depth_plot_opens_from_menu_action(main_window):
     """Regression: Plot -> Depth Plot raised TypeError unpacking the bool flag."""
     action = QAction("Depth Plot", main_window)

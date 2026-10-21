@@ -160,12 +160,34 @@ timeline back onto the slider. Both are wrapped in the `_syncing_slice` guard, b
 `imv.setImage()` emits a spurious `sigTimeChanged(0)` that would otherwise reset the
 slider on every redisplay.
 
+To redraw after a flip, a rotation, a unit change or a new axis mapping, call
+`refresh_display()`. It goes through `show_current_plane()`, which dispatches on the z mode:
+`apply_z_range()` in Z Range mode, and `apply_z_slice()` otherwise, which covers both a single
+slice and Boxcar. Before a collapsed plane is drawn, the full cube is loaded into the
+ImageView, so its timeline has the new cube's frame count. `update_image_display()` on its own
+redraws `display_data` as it stands, which is right only for a change of levels or scale
+(`apply_contrast()`).
+
+In Z Range mode the ImageView still holds the full cube under the collapsed plane.
+`on_imv_time_changed` redraws the collapse when the ImageView changes frame (for example
+during playback), and `eventFilter` ignores presses of the ImageView's frame keys (arrows,
+Home, End, Space), because Home at frame 0 repaints channel 0 without changing frame. Key
+releases still reach pyqtgraph, so a key pressed before the switch is not left marked as held.
+Because Space cannot pause playback in this mode, `z_mode_changed` stops playback on entering it.
+
+In Boxcar mode the ImageView holds the full cube too, and `apply_z_slice` keeps its frame at the
+slider's value. The stepping keys (Left, Right, Home, End, PageUp, PageDown) are turned into
+moves of the Z Slice slider, which draws the median for the new centre. Space, Up and Down still
+start pyqtgraph's playback; each frame it steps reaches `on_imv_time_changed`, and
+`_after_playback_tick` stops playback at either end of the cube, where pyqtgraph would otherwise
+keep repainting the raw end channel.
+
 !!! warning "Use `current_z()`, not `imv.currentIndex`"
     Tools that need the displayed z index must call `self.image_viewer.current_z()`. The
-    ImageView's own `currentIndex` is only maintained while a single slice is displayed —
-    the Boxcar and collapse-range paths render through `bypass_imv=True` and never update
-    it, so it goes stale. `current_z()` returns the slider value in slice/boxcar mode and
-    the middle of the range in collapse mode, clamped to the cube.
+    ImageView's own `currentIndex` follows the slider in slice and Boxcar mode, but not in
+    collapse-range mode, which renders through `bypass_imv=True` and leaves it wherever it
+    was. `current_z()` returns the slider value in slice/boxcar mode and the middle of the
+    range in collapse mode, clamped to the cube.
 
 ### Analysing the Displayed Plane
 

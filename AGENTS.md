@@ -205,7 +205,10 @@ from `ImageViewer.north_east_display_angles()`; do not re-derive them either.
 "orig" means `transposed_data` indices, i.e. the coordinate along whichever FITS axis the AXIS
 1/2/3 combos currently map to X or Y — that is what a WCS lookup wants. It is *not* `raw_data`
 axis order. View rotation needs no arithmetic at all: `apply_view_rotation()` is a `QTransform`
-on the ImageItem, so anything parented to the image inherits it.
+on the ImageItem, so anything parented to the image inherits it. For the same reason, a position
+in ImageItem coordinates is mapped to or from ViewBox coordinates only through
+`ImageViewer.item_to_view()` / `view_to_item()`, never by treating the two as equal: R6, R29 and
+R45 were each that mistake.
 
 ### Regions (CRITICAL)
 

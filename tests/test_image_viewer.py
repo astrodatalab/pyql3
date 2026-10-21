@@ -559,6 +559,295 @@ def test_current_plane_orientation_matches_display(channel_cube, rot, flip):
     assert np.allclose(v.current_plane(), v.display_data[v.current_z()])
 
 
+# --- R5 / R27: a redisplay keeps the plane the z mode describes ----------------------
+
+def _rendered(viewer):
+    """The array the ImageItem is painting (Linear scale, so the values themselves)."""
+    return np.asarray(viewer.imv.getImageItem().image)
+
+
+def _flip(v):
+    v.flip = True                     # what Rotate Image > Flip Horizontal does
+    v.refresh_display()
+
+
+def _rotate_90(v):
+    v.rot_angle = 90                  # what a Rotate Image 90° step does
+    v.refresh_display()
+
+
+def _total_dn(v):
+    v._itime_coadds = 10.0            # what Display > As Total DN does
+    v.disp_as_dn = True
+    v.refresh_display()
+
+
+def _swap_spatial_axes(v):
+    # X and Y exchanged; Z stays on the wavelength axis, so its length does not change
+    for combo, axis in ((v.combo_x, "AXIS 2"), (v.combo_y, "AXIS 3")):
+        combo.blockSignals(True)
+        combo.setCurrentText(axis)
+        combo.blockSignals(False)
+    v.on_axis_changed()
+
+
+def _reload_same_cube(v):
+    v.set_data(v.raw_data, v.header)  # what Redisplay and a poller auto-load do
+
+
+REDISPLAYS = [
+    pytest.param(_flip, id="flip"),
+    pytest.param(_rotate_90, id="rotate-90"),
+    pytest.param(_total_dn, id="total-dn"),
+    pytest.param(_swap_spatial_axes, id="axis-change"),
+    pytest.param(_reload_same_cube, id="reload"),
+]
+
+
+@pytest.mark.parametrize("redisplay", REDISPLAYS)
+def test_redisplay_keeps_the_collapsed_plane(channel_cube, redisplay):
+    """R5: refresh_display always put the full cube back on screen, so in Z Range mode the
+    image became channel 0 while the label and current_plane() still described the collapse."""
+    v = channel_cube
+    v.combo_collapse.setCurrentText("Sum")
+    v.txt_zmin.setText("4")
+    v.txt_zmax.setText("8")
+    v.radio_range.setChecked(True)
+    assert np.allclose(_rendered(v), 30.0)
+
+    redisplay(v)
+
+    mult = v.data_multiplier
+    assert np.allclose(_rendered(v), v.current_plane() * mult), "screen and current_plane() disagree"
+    assert np.allclose(_rendered(v), 30.0 * mult), "the collapse 4+5+6+7+8 is no longer shown"
+    assert (v.txt_zmin.text(), v.txt_zmax.text()) == ("4", "8")
+    assert "Collapsed: 4-8" in v.lbl_slice_info.text()
+
+
+@pytest.mark.parametrize("redisplay", REDISPLAYS)
+def test_redisplay_keeps_the_boxcar_plane(channel_cube, redisplay):
+    """R5, Boxcar: a redisplay showed the slider's single channel instead of the median."""
+    v = channel_cube
+    nra, ndec, nz = v.raw_data.shape
+    data = np.zeros((nra, ndec, nz), dtype=np.float32)
+    for k in range(nz):
+        data[:, :, k] = (5 * k) % 13      # non-monotonic: channels 8-12 hold 1, 6, 11, 3, 8
+    v.set_data(data, v.header)
+    v.txt_boxcar.setText("5")
+    v.slider_slice.setValue(10)
+    assert np.allclose(_rendered(v), 6.0), "boxcar median over channels 8-12"
+
+    redisplay(v)
+
+    mult = v.data_multiplier
+    assert np.allclose(_rendered(v), v.current_plane() * mult), "screen and current_plane() disagree"
+    assert np.allclose(_rendered(v), 6.0 * mult), "channel 10 alone (11) replaced the boxcar median"
+    assert v.slider_slice.value() == 10
+
+
+def test_reload_keeps_zmax_when_the_length_is_unchanged(channel_cube):
+    """R5: every set_data wrote the last channel into Z Max, so a reload in Z Range mode
+    widened the collapse from 4-8 to 4-19."""
+    v = channel_cube
+    v.combo_collapse.setCurrentText("Sum")
+    v.txt_zmin.setText("4")
+    v.txt_zmax.setText("8")
+    v.radio_range.setChecked(True)
+
+    v.set_data(v.raw_data, v.header)
+
+    assert v.txt_zmax.text() == "8"
+    assert "Collapsed: 4-8" in v.lbl_slice_info.text()
+    assert np.allclose(v.current_plane(), 30.0)
+
+    # A cube of a different length still gets the full range
+    v.set_data(v.raw_data[:, :, :12].copy(), v.header)
+    assert v.txt_zmax.text() == "11"
+
+
+def _boxcar_cube(v):
+    """Replace the channel cube by one whose channels are not monotonic, so a boxcar median
+    never equals the slider's own channel: channels 8-12 hold 1, 6, 11, 3, 8."""
+    nra, ndec, nz = v.raw_data.shape
+    data = np.zeros((nra, ndec, nz), dtype=np.float32)
+    for k in range(nz):
+        data[:, :, k] = (5 * k) % 13
+    v.set_data(data, v.header)
+
+
+def _boxcar_median(v):
+    zmin, zmax = v.boxcar_range(v.slider_slice.value())
+    return float(np.median(v.raw_data[0, 0, zmin:zmax + 1]))
+
+
+@pytest.mark.parametrize("mode", ["range", "boxcar"])
+def test_frame_keys_do_not_replace_a_collapse(channel_cube, qapp, mode):
+    """R27: the ImageView keeps the full cube behind a collapsed plane, and its frame keys
+    repaint a channel from it while the label still reads "Collapsed: 4-8".
+
+    Boxcar mode had the same fault (found in the Phase 2 review): the ImageView's index
+    stayed at 0 while the slider moved, so Home painted raw channel 0 under the label
+    "Slice (Boxcar): 8-12", and Right jumped the slider from 10 to 1. There the frame keys
+    move the slider, which draws the median for the new centre."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    v = channel_cube
+    v.resize(800, 800)
+    v.show()
+    qapp.processEvents()
+    if mode == "range":
+        v.combo_collapse.setCurrentText("Sum")
+        v.txt_zmin.setText("4")
+        v.txt_zmax.setText("8")
+        v.radio_range.setChecked(True)
+        qapp.processEvents()
+        assert np.allclose(_rendered(v), 30.0)
+    else:
+        _boxcar_cube(v)
+        v.txt_boxcar.setText("5")
+        v.btn_apply_slice.click()
+        v.slider_slice.setValue(10)
+        qapp.processEvents()
+        assert np.allclose(_rendered(v), 6.0), "boxcar median over channels 8-12"
+        assert v.imv.currentIndex == 10, "the ImageView's frame was left behind the slider"
+
+    view = v.imv.ui.graphicsView
+    view.setFocus()
+    if mode == "range":
+        # Home comes first: the ImageView is already at frame 0, so it repaints channel 0
+        # without moving its timeline, and no sigTimeChanged follows
+        for key in (Qt.Key_Home, Qt.Key_End, Qt.Key_Home, Qt.Key_Right, Qt.Key_Left, Qt.Key_Space):
+            QTest.keyClick(view, key)
+            qapp.processEvents()
+            assert np.allclose(_rendered(v), 30.0), f"{key.name} replaced the collapse with a channel"
+            assert "Collapsed: 4-8" in v.lbl_slice_info.text()
+        assert v.slider_slice.value() == 0, "a frame key moved the disabled Z Slice slider"
+
+        # Playback started in Z Slice mode keeps stepping the ImageView after the switch
+        v.imv.setCurrentIndex(15)
+        assert np.allclose(_rendered(v), 30.0), "a playback frame replaced the collapse"
+    else:
+        last = v.slider_slice.maximum()
+        page = v.slider_slice.pageStep()
+        steps = [
+            (Qt.Key_Right, 11), (Qt.Key_Left, 10), (Qt.Key_Home, 0), (Qt.Key_Home, 0),
+            (Qt.Key_Left, 0), (Qt.Key_End, last), (Qt.Key_Right, last),
+            (Qt.Key_PageUp, last - page), (Qt.Key_PageDown, last), (Qt.Key_Home, 0),
+            (Qt.Key_PageDown, page),
+        ]
+        for key, expected in steps:
+            QTest.keyClick(view, key)
+            qapp.processEvents()
+            assert v.slider_slice.value() == expected, f"{key.name} moved the slider wrongly"
+            assert np.allclose(_rendered(v), _boxcar_median(v)), \
+                f"{key.name} replaced the boxcar median with a channel"
+            assert np.allclose(_rendered(v), v.current_plane())
+            zmin, zmax = v.boxcar_range()
+            assert f"{zmin}-{zmax}" in v.lbl_slice_info.text()
+    v.close()
+
+
+@pytest.mark.parametrize("start,rate", [
+    pytest.param("last", 10, id="forward-at-the-last-frame"),
+    pytest.param("first", -10, id="backward-at-the-first-frame"),
+])
+def test_boxcar_playback_at_the_end_keeps_the_median(channel_cube, start, rate):
+    """pyqtgraph's playback does not stop at the end of the cube: each tick there sets the
+    frame it is already on, which repaints that raw channel and emits no sigTimeChanged, so in
+    Boxcar mode the median was replaced by channel 19 (4.0 instead of 7.0)."""
+    v = channel_cube
+    _boxcar_cube(v)
+    v.txt_boxcar.setText("5")
+    v.btn_apply_slice.click()
+    edge = v.slider_slice.maximum() if start == "last" else v.slider_slice.minimum()
+    v.slider_slice.setValue(edge)
+    expected = _boxcar_median(v)
+    assert np.allclose(_rendered(v), expected)
+
+    v.imv.play(rate)
+    for _ in range(3):
+        v.imv.lastPlayTime -= 1.0          # a tick that is due, so pyqtgraph steps a frame
+        v.imv.playTimer.timeout.emit()
+        assert np.allclose(_rendered(v), expected), "a playback tick painted a raw channel"
+
+    assert v.slider_slice.value() == edge
+    assert not v.imv.playTimer.isActive(), "playback kept running at the end of the cube"
+
+
+def test_switching_to_a_collapse_stops_playback(channel_cube):
+    """Playback started in Z Slice mode kept running after the switch to Z Range, and Space,
+    which would pause it, is ignored in that mode. Each frame re-ran apply_z_range()."""
+    v = channel_cube
+    v.imv.play(10)
+    assert v.imv.playTimer.isActive()
+
+    v.radio_range.setChecked(True)
+
+    assert v.imv.playRate == 0
+    assert not v.imv.playTimer.isActive()
+
+
+def test_a_key_released_after_switching_to_a_collapse_is_not_left_pressed(channel_cube, qapp):
+    """An arrow pressed in Z Slice mode and released in Z Range mode: if the release is
+    ignored, pyqtgraph keeps the key in keysPressed, and a later key in Z Slice mode
+    resumes playback in that direction."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    v = channel_cube
+    v.resize(800, 800)
+    v.show()
+    qapp.processEvents()
+    view = v.imv.ui.graphicsView
+    view.setFocus()
+    QTest.keyPress(view, Qt.Key_Right)
+    qapp.processEvents()
+    assert Qt.Key_Right in v.imv.keysPressed
+
+    v.combo_collapse.setCurrentText("Sum")
+    v.txt_zmin.setText("4")
+    v.txt_zmax.setText("8")
+    v.radio_range.setChecked(True)
+    QTest.keyRelease(view, Qt.Key_Right)
+    qapp.processEvents()
+
+    assert v.imv.keysPressed == {}
+    assert v.imv.playRate == 0
+    assert np.allclose(_rendered(v), 30.0)
+    v.close()
+
+
+@pytest.mark.parametrize("mode", ["range", "boxcar"])
+def test_a_collapse_keeps_the_timeline_of_the_new_cube(channel_cube, qapp, mode):
+    """R5's fix draws the collapse without imv.setImage, so the ImageView has to be handed
+    the new cube separately: after a 2-D image its timeline would stay hidden, and after a
+    cube of another length it would keep the old frame count."""
+    v = channel_cube
+    v.resize(800, 800)
+    v.show()
+    if mode == "range":
+        v.txt_zmin.setText("4")
+        v.txt_zmax.setText("8")
+        v.radio_range.setChecked(True)
+    else:
+        v.txt_boxcar.setText("5")
+        v.slider_slice.setValue(10)
+    nra, ndec, _ = v.raw_data.shape
+    cube = np.zeros((nra, ndec, 30), dtype=np.float32)
+    for k in range(30):
+        cube[:, :, k] = (5 * k) % 13      # non-monotonic, so no single channel equals a collapse
+
+    v.set_data(np.ones((nra, ndec), dtype=np.float32))
+    v.set_data(cube, v.header)
+    qapp.processEvents()
+
+    assert v.imv.ui.roiPlot.isVisible(), "no timeline after the 2-D image"
+    assert v.imv.nframes() == 30
+    assert np.allclose(_rendered(v), v.current_plane())
+    v.close()
+
+
 def test_osiris_default_axis_selection_on_real_data(qapp, real_osiris_fits):
     """ImageViewer must default an OSIRIS cube to RA/Dec on screen, wavelength on Z.
 
@@ -663,3 +952,288 @@ def test_real_osiris_cube_total_dn_uses_truitime(qapp, real_osiris_fits):
     viewer.disp_as_dn = True
     header = reader.header
     assert viewer.data_multiplier == pytest.approx(header['TRUITIME'] * header.get('COADDS', 1))
+
+
+# --- plane_changed / view_rotation_changed, and the view-rotation pivot (R67) ----------
+
+def _step_slider(v):
+    v.slider_slice.setValue(5)
+
+
+def _change_boxcar(v):
+    v.txt_boxcar.setText("3")
+    v.btn_apply_slice.click()
+
+
+def _apply_z_range(v):
+    v.txt_zmin.setText("4")
+    v.txt_zmax.setText("8")
+    v.btn_apply_range.click()
+
+
+def _set_data_2d(v):
+    v.set_data(np.arange(12 * 16, dtype=np.float32).reshape(12, 16))
+
+
+def _set_data_3d_shorter(v):
+    v.set_data(v.raw_data[:, :, :10], v.header)
+
+
+def _z_range_mode(v):
+    v.radio_range.setChecked(True)
+
+
+def _last_channel(v):
+    # The slider is then clamped by a shorter cube, which runs on_slider_changed inside
+    # set_data before the plane is redrawn
+    v.slider_slice.setValue(19)
+
+
+PLANE_CHANGES = [
+    pytest.param(None, _step_slider, id="slider-step"),
+    pytest.param(None, _change_boxcar, id="boxcar-change"),
+    pytest.param(_z_range_mode, _apply_z_range, id="z-range-apply"),
+    pytest.param(None, _flip, id="flip"),
+    pytest.param(_z_range_mode, _flip, id="flip-in-z-range"),
+    pytest.param(None, _total_dn, id="unit-change"),
+    pytest.param(None, _set_data_2d, id="set_data-2d"),
+    pytest.param(_set_data_2d, _flip, id="flip-2d"),
+    pytest.param(_set_data_2d, _total_dn, id="unit-change-2d"),
+    pytest.param(None, _reload_same_cube, id="set_data-3d"),
+    pytest.param(_last_channel, _set_data_3d_shorter, id="set_data-3d-shorter"),
+]
+
+
+@pytest.mark.parametrize("setup,change", PLANE_CHANGES)
+def test_plane_changed_fires_once_per_change(channel_cube, setup, change):
+    """Tools that follow the plane on screen redraw once per change, not zero or two times."""
+    v = channel_cube
+    if setup is not None:
+        setup(v)
+    fired = []
+    v.plane_changed.connect(lambda: fired.append(1))
+
+    change(v)
+
+    assert len(fired) == 1
+
+
+@pytest.mark.parametrize("change,expected", [
+    pytest.param(_set_data_2d, ["plane", "display", "rotation"], id="set_data-2d"),
+    pytest.param(_reload_same_cube, ["plane", "display", "rotation"], id="set_data-3d"),
+    pytest.param(_flip, ["plane", "display"], id="flip"),
+    pytest.param(_rotate_90, ["plane", "display"], id="rotate-90"),
+    pytest.param(_total_dn, ["plane", "display"], id="unit-change"),
+    pytest.param(_swap_spatial_axes, ["plane", "display"], id="axis-change"),
+    pytest.param(_step_slider, ["plane"], id="slider-step"),
+])
+def test_viewer_signals_arrive_in_one_order(channel_cube, change, expected):
+    """The contract consumers rely on: display_changed always comes with plane_changed and
+    after it, and on set_data view_rotation_changed comes last. The 2-D set_data path used
+    to emit display_changed first."""
+    v = channel_cube
+    seen = []
+    v.plane_changed.connect(lambda: seen.append("plane"))
+    v.display_changed.connect(lambda: seen.append("display"))
+    v.view_rotation_changed.connect(lambda _angle: seen.append("rotation"))
+
+    change(v)
+
+    assert seen == expected
+
+
+def test_an_invalid_z_range_keeps_the_view_rotation(channel_cube):
+    """_give_imageview_the_cube() calls imv.setImage, which resets the ImageItem's transform.
+    When apply_z_range then stops at "Collapsed: Invalid Range", nothing put the rotation
+    back: after a flip the view was unrotated while view_rotation still read 30."""
+    v = channel_cube
+    v.radio_range.setChecked(True)
+    v.apply_view_rotation(30.0)
+    item = v.imv.getImageItem()
+    before = item.transform()
+    assert not before.isIdentity()
+
+    v.txt_zmin.setText("abc")
+    _flip(v)
+
+    assert "Invalid Range" in v.lbl_slice_info.text()
+    assert v.view_rotation == 30.0
+    after = item.transform()
+    assert not after.isIdentity(), "the view rotation was dropped"
+    assert after == before
+
+
+def test_view_rotation_changed_fires_with_the_angle(loaded_viewer):
+    angles = []
+    loaded_viewer.view_rotation_changed.connect(angles.append)
+
+    loaded_viewer.apply_view_rotation(37)
+    loaded_viewer.apply_view_rotation(0.0)
+
+    assert angles == [37.0, 0.0]
+
+
+def test_new_data_resets_the_view_rotation_once(loaded_viewer):
+    """set_data puts the rotation back to zero through apply_view_rotation, so the ImageItem's
+    transform and anyone listening are told, rather than only `view_rotation` being reset."""
+    loaded_viewer.apply_view_rotation(37.0)
+    angles = []
+    loaded_viewer.view_rotation_changed.connect(angles.append)
+
+    loaded_viewer.set_data(loaded_viewer.raw_data, loaded_viewer.header)
+
+    assert angles == [0.0]
+    assert loaded_viewer.view_rotation == 0.0
+    assert loaded_viewer.imv.getImageItem().transform().isIdentity()
+
+
+def test_new_data_is_unrotated_before_anyone_is_told(loaded_viewer):
+    """A listener on display_changed or plane_changed during set_data sees the new plane
+    unrotated. The old angle used to stay on the ImageItem and in `view_rotation` until the
+    last line of set_data."""
+    v = loaded_viewer
+    v.apply_view_rotation(37.0)
+    seen = []
+
+    def record(signal_name):
+        seen.append((signal_name, v.view_rotation, v.imv.getImageItem().transform().isIdentity()))
+
+    v.display_changed.connect(lambda: record("display_changed"))
+    v.plane_changed.connect(lambda: record("plane_changed"))
+
+    v.set_data(v.raw_data, v.header)
+
+    assert {name for name, _, _ in seen} == {"display_changed", "plane_changed"}
+    assert all(angle == 0.0 and identity for _, angle, identity in seen), seen
+
+
+@pytest.mark.parametrize("data", [
+    pytest.param(None, id="no-data"),
+    pytest.param(np.zeros(5, dtype=np.float32), id="1-d"),
+])
+def test_a_load_with_nothing_to_show_drops_the_old_rotation(loaded_viewer, data):
+    """With nothing displayable there is no plane to pivot on, but the rotation of the
+    previous one must still come off the ImageItem."""
+    loaded_viewer.apply_view_rotation(37.0)
+
+    loaded_viewer.set_data(data)
+
+    assert loaded_viewer.view_rotation == 0.0
+    assert loaded_viewer.imv.getImageItem().transform().isIdentity()
+
+
+@pytest.fixture
+def osiris_viewer(qapp, osiris_like_fits):
+    reader = FitsReader(osiris_like_fits)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    assert viewer.display_data.shape[-2:] == (66, 51)
+    return viewer
+
+
+@pytest.mark.parametrize("angle", [0.0, 37.0, 90.0, 180.0])
+def test_item_to_view_round_trips_under_a_view_rotation(osiris_viewer, angle):
+    v = osiris_viewer
+    v.apply_view_rotation(angle)
+    points = [(0.0, 0.0), (66.0, 51.0), (10.5, 40.25), (60.0, 3.0)]
+
+    for x, y in points:
+        assert v.view_to_item(*v.item_to_view(x, y)) == pytest.approx((x, y), abs=1e-9)
+
+    # A rotation keeps distances, and away from 0 degrees it does move a corner
+    (ax, ay), (bx, by) = v.item_to_view(*points[0]), v.item_to_view(*points[1])
+    assert np.hypot(bx - ax, by - ay) == pytest.approx(np.hypot(66.0, 51.0))
+    if angle == 0.0:
+        assert (ax, ay) == pytest.approx(points[0])
+    else:
+        assert (ax, ay) != pytest.approx(points[0])
+
+
+@pytest.mark.parametrize("angle", [37.0, 180.0])
+def test_view_rotation_pivots_on_the_plane_centre(osiris_viewer, angle):
+    """R67: the pivot was ((shape[-1]-1)/2, (shape[-2]-1)/2), with x and y swapped and the
+    half-pixel offset dropped. On a 51x66 plane a 180 degree rotation moved the centre from
+    (25.5, 33.0) to (39.5, 17.0)."""
+    v = osiris_viewer
+    _rotate_90(v)
+    assert v.display_data.shape[-2:] == (51, 66)
+    before = v.item_to_view(25.5, 33.0)
+
+    v.apply_view_rotation(angle)
+
+    assert v.item_to_view(25.5, 33.0) == pytest.approx(before, abs=1e-9)
+
+
+# --- R6: the hover readout maps the cursor through the ImageItem ---------------------
+
+def _encoded_viewer(header=None):
+    """A 40 x 30 image whose value is 1000*x + y, so a readout names its own pixel."""
+    nx, ny = 40, 30
+    img = (1000 * np.arange(nx)[None, :] + np.arange(ny)[:, None]).astype(np.float32)
+    viewer = ImageViewer()
+    viewer.resize(800, 800)
+    viewer.set_data(img, header)
+    return viewer
+
+
+def _hover_item(viewer, ix, iy):
+    """Put the cursor over ImageItem coordinate (ix, iy) and return the label texts."""
+    scene_pos = viewer.imv.getImageItem().mapToScene(pg.QtCore.QPointF(ix, iy))
+    viewer.mouse_moved((scene_pos,))
+    return viewer.lbl_x.text(), viewer.lbl_y.text(), viewer.lbl_val.text()
+
+
+@pytest.mark.parametrize("view_rotation", [0.0, 37.0, 90.0, 180.0])
+def test_readout_follows_the_view_rotation(qapp, view_rotation):
+    """R6: the view rotation is a QTransform on the ImageItem, so mapping the cursor through
+    the ViewBox read a different pixel as soon as a view angle (or North Up) was set."""
+    viewer = _encoded_viewer()
+    viewer.apply_view_rotation(view_rotation)
+
+    x, y, value = _hover_item(viewer, 5.5, 20.5)
+
+    assert (x, y) == ("X: 5", "Y: 20")
+    assert value.startswith("Value: 5020 ")
+
+
+@pytest.mark.parametrize("view_rotation", [0.0, 37.0])
+@pytest.mark.parametrize("rot_angle", [0, 90])
+@pytest.mark.parametrize("flip", [False, True])
+def test_readout_pixel_and_sky_position_agree_under_flip_and_rotation(
+        qapp, flip, rot_angle, view_rotation):
+    """R6: whatever the orientation, the readout names the display pixel under the cursor, its
+    value is that display pixel's, and the WCS line is the sky position of the same pixel
+    taken back to `transposed_data` indices with `display_to_orig`."""
+    from astropy.io import fits
+    header = fits.Header()
+    for key, val in (("CTYPE1", "RA---TAN"), ("CTYPE2", "DEC--TAN"),
+                     ("CRPIX1", 20.0), ("CRPIX2", 15.0),
+                     ("CRVAL1", 150.0), ("CRVAL2", 2.0),
+                     ("CDELT1", -0.001), ("CDELT2", 0.001)):
+        header[key] = val
+    viewer = _encoded_viewer(header)
+    viewer.flip = flip
+    viewer.rot_angle = rot_angle
+    viewer.refresh_display()
+    viewer.apply_view_rotation(view_rotation)
+
+    dx, dy = 5, 7      # inside the displayed plane for both orientations
+    x, y, value = _hover_item(viewer, dx + 0.5, dy + 0.5)
+
+    assert (x, y) == (f"X: {dx}", f"Y: {dy}")
+    assert value.startswith(f"Value: {viewer.display_data[dx, dy]:.5g} ")
+    ox, oy = viewer.display_to_orig(dx, dy)
+    world = viewer.wcs.pixel_to_world(ox, oy)
+    assert viewer.lbl_wcs.text() == (
+        f"WCS: {world.ra.to_string(unit='hour', sep='hms', precision=3)}  "
+        f"{world.dec.to_string(unit='deg', sep='dms', precision=2)}")
+
+
+def test_readout_left_of_the_image_is_out_of_bounds(qapp):
+    """R6: `int()` rounds toward zero, so every x in (-1, 0) read as pixel 0 and passed the
+    bounds check."""
+    viewer = _encoded_viewer()
+
+    _, _, value = _hover_item(viewer, -0.6, 5.5)
+
+    assert value == "Value: Out of Bounds"

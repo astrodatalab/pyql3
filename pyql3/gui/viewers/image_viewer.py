@@ -2,7 +2,8 @@ import pyqtgraph as pg
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QComboBox, 
                                QRadioButton, QGroupBox, QSlider, QFrame,
                                QButtonGroup, QTabWidget, QStyle, QStyleOptionSlider)
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent, QPointF
+from PySide6.QtGui import QTransform
 import numpy as np
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
@@ -50,14 +51,35 @@ class JumpSlider(QSlider):
                 return
         super().mousePressEvent(event)
 
+#: The keys pyqtgraph's ImageView uses to change or play frames (`ImageView.keyPressEvent`).
+_FRAME_KEYS = frozenset({
+    Qt.Key_Space, Qt.Key_Home, Qt.Key_End, Qt.Key_Left, Qt.Key_Right,
+    Qt.Key_Up, Qt.Key_Down, Qt.Key_PageUp, Qt.Key_PageDown,
+})
+
+
 class ImageViewer(QWidget):
     request_depth_plot = Signal(object)
     request_gaussian_fit = Signal(object)
     #: A region was asked for from the right-click menu. Payload is `(kind, display pixel)`.
     request_new_region = Signal(str, object)
-    #: Emitted when the displayed plane's geometry changes — a flip, a 90° rotation, a new axis
-    #: mapping or new data. Anything drawn on top in stored coordinates has to be re-placed.
+    #: Emitted when the displayed plane's geometry may have changed — a flip, a 90° rotation,
+    #: a new axis mapping, new data — and also on a unit change, which redisplays through the
+    #: same path. Anything drawn on top in stored coordinates has to be re-placed.
+    #: Always emitted together with `plane_changed` and after it, so a tool that recomputes on
+    #: `plane_changed` must not recompute again here unless it depends on the geometry alone.
+    #: (The one exception is an unparsable Z Min/Max in Z Range mode, which draws no plane
+    #: and so emits no `plane_changed`; see R84.)
     display_changed = Signal()
+    #: Emitted once each time the values on screen change: a new channel, a boxcar or Z Range
+    #: collapse, a flip, a 90° rotation or a unit change, new data. A view rotation does not
+    #: emit it (see `view_rotation_changed`). Anything that shows or measures the current
+    #: plane has to be recomputed. Every `display_changed` follows one; `plane_changed` alone
+    #: means only the values changed (a slider step, a boxcar or Z Range change).
+    plane_changed = Signal()
+    #: Emitted by `apply_view_rotation` with the new angle in degrees. `set_data` emits it
+    #: with 0.0 last, after the new plane's `plane_changed` and `display_changed`.
+    view_rotation_changed = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -158,6 +180,9 @@ class ImageViewer(QWidget):
         self._drag_revoked_callback = None
         # True when the displayed plane has no finite pixels at all (see update_image_display)
         self._plane_all_invalid = False
+        # Nonzero while apply_axis_mapping adjusts the slider, which redraws the plane
+        # itself; see _announce_plane
+        self._plane_changed_held = 0
 
         self.setup_zoom_contrast_panel()
         self.setup_extension_panel()
@@ -176,6 +201,11 @@ class ImageViewer(QWidget):
         # pyqtgraph timeline has to write back to it or the labels, the pixel readout and
         # every analysis tool report a different slice than the one on screen.
         self.imv.sigTimeChanged.connect(self.on_imv_time_changed)
+        # In Z Range and Boxcar modes the frame keys would repaint a single channel; see
+        # eventFilter
+        self.imv.installEventFilter(self)
+        # Connected after pyqtgraph's own slot, so it runs after each playback tick
+        self.imv.playTimer.timeout.connect(self._after_playback_tick)
 
         # Drawn regions. Constructed last: it parents its items to the ImageItem and follows
         # `slider_slice`, so both have to exist first.
@@ -447,10 +477,18 @@ class ImageViewer(QWidget):
         Only user interaction should reach here: our own calls into the ImageView are
         wrapped in `_syncing_slice`, because `imv.setImage()` emits a spurious
         sigTimeChanged(0) that would otherwise yank the slider back to slice 0.
+
+        In Z Range mode the ImageView still holds the full cube behind the collapsed plane,
+        and a frame change (playback started in Z Slice mode, for example) repaints one
+        channel of it. The slider stays where it is and the collapse is drawn again (R27).
+        The frame keys themselves are ignored in this mode; see `eventFilter`.
         """
         if self._syncing_slice or getattr(self, 'transposed_data', None) is None:
             return
-        if self.transposed_data.ndim != 3 or not self.radio_slice.isChecked():
+        if self.transposed_data.ndim != 3:
+            return
+        if self.radio_range.isChecked():
+            self.apply_z_range()
             return
 
         try:
@@ -467,6 +505,77 @@ class ImageViewer(QWidget):
                 self.update_slice_info()
         finally:
             self._syncing_slice = False
+
+    def eventFilter(self, obj, event):
+        """Keep the ImageView's frame keys from painting a channel over a collapse (R27).
+
+        `ImageView.keyPressEvent` repaints a channel of the cube it holds even when the frame
+        does not change (Home at frame 0, End at the last frame), and then emits no
+        sigTimeChanged, so `on_imv_time_changed` cannot put the collapse back.
+
+        In Z Range mode the presses are ignored: the Z Slice slider is disabled, so the keys
+        have nothing to move. In Boxcar mode the stepping keys move the slider instead
+        (`_boxcar_key_target`), which draws the median for the new centre; Space, Up and Down,
+        which start playback, still reach pyqtgraph: each frame they step comes back through
+        `on_imv_time_changed`, and `_after_playback_tick` handles the ticks at either end of
+        the cube, which step no frame.
+
+        Only the press is handled here. The release has to reach pyqtgraph: it removes the key
+        from `keysPressed` and stops playback, and a key pressed in Z Slice mode and released
+        here would otherwise stay pressed and resume playback later.
+        """
+        if obj is self.imv and event.type() == QEvent.KeyPress and event.key() in _FRAME_KEYS:
+            if self.radio_range.isChecked():
+                event.accept()
+                return True
+            target = self._boxcar_key_target(event.key())
+            if target is not None:
+                self.slider_slice.setValue(target)
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _after_playback_tick(self):
+        """Stop a Boxcar playback that has reached the end of the cube, and redraw the median.
+
+        pyqtgraph does not stop playback at the first or last frame: each further tick sets
+        the frame it is already on, which repaints that raw channel and emits no
+        sigTimeChanged, so `on_imv_time_changed` never hears of it.
+        """
+        if getattr(self, 'transposed_data', None) is None or self.transposed_data.ndim != 3:
+            return
+        if self.radio_range.isChecked() or self.boxcar_width() <= 1:
+            return
+        index = self.imv.currentIndex
+        last = self.imv.nframes() - 1
+        if 0 < index < last:
+            return
+        # pyqtgraph may already have set the rate to 0 in this tick, before its last repaint
+        rate = self.imv.playRate or 0
+        if (rate > 0 and index >= last) or (rate < 0 and index <= 0):
+            self.imv.play(0)
+        self.update_image_display(bypass_imv=True)
+
+    def _boxcar_key_target(self, key):
+        """The slider value a frame key moves to in Boxcar mode, or None when the key is
+        not a stepping key or Boxcar is off. Clamped to the slider's range."""
+        if getattr(self, 'transposed_data', None) is None or self.transposed_data.ndim != 3:
+            return None
+        if self.boxcar_width() <= 1:
+            return None
+        slider = self.slider_slice
+        value = slider.value()
+        targets = {
+            Qt.Key_Home: slider.minimum(),
+            Qt.Key_End: slider.maximum(),
+            Qt.Key_Left: value - 1,
+            Qt.Key_Right: value + 1,
+            Qt.Key_PageUp: value - slider.pageStep(),
+            Qt.Key_PageDown: value + slider.pageStep(),
+        }
+        if key not in targets:
+            return None
+        return int(np.clip(targets[key], slider.minimum(), slider.maximum()))
 
     def refresh_plane_validity(self):
         """Recompute whether the plane on screen has any finite pixel at all.
@@ -891,6 +1000,11 @@ class ImageViewer(QWidget):
         for line in self.z_range_region.lines:
             line.setMovable(is_range)
         
+        if is_range:
+            # Space, which would pause playback, is ignored in Z Range mode (see eventFilter),
+            # and every frame of a playback started in Z Slice mode re-runs apply_z_range
+            self.imv.play(0)
+
         if self.transposed_data is not None and self.transposed_data.ndim == 3:
             if not is_range:
                 self.apply_z_slice()
@@ -921,6 +1035,7 @@ class ImageViewer(QWidget):
                     finally:
                         self._syncing_slice = prev_sync
                     self.update_slice_info()
+                    self._announce_plane()
             else:
                 self.apply_z_slice()
 
@@ -960,6 +1075,7 @@ class ImageViewer(QWidget):
         self.lbl_zmin.setText(f"ZMin: {zmin}")
         self.lbl_zmax.setText(f"ZMax: {zmax}")
         self.update_slice_info()
+        self._announce_plane()
 
     def on_roi_plot_clicked(self, event):
         if event.button() == Qt.LeftButton:
@@ -1030,12 +1146,23 @@ class ImageViewer(QWidget):
                 self.z_range_region.setRegion([zmin, zmax])
                 self._updating_region = False
                 self.z_range_region.show()
-                
+
+                # The ImageView's frame follows the slider even though the collapse is drawn
+                # past it. Left at 0, pyqtgraph's frame keys stepped from there: Right jumped
+                # the slider from 10 to 1 (R27, boxcar).
+                prev_sync = self._syncing_slice
+                self._syncing_slice = True
+                try:
+                    self.imv.setCurrentIndex(val)
+                finally:
+                    self._syncing_slice = prev_sync
+
                 self.update_image_display(bypass_imv=True)
                 
             self.lbl_zmin.setText(f"ZMin: {val}")
             self.lbl_zmax.setText(f"ZMax: {val}")
             self.update_slice_info()
+            self._announce_plane()
         except ValueError:
             pass
 
@@ -1069,10 +1196,15 @@ class ImageViewer(QWidget):
         self.raw_data = data
         self.header = header
         self._is_new_data = True
+        # Unrotated before anything is redrawn, so the redraw does not put the old angle on the
+        # new plane and a listener on display_changed or plane_changed sees the new state.
+        # The apply_view_rotation(0.0) at the end announces it.
         self.view_rotation = 0.0
+        self.imv.getImageItem().setTransform(QTransform())
         if data is None:
             self.imv.clear()
             self.wcs = None
+            self.apply_view_rotation(0.0)
             return
             
         if header:
@@ -1091,7 +1223,9 @@ class ImageViewer(QWidget):
             self.apply_transforms()
             self.update_image_display()
             # A 2-D image reaches the screen without going through refresh_display, so this is
-            # the only place overlays learn that the plane's geometry changed.
+            # the only place overlays learn that the plane's geometry changed. Same order as
+            # refresh_display: plane_changed, then display_changed.
+            self._announce_plane()
             self.display_changed.emit()
             self.lbl_zsize.setText("ZSize: 1")
             self.tab_advanced.setEnabled(True)
@@ -1143,6 +1277,8 @@ class ImageViewer(QWidget):
             if hasattr(self, 'group_y'): self.group_y.setEnabled(False)
             if hasattr(self, 'group_z'): self.group_z.setEnabled(False)
 
+        # After the new plane is shown, so a listener sees the plane it is told about
+        self.apply_view_rotation(0.0)
 
     def on_axis_changed(self):
         if self.raw_data is None or self.raw_data.ndim != 3:
@@ -1195,28 +1331,95 @@ class ImageViewer(QWidget):
             self.wcs_z_idx = None
             self.imv.ui.roiPlot.hideAxis('top')
         
+        previous = self.transposed_data
+        previous_zs = previous.shape[0] if previous is not None and previous.ndim == 3 else None
+
         self.transposed_data = self.raw_data.transpose(py_z, py_x, py_y)
         self.display_data = self.transposed_data.copy()
         self.apply_transforms()
         
         zs = self.transposed_data.shape[0]
-        self.slider_slice.setMaximum(zs - 1)
-        self.lbl_zsize.setText(f"ZSize: {zs}")
-        cur_val = self.slider_slice.value()
-        if cur_val >= zs:
-            self.slider_slice.setValue(zs-1)
-            
-        self.txt_zmax.setText(str(zs-1))
-        
+        # Clamping the slider redraws the plane through on_slider_changed, and
+        # refresh_display below draws it again; only the second is announced
+        self._plane_changed_held += 1
+        try:
+            self.slider_slice.setMaximum(zs - 1)
+            self.lbl_zsize.setText(f"ZSize: {zs}")
+            cur_val = self.slider_slice.value()
+            if cur_val >= zs:
+                self.slider_slice.setValue(zs-1)
+        finally:
+            self._plane_changed_held -= 1
+
+        # Only a cube of a new length resets Z Max. A reload of the same target used to widen a
+        # collapse to the last channel, so the label and current_plane() changed with it (R5).
+        if zs != previous_zs:
+            self.txt_zmax.setText(str(zs-1))
+
         self.refresh_display()
-        
+
+    def show_current_plane(self):
+        """Put the plane the z mode describes on screen: the Z Range collapse, the boxcar
+        median, or the slider's channel.
+
+        Every redisplay that has to keep the z mode goes through here. `refresh_display` used
+        to put the full cube back unconditionally, so a flip, rotation, unit change, axis change
+        or reload showed channel 0 while the label and `current_plane()` still described the
+        collapse (R5).
+        """
+        if self.transposed_data is None:
+            return
+        if self.transposed_data.ndim != 3:
+            self.display_data = self.transposed_data.copy()
+            self.apply_transforms()
+            self.update_image_display(bypass_imv=True)
+            self._announce_plane()
+        elif self.radio_range.isChecked():
+            self._give_imageview_the_cube()
+            self.apply_z_range()
+        else:
+            # apply_z_slice handles both the single slice and the boxcar; only the boxcar
+            # draws past the ImageView
+            if self.boxcar_width() > 1:
+                self._give_imageview_the_cube()
+            self.apply_z_slice()
+
+    def _give_imageview_the_cube(self):
+        """Load the full cube, transformed like the screen, into the ImageView without
+        showing it, before a collapsed plane is drawn over it through `bypass_imv`.
+
+        The timeline (its frame count and the yellow range) and the frame keys work from the
+        cube the ImageView holds, not from what the ImageItem paints. Without this, a
+        collapse drawn after a 2-D image has no timeline, and one drawn after a cube of
+        another length keeps the old frame count.
+        """
+        cube = self.transposed_data
+        if self.disp_as_dn:
+            cube = cube * self._itime_coadds
+        cube = self.apply_spatial_transforms(cube)
+
+        prev_sync = self._syncing_slice
+        self._syncing_slice = True
+        try:
+            # The levels are left alone: the collapsed plane replaces this frame at once
+            self.imv.setImage(cube, autoRange=False, autoLevels=False)
+            if self.radio_slice.isChecked():
+                self.imv.setCurrentIndex(self.slider_slice.value())
+        finally:
+            self._syncing_slice = prev_sync
+        # setImage reset the ImageItem's transform. The collapse drawn next puts the rotation
+        # back, but an unparsable Z Min/Max stops apply_z_range before it draws anything.
+        self._set_view_transform(cube.shape)
+
+    def _announce_plane(self):
+        """Emit `plane_changed`, unless `apply_axis_mapping` is holding it back."""
+        if not self._plane_changed_held:
+            self.plane_changed.emit()
+
     def refresh_display(self):
         if self.transposed_data is None:
             return
-            
-        self.display_data = self.transposed_data.copy()
-        self.apply_transforms()
-        self.update_image_display(bypass_imv=(self.display_data.ndim == 2))
+        self.show_current_plane()
         # A flip or rotation moves every drawn overlay; anything holding stored coordinates has
         # to re-derive its position from them (see RegionLayer.refresh).
         self.display_changed.emit()
@@ -1375,17 +1578,33 @@ class ImageViewer(QWidget):
         return to_display(theta_n_base), to_display(theta_e_base), True
 
     def apply_view_rotation(self, angle):
-        """Apply a visual-only rotation to the ImageItem via QTransform.
-        Does not modify display_data or transposed_data."""
-        from PySide6.QtGui import QTransform
+        """Apply a visual-only rotation to the ImageItem via QTransform, and emit
+        `view_rotation_changed`. Does not modify display_data or transposed_data."""
         self.view_rotation = float(angle)
-        
-        if self.display_data is None:
-            return
+        self._set_view_transform()
+        self.view_rotation_changed.emit(self.view_rotation)
 
-        disp_shape = self.display_data.shape
-        cx = (disp_shape[-1] - 1) / 2.0
-        cy = (disp_shape[-2] - 1) / 2.0
+    def _set_view_transform(self, shape=None):
+        """Put `view_rotation` on the ImageItem. `ImageView.setImage` resets the item's
+        transform, so `update_image_display` calls this again after each redraw.
+
+        The pivot is the centre of the ImageItem's bounding rect, (width / 2, height / 2):
+        a plane of shape (nx, ny) covers 0..nx by 0..ny. It used to be
+        ((ny - 1) / 2, (nx - 1) / 2), with x and y swapped and the half-pixel offset
+        dropped, which moved the centre of any non-square plane (R67).
+
+        `shape` is the shape of what the ImageItem now holds, when that is not
+        `display_data` (see `_give_imageview_the_cube`).
+        """
+        if shape is None:
+            if self.display_data is None:
+                # Nothing to pivot on, but the previous plane's rotation still has to come off
+                self.imv.getImageItem().setTransform(QTransform())
+                return
+            shape = self.display_data.shape
+
+        cx = shape[-2] / 2.0
+        cy = shape[-1] / 2.0
 
         transform = QTransform()
         transform.translate(cx, cy)
@@ -1395,6 +1614,16 @@ class ImageViewer(QWidget):
 
         if getattr(self, 'show_pa', False):
             self.toggle_position_angle(True)
+
+    def item_to_view(self, x, y):
+        """Map an ImageItem coordinate to the ViewBox, through the view rotation."""
+        point = self.imv.getImageItem().mapToView(QPointF(float(x), float(y)))
+        return point.x(), point.y()
+
+    def view_to_item(self, x, y):
+        """Map a ViewBox coordinate to the ImageItem, undoing the view rotation."""
+        point = self.imv.getImageItem().mapFromView(QPointF(float(x), float(y)))
+        return point.x(), point.y()
 
     def on_view_range_changed(self):
         if getattr(self, '_updating_pa', False):
@@ -1582,7 +1811,7 @@ class ImageViewer(QWidget):
 
         self.update_slice_info()
         if getattr(self, 'view_rotation', 0.0) != 0.0:
-            self.apply_view_rotation(self.view_rotation)
+            self._set_view_transform()
         elif getattr(self, 'show_pa', False):
             self.toggle_position_angle(True)
 
@@ -1625,8 +1854,11 @@ class ImageViewer(QWidget):
             
         pos = evt[0]  # using signal proxy returns tuple of args
         if self.imv.getView().sceneBoundingRect().contains(pos):
-            mouse_point = self.imv.getView().mapSceneToView(pos)
-            x, y = int(mouse_point.x()), int(mouse_point.y())
+            # Through the ImageItem, not the ViewBox: the view rotation is a QTransform on the
+            # item, so ViewBox coordinates are not pixel coordinates once an angle is set.
+            item_point = self.imv.getImageItem().mapFromScene(pos)
+            x = coords.item_to_pixel(item_point.x())
+            y = coords.item_to_pixel(item_point.y())
             
             shape = self.display_data.shape
             # If 3D, shape is (z, x, y)
