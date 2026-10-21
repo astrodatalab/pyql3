@@ -219,15 +219,17 @@ Every test touches Qt, so on a headless machine prefix with `QT_QPA_PLATFORM=off
 
 ### Test Organization (`tests/`)
 - `tests/test_fits_reader.py`: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.
+- `tests/test_header_info.py`: The Qt-free integration-time rules in `pyql3/core/header_info.py` behind the Total DN multiplier — `TRUITIME` over a millisecond `ITIME`, zero and missing keywords, and `COADDS`.
 - `tests/test_image_viewer.py`: `raw_data` / `transposed_data` / `display_data` separation, view rotations, display scaling, colormaps, and z-slice plane accessors.
 - `tests/test_depth_plot.py`: Spectrum extraction, background subtraction (both the sky annulus and the independent region), line list parsing, LaTeX label formatting, and Y-auto scaling.
 - `tests/test_spectral_photometry.py`: The Qt-free per-channel aperture photometry behind the Depth Plot's circular extraction — flux recovery over a known sky, the `(x, y)` vs `(y, x)` axis convention, NaN and edge handling, and agreement with the Aperture Photometry tool plane by plane.
 - `tests/test_analysis_tools.py`: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.
 - `tests/test_cuts.py`: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.
 - `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns.
+- `tests/test_label_policy.py`: The shared overlay-label policy in `pyql3/gui/label_policy.py` — the cull margin and the `LabelDensityGuard` ceiling — run without a display.
 - `tests/test_menu_actions.py`: The `QAction.triggered` bool-vs-coordinate slot hazard and `as_center()` coercion (see the Qt slot gotcha in `AGENTS.md`).
-- `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, and `DirectoryPoller` service.
-- `tests/test_poller.py`: Settle detection for files still being written, burst coalescing, and the auto-load retry/backoff path.
+- `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, `DirectoryPoller` service, and the interaction of the header editor and Save FITS As with auto-load.
+- `tests/test_poller.py`: Settle detection for files still being written, burst coalescing, the auto-load retry/backoff path, and the cancelling of stale retries.
 - `tests/test_packaging_assets.py`: Bundled line lists and `cmcrameri` colormaps are present, and `QuickLook3.spec` registers every asset, the bundle identifier, and the FITS document types.
 - `tests/test_cli_install.py`: The `quicklook3` launcher — side-effect-free planning, argument forwarding and quoting, venv interpreter preservation, quarantine guard, disk-image and foreign-file refusals, install directory choice.
 - `tests/test_file_open.py`: Finder open-document routing (queueing before the window exists, real `QFileOpenEvent` delivery) and the Install Command Line Tool menu action, including that declining the confirmation writes nothing.

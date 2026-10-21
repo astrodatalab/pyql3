@@ -3,6 +3,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog
+from pyql3.core import coords
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.depth_plot import DepthPlotDialog, latex_to_html
 
@@ -76,8 +77,34 @@ def test_depth_plot_set_center_moves_roi(loaded_viewer):
 
     pos, size = dialog.roi.pos(), dialog.roi.size()
     center = (pos.x() + size.x() / 2.0, pos.y() + size.y() / 2.0)
-    assert center == pytest.approx((15.0, 25.0)), f"ROI centre is {center}, expected (15, 25)"
+    # (15, 25) is a numpy index; the ImageItem draws that pixel's centre half a pixel in.
+    assert center == pytest.approx((15.5, 25.5)), f"ROI centre is {center}, expected (15.5, 25.5)"
     dialog.close()
+
+
+def test_a_circle_drawn_on_a_pixel_measures_that_pixel(qapp):
+    """The measured circle is the drawn circle (BUGS.md R2).
+
+    An ImageItem draws pixel i over [i, i+1), so a circle drawn on pixel (12, 9) has its
+    centre at the item coordinate (12.5, 9.5). The Total of an r = 1 circle there is the
+    whole of that pixel, not the 78.54 an aperture half a pixel away gives.
+    """
+    data = np.zeros((31, 21, 4))
+    data[12, 9, :] = 100.0
+    viewer = ImageViewer()
+    viewer.set_data(data, None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.combo_shape.setCurrentText("Circle")
+        dialog.combo_calc.setCurrentText("Total")
+        dialog.roi.setPos([12.5 - 1.0, 9.5 - 1.0])
+        dialog.roi.setSize([2.0, 2.0])
+        _, total = dialog.plot_data.getData()
+        assert np.asarray(total) == pytest.approx(100.0, abs=1e-9)
+        assert dialog.aperture_geometry() == pytest.approx((12.0, 9.0, 1.0))
+        assert (dialog.spin_cx.value(), dialog.spin_cy.value()) == pytest.approx((12.0, 9.0))
+    finally:
+        dialog.close()
 
 
 def test_depth_plot_latex_conversion():
@@ -220,8 +247,10 @@ def test_enabling_the_background_draws_an_annulus_not_a_second_region(loaded_vie
 
 
 def _ring_center(ring):
+    """A ring's centre as a numpy index, the convention `aperture_geometry()` uses."""
     pos, size = ring.pos(), ring.size()
-    return pos.x() + size.x() / 2.0, pos.y() + size.y() / 2.0
+    return (coords.item_to_index(pos.x() + size.x() / 2.0),
+            coords.item_to_index(pos.y() + size.y() / 2.0))
 
 
 def test_the_annulus_follows_the_aperture_it_is_not_independent(loaded_viewer):
@@ -953,3 +982,108 @@ def test_disabling_the_background_mid_drag_does_not_leave_the_y_axis_frozen(load
         assert dialog._y_autorange_before_drag is None
     finally:
         dialog.close()
+
+
+# ------------------------------------------- box edges and boxes off the image (BUGS.md R19)
+
+@pytest.fixture
+def x_cube_dialog(qapp):
+    """A rectangular-aperture Depth Plot over a cube whose value is the display x column."""
+    data = np.broadcast_to(np.arange(30.0)[:, None, None], (30, 20, 3)).copy()
+    viewer = ImageViewer()
+    viewer.set_data(data, None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    dialog.combo_shape.setCurrentText("Rectangle")
+    dialog.combo_calc.setCurrentText("Average")
+    yield dialog
+    dialog.close()
+
+
+def _first_spectrum_value(dialog):
+    return dialog.plot_data.getData()[1][0]
+
+
+def test_a_box_half_off_the_image_measures_only_what_it_covers(x_cube_dialog):
+    d = x_cube_dialog
+    d.roi.setPos([-5, 2])
+    d.roi.setSize([10, 4])
+    # Columns 0-4 are on the image: mean 2.0, not the 4.5 of columns 0-9.
+    assert _first_spectrum_value(d) == pytest.approx(2.0)
+    assert "overlap" not in d.lbl_bg_info.text()
+
+    # A box on the high edge is likewise cut to the columns that exist (25-29).
+    d.roi.setPos([25, 2])
+    assert _first_spectrum_value(d) == pytest.approx(27.0)
+
+    # A box on pixel edges still reads exactly those pixels.
+    d.roi.setPos([10, 2])
+    assert _first_spectrum_value(d) == pytest.approx(14.5)
+
+
+@pytest.mark.parametrize("x0", [-50, 100])
+def test_a_box_wholly_off_the_image_is_reported_not_measured(x_cube_dialog, x0):
+    d = x_cube_dialog
+    d.roi.setPos([10, 2])
+    d.roi.setSize([10, 4])
+    assert len(d.plot_data.getData()[0]) > 0
+    d.roi.setPos([x0, 2])
+    xs, _ = d.plot_data.getData()
+    assert xs is None or len(xs) == 0, "the edge column was plotted for a box that misses"
+    assert "overlap" in d.lbl_bg_info.text()
+    # Moving back onto the image replaces the message with the measurement.
+    d.roi.setPos([10, 2])
+    assert len(d.plot_data.getData()[0]) > 0
+    assert "overlap" not in d.lbl_bg_info.text()
+
+
+def test_a_cut_over_a_box_half_off_the_image_covers_only_the_image(x_cube_dialog):
+    d = x_cube_dialog
+    d.combo_type.setCurrentText("Horizontal Cut")
+    d.roi.setPos([-5, 2])
+    d.roi.setSize([10, 4])
+    assert d.plot_data.getData()[0].tolist() == [0, 1, 2, 3, 4]
+
+    d.combo_type.setCurrentText("Vertical Cut")
+    d.roi.setPos([4, -3])
+    d.roi.setSize([4, 8])
+    assert d.plot_data.getData()[0].tolist() == [0, 1, 2, 3, 4]
+
+    d.roi.setPos([4, -30])
+    xs, _ = d.plot_data.getData()
+    assert xs is None or len(xs) == 0
+    assert "overlap" in d.lbl_bg_info.text()
+
+
+def test_a_background_box_half_off_the_image_measures_only_what_it_covers(x_cube_dialog):
+    d = x_cube_dialog
+    d.roi.setPos([10, 2])
+    d.roi.setSize([10, 4])
+    d.combo_bg_mode.setCurrentText("Region")
+    d.combo_bg_calc.setCurrentText("Average")
+    d.chk_enable_bg.setChecked(True)
+    assert d.bg_roi is not None
+
+    d.bg_roi.setPos([-5, 2])
+    d.bg_roi.setSize([10, 4])
+    assert d.plot_bg.getData()[1][0] == pytest.approx(2.0)
+
+    d.bg_roi.setPos([-50, 2])
+    xs, _ = d.plot_bg.getData()
+    assert xs is None or len(xs) == 0, "a background box off the image measured the edge"
+    xs, _ = d.plot_sub.getData()
+    assert xs is None or len(xs) == 0
+    assert "overlap" in d.lbl_bg_info.text()
+    # The source spectrum is still drawn: only the background is missing.
+    assert _first_spectrum_value(d) == pytest.approx(14.5)
+
+
+def test_a_circular_aperture_with_a_background_box_off_the_image_says_so(loaded_viewer):
+    d = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    d.combo_bg_mode.setCurrentText("Region")
+    d.chk_enable_bg.setChecked(True)
+    d.bg_roi.setPos([-60, 2])
+    d.update_plot()
+    xs, _ = d.plot_bg.getData()
+    assert xs is None or len(xs) == 0
+    assert "overlap" in d.lbl_bg_info.text()
+    d.close()

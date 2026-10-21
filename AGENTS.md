@@ -95,7 +95,19 @@ exists for. A file is announced only once `(st_size, st_mtime_ns)` holds steady 
 consecutive scans, and when several land at once only the newest is displayed. Because NFS
 attribute caches can report a stale size, a failed parse means *retry later*, never
 *corrupt*: `MainWindow._attempt_auto_load()` backs off and only warns once retries are
-exhausted.
+exhausted. A queued retry carries the `_auto_load_generation` it was scheduled under and does
+nothing once that has moved on: a new detection, and every `load_fits` call made with the
+default `cancel_auto_load=True`, advance it, so a late retry cannot replace a newer frame or a
+file the user opened. **Only the auto-load passes `cancel_auto_load=False`.** The end of a watch
+advances it too (`DirectoryPoller.polling_stopped`, emitted by `stop_polling()` and so also when
+`start_polling()` replaces a watch), so a retry from the old directory cannot land after a
+restart. A modal dialog that edits or saves the loaded file runs inside
+`MainWindow.auto_load_held()`, as `edit_header()` and `save_file_as()` do — its `exec()` (or
+`QFileDialog.getSaveFileName`) runs a nested event loop in which the poller keeps announcing
+frames and queued retries keep firing. The hold covers both: an attempt that comes due stores
+its path, and the newest is loaded when the hold ends. A file opened by hand still reaches
+`load_fits` during the hold, so such a dialog also records `(fits_reader.filepath,
+fits_reader.hdul)` when it opens and refuses to write if either has changed.
 
 `MainWindow` caches each tool as a `self._<name>_dialog` attribute and reopens it only if
 not already visible. Those attribute names are listed once, in `MainWindow.TOOL_DIALOG_ATTRS`,
@@ -103,7 +115,10 @@ and two things walk the list: `update_tools_for_unit()` (calls each dialog's `up
 `update_stats()` when the display unit changes between DN/s and Total DN, so labels and graphs
 refresh instantly) and `close_tool_dialogs()` from `closeEvent`. **A new tool must be added to
 `TOOL_DIALOG_ATTRS`** or it will silently go stale on a unit change *and* be left on screen
-after its window closes.
+after its window closes. Being listed is not enough on its own: the opener must also reuse a
+visible dialog rather than overwrite the attribute. The cut, Surface, Contour and Region List
+openers currently build a new dialog on every call, and the previous one drops out of the list
+while still on screen (`BUGS.md` R16).
 
 ### Multiple windows (CRITICAL)
 
@@ -117,8 +132,12 @@ Three things are process-wide and must stay that way:
 
 - **`get_window_manager()`** (`pyql3/gui/window_manager.py`) is the window list, plus the
   most-recently-used order. A path arriving with no window attached (a Finder open-document
-  event, `quicklook3 cube.fits` while the app is running) goes to `WindowManager.open_path()`,
-  which targets the most recently used window and creates one if all are closed. **Never bind
+  event) goes to `WindowManager.open_path()`, which targets the most recently used window and
+  creates one if all are closed. `quicklook3 cube.fits` does **not** arrive this way: the
+  launcher ends in `exec` (`cli_install.shim_text()`) and nothing implements a single-instance
+  hand-off, so every call is a separate process with its own window list and its own
+  `ConfigManager` — two of them share `~/.pyql3/config.json` with no coordination
+  (`BUGS.md` R58). **Never bind
   the open-document handler to a particular window's `load_fits`** — that was a crash waiting to
   happen, since closing that window left `FileOpenHandler` calling a method on a deleted C++
   object.
@@ -151,8 +170,10 @@ under it once more than one is open.
 - `display_data` — a copy of `transposed_data` after `apply_transforms()` applies the DN
   multiplier, flip, and 90° rotations. This is what's on screen; it is not analysis input.
 
-The DN/s → Total DN conversion is exposed as the `data_multiplier` property
-(`itime * coadds`); tools should multiply plotted values by it rather than recomputing.
+The DN/s → Total DN conversion is exposed as the `data_multiplier` property, whose value is
+`header_info.total_dn_multiplier()`: `TRUITIME` (seconds) times `COADDS`. `ITIME` is used only when
+there is no usable `TRUITIME`, because it is in milliseconds in OSIRIS cubes written since the
+detector upgrade. Tools should multiply plotted values by `data_multiplier` rather than recomputing.
 
 ### FITS axis / WCS conventions (CRITICAL)
 
@@ -256,7 +277,17 @@ Four Qt traps here each cost real time. They are not hypothetical:
    inside a destroy path** — flushing it at the start of `_destroy_items` meant `clear()`'s loop
    freed each entry's items while building the next, and put the crash straight back (`BUGS.md`
    M18). The release forces a `gc.collect()`, because these items are in reference cycles and
-   dropping the list frees nothing on its own.
+   dropping the list frees nothing on its own. The tool dialogs' counterpart,
+   `BaseToolDialog._drop_retired_rois`, goes one step further and `shiboken6.delete`s each
+   still-valid retired ROI *before* the `gc.collect()`: left to the collector, a ROI, its handles
+   and its context menu are freed in whatever order the cycle is walked, and in one order
+   `callCppDestructor` ran on an object already deleted — a segfault inside `gc.collect()` that
+   came and went with unrelated allocations (one extra `QLabel` in a dialog was enough;
+   `BUGS.md` M31). `region_layer._drop_retired` still releases by collection alone. That is a
+   difference of history, not a decision: the region layer has not shown the crash, and the scene
+   references noted in M31 make an explicit delete there riskier, so it is left until it does. A
+   retired item that the scene still holds (`GraphicsScene.dragItem`, `lastHoverEvent`) is
+   invalid after the delete, so do not assume it is safe to touch.
 4. **`GraphicsScene.addParentContextMenus` walks up to the ImageItem**, whose `getContextMenus()`
    returns `[None]`, and a right-click then raises. `RegionItemInteraction.raiseContextMenu`
    overrides that walk (`BUGS.md` M12). The same mixin must check for an inherited

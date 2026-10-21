@@ -345,3 +345,114 @@ def test_arithmetic_result_is_saved_in_raw_orientation(qapp, osiris_cube, tmp_pa
         assert np.array_equal(check.get_data(), original * 2.0)
     finally:
         check.close()
+
+
+# --- File -> Save FITS As (R3) -------------------------------------------------------
+
+@pytest.fixture
+def multi_extension_fits(tmp_path):
+    """PRIMARY (no data, TELESCOP) + SCI + ERR + DQ at mode 0o664, like a JWST product."""
+    import os
+
+    primary = fits.PrimaryHDU()
+    primary.header["TELESCOP"] = "Keck II"
+    hdus = [primary] + [
+        fits.ImageHDU(np.full((3, 4), i, dtype=np.float32), name=name)
+        for i, name in enumerate(("SCI", "ERR", "DQ"), start=1)
+    ]
+    path = tmp_path / "multi.fits"
+    fits.HDUList(hdus).writeto(path)
+    os.chmod(path, 0o664)
+    return path
+
+
+def _save_as(win, monkeypatch, target):
+    """Run MainWindow.save_file_as with the file dialog and every message box stubbed."""
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(target), "")))
+    for name in ("information", "critical", "warning"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(lambda *a, **k: None))
+    win.save_file_as()
+
+
+def _hdu_names_and_telescop(path):
+    with fits.open(path) as h:
+        return [x.name for x in h], h[0].header.get("TELESCOP")
+
+
+def test_save_as_keeps_every_extension_and_the_mode(multi_extension_fits, tmp_path,
+                                                    monkeypatch):
+    import os
+    from pyql3.gui.main_window import MainWindow
+
+    out = tmp_path / "copy.fits"
+    old_umask = os.umask(0o022)
+    win = MainWindow()
+    try:
+        win.load_fits(str(multi_extension_fits))
+        _save_as(win, monkeypatch, out)
+    finally:
+        win.close()
+        os.umask(old_umask)
+
+    assert _hdu_names_and_telescop(out) == (["PRIMARY", "SCI", "ERR", "DQ"], "Keck II")
+    # A new file takes the umask default, not the 0o664 of the source.
+    if os.name != "nt":  # POSIX permission bits
+        assert os.stat(out).st_mode & 0o777 == 0o644
+
+
+def test_save_as_onto_the_open_file_keeps_its_extensions(multi_extension_fits, monkeypatch):
+    import os
+    from pyql3.gui.main_window import MainWindow
+
+    path = multi_extension_fits
+    win = MainWindow()
+    try:
+        win.load_fits(str(path))
+        _save_as(win, monkeypatch, path)
+        win.load_fits(str(path))
+        assert win.fits_reader.get_data() is not None
+    finally:
+        win.close()
+
+    assert _hdu_names_and_telescop(path) == (["PRIMARY", "SCI", "ERR", "DQ"], "Keck II")
+    if os.name != "nt":  # POSIX permission bits
+        assert os.stat(path).st_mode & 0o777 == 0o664
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("frame.fit", "frame.fit"),
+    ("frame.FITS", "frame.FITS"),
+    ("frame", "frame.fits"),
+])
+def test_save_as_keeps_a_fits_suffix_it_recognises(multi_extension_fits, tmp_path,
+                                                   monkeypatch, name, expected):
+    from pyql3.gui.main_window import MainWindow
+
+    win = MainWindow()
+    try:
+        win.load_fits(str(multi_extension_fits))
+        _save_as(win, monkeypatch, tmp_path / name)
+    finally:
+        win.close()
+
+    assert (tmp_path / expected).exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([expected, "multi.fits"])
+
+
+def test_save_as_to_a_gz_name_writes_gzip(multi_extension_fits, tmp_path, monkeypatch):
+    from pyql3.gui.main_window import MainWindow
+
+    out = tmp_path / "frame.fits.gz"
+    win = MainWindow()
+    try:
+        win.load_fits(str(multi_extension_fits))
+        _save_as(win, monkeypatch, out)
+    finally:
+        win.close()
+
+    assert out.read_bytes()[:2] == b"\x1f\x8b"
+    assert _hdu_names_and_telescop(out) == (["PRIMARY", "SCI", "ERR", "DQ"], "Keck II")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["frame.fits.gz", "multi.fits"]

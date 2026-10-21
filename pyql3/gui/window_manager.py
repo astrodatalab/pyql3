@@ -6,8 +6,10 @@ question "which window does this file go to?", which arises whenever a path arri
 with no window attached to it:
 
 - Finder sends an open-document event (see `pyql3.gui.file_open`).
-- `quicklook3 cube.fits` is run while the application is already open.
 - **File -> New Window** has to put its window somewhere on screen.
+
+`quicklook3 cube.fits` is not one of these: the launcher `exec`s a new process, which has
+its own manager and never reaches a QuickLook 3 that is already running.
 
 The destination is the most recently used window. That is deliberately *not* "the
 window that happened to be created first": binding to one particular window is the bug

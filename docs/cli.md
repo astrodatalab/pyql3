@@ -47,9 +47,12 @@ Window** (⌘N / Ctrl+N) or **File ➔ Open in New Window...**, and **File ➔ C
 Ctrl+W) closes one without quitting the application. The **Window** menu lists every open window
 with its tool windows grouped underneath, and **Bring All to Front** raises the whole set.
 
-Opening a file from Finder, or running `quicklook3 cube.fits` while the application is already
-open, loads it into the window you used most recently — so it replaces the view you were last
-looking at, rather than one hidden behind it. Use **Open in New Window...** to keep both.
+Opening a file from Finder while the application is already open loads it into the window you
+used most recently — so it replaces the view you were last looking at, rather than one hidden
+behind it. Use **Open in New Window...** to keep both.
+
+Running `quicklook3 cube.fits` always starts a separate copy of QuickLook 3 with its own window,
+even when one is already open; it does not load into the running copy.
 
 ---
 
@@ -202,3 +205,9 @@ uv run python main.py --poll-dir /path/to/raw_data
   another window is already watching asks first, and then *moves* the watch — new frames start
   appearing in the second window instead of the first. Two simultaneous watches would scan the
   directory twice and load every frame twice, which matters on a busy NFS share.
+- A frame that cannot be read yet is retried for about 15 seconds. The retries stop as soon as
+  a newer frame arrives, you open a file yourself, or polling is stopped or moved to another
+  directory, so a late retry never replaces what is on screen.
+- While **File ➔ Edit FITS Header** is open, new frames are not displayed; the newest one is
+  loaded when the editor closes. Saving the header therefore always writes to the file the
+  editor was opened on.

@@ -3,6 +3,7 @@ from scipy.optimize import curve_fit
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QPushButton, QSpinBox, QVBoxLayout, QDialog, QHBoxLayout
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+from pyql3.core import coords
 from pyql3.gui.tools.base_tool import BaseToolDialog, as_center
 
 def gaussian_2d(xy, amplitude, xo, yo, wx, wy, theta, offset):
@@ -107,6 +108,10 @@ class DisplayPeakFitDialog(QDialog):
         self.gl_fit.addItem(ax_fit)
 
 class GaussianFitDialog(BaseToolDialog):
+    #: The labels a fit fills in, as opposed to the two that describe the box's pixels.
+    FIT_KEYS = ["Peak Amplitude", "Center X", "Center Y", "FWHM X", "FWHM Y", "Angle (deg)",
+                "Background"]
+
     def __init__(self, parent=None, image_viewer=None, initial_center=None):
         super().__init__(parent, image_viewer, "Peak Fit")
         # A Qt signal may hand us its `checked` flag instead of a centre
@@ -163,6 +168,12 @@ class GaussianFitDialog(BaseToolDialog):
         self.btn_recalc = QPushButton("Recalculate Peak Fit")
         self.btn_recalc.clicked.connect(self.update_fit)
         grid.addWidget(self.btn_recalc, row, 2, 1, 2)
+
+        # A box that misses the image has nothing to fit, and says so here.
+        row += 1
+        self.lbl_status = QLabel("")
+        self.layout.addWidget(self.lbl_status)
+        self.lbl_status.setStyleSheet("color: #b00;")
         
         if initial_center is not None:
             center_x, center_y = initial_center
@@ -188,7 +199,7 @@ class GaussianFitDialog(BaseToolDialog):
         center = as_center(center)
         if center is None or self.roi is None:
             return
-        cx, cy = center
+        cx, cy = coords.index_to_item(center[0]), coords.index_to_item(center[1])
         w = self.roi.size().x()
         h = self.roi.size().y()
         self.roi.setPos([cx - w / 2.0, cy - h / 2.0])
@@ -230,18 +241,31 @@ class GaussianFitDialog(BaseToolDialog):
     def update_stats(self):
         self.update_fit()
 
+    def _clear_fit(self, reason):
+        """Blank every result and say why there is no fit."""
+        for key in ["Min Pixel Value", "Max Pixel Value", *self.FIT_KEYS]:
+            self.value_labels[key].setText("N/A")
+        self.lbl_status.setText(reason)
+        self.last_raw_data = None
+        self.last_fit_data = None
+
     def update_fit(self):
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return
             
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
-            
-        data = self.roi.getArrayRegion(img_data, self.image_viewer.imv.getImageItem())
-        if data is None or data.size < 9:
+        measured = self.roi_plane_pixels()
+        if measured is None:
+            self._clear_fit("The box does not overlap the image.")
             return
-            
+        data, (x_slice, y_slice) = measured
+        if data.size < 9:
+            # Fewer pixels than the fit has free parameters to be worth reporting; the
+            # previous numbers must not stay on screen as if they described this box.
+            self._clear_fit(f"Only {data.size} pixel(s) of the box are on the image; "
+                            "the fit needs at least 9.")
+            return
+        self.lbl_status.setText("")
+
         if np.isnan(data).any():
             data = np.nan_to_num(data, nan=np.nanmedian(data))
             
@@ -292,9 +316,8 @@ class GaussianFitDialog(BaseToolDialog):
             fwhm_x = abs(wx) * fwhm_factor
             fwhm_y = abs(wy) * fwhm_factor
             
-            pos = self.roi.pos()
-            global_xo = pos.x() + xo
-            global_yo = pos.y() + yo
+            global_xo = x_slice.start + xo
+            global_yo = y_slice.start + yo
             
             self.value_labels["Peak Amplitude"].setText(f"{amp:.4f}")
             self.value_labels["Center X"].setText(f"{global_xo:.2f}")
@@ -307,7 +330,7 @@ class GaussianFitDialog(BaseToolDialog):
             self.last_fit_data = func((x, y), *popt).reshape(ny, nx)
             
         except RuntimeError:
-            for key in ["Peak Amplitude", "Center X", "Center Y", "FWHM X", "FWHM Y", "Angle (deg)", "Background"]:
+            for key in self.FIT_KEYS:
                 self.value_labels[key].setText("Fit Failed")
             self.last_fit_data = None
 

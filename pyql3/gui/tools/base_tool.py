@@ -4,6 +4,8 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 
+from pyql3.core import coords
+
 
 def keep_on_screen(window):
     """Nudge `window` back inside the screen if it opened partly outside it.
@@ -71,6 +73,29 @@ class BaseToolDialog(QDialog):
             self._placed_on_screen = True
             keep_on_screen(self)
 
+    def roi_plane_pixels(self, roi=None):
+        """The whole pixels of a rectangular ROI, taken from the plane on screen.
+
+        Returns `(pixels, (x slice, y slice))`, or `None` when the box covers no pixel of the
+        plane. `pixels` are in the displayed units (`data_multiplier` applied) and the slices
+        index `image_viewer.current_plane()`, so a caller can recover where on the image they
+        came from. `ROI.getArrayRegion` is not used for this: it interpolates linearly, which
+        lowers peaks whenever the box is not on the pixel grid, and it fills the part of the
+        box off the image with zeros (`BUGS.md` R9). The tool ROIs have no rotate handle, so an
+        axis-aligned box describes them completely.
+        """
+        roi = self.roi if roi is None else roi
+        if roi is None or self.image_viewer is None:
+            return None
+        plane = self.image_viewer.current_plane()
+        if plane is None or plane.ndim != 2:
+            return None
+        pos, size = roi.pos(), roi.size()
+        slices = coords.box_index_slices(pos.x(), pos.y(), size.x(), size.y(), *plane.shape)
+        if slices is None:
+            return None
+        return plane[slices] * self.image_viewer.data_multiplier, slices
+
     def add_roi_to_viewer(self, roi):
         if self.roi is not None:
             self.remove_roi_from_viewer()
@@ -117,9 +142,20 @@ class BaseToolDialog(QDialog):
 
         The explicit `gc.collect()` is deliberate: these items sit in reference cycles, so
         dropping the list frees nothing on its own.
+
+        Each valid ROI is also destroyed explicitly first. Left to the collector, a ROI, its
+        handles and its context menu are freed in whatever order the cycle happens to be
+        walked, and in one such order `callCppDestructor` ran on a handle whose C++ object was
+        already gone: a segfault in `gc.collect()` that appeared and disappeared with
+        unrelated allocations (adding one label to a dialog was enough). Destroying the ROI
+        outright invalidates its wrappers, which the collector then skips.
         """
         if not self._retired_rois:
             return
+        import shiboken6
+        for roi in self._retired_rois:
+            if shiboken6.isValid(roi):
+                shiboken6.delete(roi)
         self._retired_rois = []
         gc.collect()
             

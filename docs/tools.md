@@ -30,6 +30,9 @@ Everything that defines what is measured is in the **EXTRACTION APERTURE** group
 how its pixels are combined, and its geometry in the form that shape is parameterised —
 **Center X / Y** and **Radius** for a circle, **X Region / Y Region** for a rectangle. The
 geometry controls swap with the shape rather than describing a circle by its bounding box.
+**Center X / Y** are pixel indices, so a circle whose centre reads `12, 9` is drawn on the
+centre of pixel (12, 9) and measures that pixel; the Aperture Photometry and Strehl tools
+place their circles the same way.
 The **BACKGROUND** group likewise shows only the controls its current mode uses. An annulus
 is offered only for a circular aperture, since it has nothing to be concentric with
 otherwise; selecting a rectangle withdraws the option rather than ignoring it.
@@ -145,6 +148,8 @@ says in as many words.
 ## 3. 2D Peak & Line Fitting
 
 The **Peak Fit** tool fits analytical 2D spatial surface models to stars, emission lines, or compact sources within a selected ROI.
+
+The fit uses the whole pixels whose centres lie inside the box; it does not interpolate between pixels, so the result does not depend on where the box sits relative to the pixel grid. The part of a box that hangs off the image is left out, not counted as zeros, and a box that misses the image reports that instead of a fit. Center X and Center Y are pixel indices counted from 0, the same as the Depth Plot's aperture centre. Region Statistics reads pixels the same way.
 
 ### Mathematical Models
 
@@ -267,7 +272,7 @@ To ensure source overlays track the image viewport when the astronomer rotates o
 #### C. Interactive Highlighting & Filtering
 - **Interactive Source Selection**: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it.
 - **Clearing a selection**: press **Escape** in the table, use the **Clear Selection** button beside the search box, or pick **Clear Selection** from the row's right-click menu. The view stays where it is. (Qt's own way out of a single-selection table is ctrl-clicking the selected row, which few people find.)
-- **Search & Filter**: Real-time text search filters the catalog table and dynamically updates plotted markers.
+- **Search & Filter**: Real-time text search hides the table rows that do not match. It filters the table only; every source stays marked on the image.
 - **Custom Marker Styling**: Supports customizable marker shapes (Circles, Squares, Triangles, Diamonds, Crosses), sizes, colors, and text labels.
 
 ---

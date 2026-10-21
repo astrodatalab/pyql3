@@ -2,6 +2,7 @@ import numpy as np
 from PySide6.QtWidgets import QGridLayout, QLabel, QDoubleSpinBox
 import pyqtgraph as pg
 from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photometry
+from pyql3.core import coords
 from pyql3.gui.tools.base_tool import BaseToolDialog
 
 class PhotometryDialog(BaseToolDialog):
@@ -51,6 +52,8 @@ class PhotometryDialog(BaseToolDialog):
         else:
             center_x, center_y = 0, 0
             
+        # The default centre is a pixel's centre; the ROI is in ImageItem coordinates.
+        center_x, center_y = coords.index_to_item(center_x), coords.index_to_item(center_y)
         r = 5.0
         self.roi = pg.CircleROI([center_x - r, center_y - r], [r*2, r*2], pen=pg.mkPen((255, 0, 0), width=3), hoverPen=pg.mkPen((255, 0, 0), width=5))
         self.add_roi_to_viewer(self.roi)
@@ -112,16 +115,20 @@ class PhotometryDialog(BaseToolDialog):
         data = img_data
         pos = self.roi.pos()
         size = self.roi.size()
-        cx = pos.x() + size.x()/2.0
-        cy = pos.y() + size.y()/2.0
+        # The ROI and the rings are drawn in ImageItem coordinates (pixel i spans [i, i+1));
+        # photutils measures in numpy-index coordinates (pixel i is centred on i).
+        item_cx = pos.x() + size.x()/2.0
+        item_cy = pos.y() + size.y()/2.0
+        cx = coords.item_to_index(item_cx)
+        cy = coords.item_to_index(item_cy)
         
         r_in = self.spin_inner.value()
         r_out = self.spin_outer.value()
         
         # Update the concentric rings
-        self.roi_inner.setPos(cx - r_in, cy - r_in)
+        self.roi_inner.setPos(item_cx - r_in, item_cy - r_in)
         self.roi_inner.setSize([r_in*2, r_in*2])
-        self.roi_outer.setPos(cx - r_out, cy - r_out)
+        self.roi_outer.setPos(item_cx - r_out, item_cy - r_out)
         self.roi_outer.setSize([r_out*2, r_out*2])
         
         # Photutils expects (ny, nx) data where the 2nd axis is X and 1st axis is Y.

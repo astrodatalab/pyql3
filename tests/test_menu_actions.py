@@ -102,7 +102,10 @@ def test_right_click_signal_still_passes_a_centre(main_window):
     assert dialog is not None, "Depth Plot dialog was not created from the context-menu signal"
     pos, size = dialog.roi.pos(), dialog.roi.size()
     center = (pos.x() + size.x() / 2.0, pos.y() + size.y() / 2.0)
-    assert center == pytest.approx((12.0, 9.0)), f"ROI centre is {center}, expected (12, 9)"
+    # The clicked index is a pixel; the circle is drawn on that pixel's centre, half a
+    # pixel into the ImageItem's [i, i+1) cell, and measures there too (BUGS.md R2).
+    assert center == pytest.approx((12.5, 9.5)), f"ROI centre is {center}, expected (12.5, 9.5)"
+    assert dialog.aperture_geometry()[:2] == pytest.approx((12.0, 9.0))
     dialog.close()
 
 

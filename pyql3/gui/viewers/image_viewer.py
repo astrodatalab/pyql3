@@ -9,6 +9,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
 from pyql3.core import coords
+from pyql3.core.header_info import total_dn_multiplier
 
 try:
     # Imported for its side effect: this registers the Crameri colormaps with
@@ -1079,11 +1080,7 @@ class ImageViewer(QWidget):
                 warnings.simplefilter('ignore')
                 self.wcs = WCS(header)
                 
-            itime = header.get('ITIME', 1.0)
-            if itime == 0:
-                itime = header.get('TRUITIME', 1.0)
-            coadds = header.get('COADDS', 1.0)
-            self._itime_coadds = itime * coadds
+            self._itime_coadds = total_dn_multiplier(header)
         else:
             self.wcs = None
             self._itime_coadds = 1.0

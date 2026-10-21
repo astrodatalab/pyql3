@@ -250,7 +250,10 @@ class FitsReader:
 
         # Same directory as the target, so os.replace can never be cross-filesystem.
         directory = os.path.dirname(os.path.abspath(save_path)) or '.'
-        fd, tmp_path = tempfile.mkstemp(prefix='.pyql3_save_', suffix='.fits', dir=directory)
+        # astropy picks gzip from the file name, so a `.gz` target needs a `.gz` temp name or
+        # the swapped-in file is plain FITS under a compressed name.
+        tmp_suffix = '.fits.gz' if save_path.lower().endswith('.gz') else '.fits'
+        fd, tmp_path = tempfile.mkstemp(prefix='.pyql3_save_', suffix=tmp_suffix, dir=directory)
         os.close(fd)
         try:
             hdul.writeto(tmp_path, overwrite=True)

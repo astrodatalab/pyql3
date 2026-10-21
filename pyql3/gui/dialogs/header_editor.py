@@ -1,3 +1,5 @@
+import os
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, 
     QHBoxLayout, QMessageBox, QLineEdit, QComboBox, QLabel
@@ -8,6 +10,10 @@ class HeaderEditorDialog(QDialog):
     def __init__(self, fits_reader, parent=None):
         super().__init__(parent)
         self.fits_reader = fits_reader
+        # The file and HDUList this editor's table was read from. The reader is shared
+        # with the main window, which can load another file while the editor is open;
+        # writing the table then would put this file's cards into that one.
+        self._opened_on = (fits_reader.filepath, fits_reader.hdul)
         self.current_ext = getattr(fits_reader, 'current_ext', 0)
         self.setWindowTitle("FITS Header Editor")
         self.resize(550, 450)
@@ -58,9 +64,28 @@ class HeaderEditorDialog(QDialog):
             self.combo_ext.setCurrentIndex(cur_idx)
         self.combo_ext.blockSignals(False)
 
+    def _refuse_if_file_changed(self):
+        """Warn and return True when the reader no longer holds the file this editor
+        was opened on."""
+        filepath, hdul = self._opened_on
+        if self.fits_reader.filepath == filepath and self.fits_reader.hdul is hdul:
+            return False
+        opened = os.path.basename(filepath) if filepath else "the in-memory image"
+        now = (os.path.basename(self.fits_reader.filepath)
+               if self.fits_reader.filepath else "an in-memory image")
+        QMessageBox.warning(
+            self,
+            "File changed",
+            f"This editor was opened on {opened}, but the window now shows {now}.\n\n"
+            "Nothing was written. Close the editor and open it again to edit the "
+            "file now shown.",
+        )
+        return True
+
     def on_extension_changed(self, index):
         # Save edits from table to previous extension header in memory before switching
-        self.apply_table_edits(ext=self.current_ext)
+        if not self.apply_table_edits(ext=self.current_ext):
+            return
         new_ext = self.combo_ext.currentData()
         if new_ext is not None:
             self.current_ext = new_ext
@@ -102,10 +127,17 @@ class HeaderEditorDialog(QDialog):
             self.table.setRowHidden(row, not match)
 
     def apply_table_edits(self, ext=None):
+        """Write the table into the reader's header for `ext`.
+
+        Returns False, having written nothing, when the reader has moved to another
+        file since the editor opened.
+        """
         self._skipped_keywords = []
+        if self._refuse_if_file_changed():
+            return False
         header = self.fits_reader.get_header(ext=ext)
         if header is None:
-            return
+            return True
 
         for row in range(self.table.rowCount()):
             keyword_item = self.table.item(row, 0)
@@ -141,11 +173,13 @@ class HeaderEditorDialog(QDialog):
                 if not self.fits_reader.update_header_card(keyword, value, comment, ext=ext):
                     if header.get(keyword) != value:
                         self._skipped_keywords.append(keyword)
+        return True
 
     def save_header(self):
         try:
             # Apply current table edits to currently selected extension
-            self.apply_table_edits(ext=self.current_ext)
+            if not self.apply_table_edits(ext=self.current_ext):
+                return
 
             if self._skipped_keywords:
                 QMessageBox.information(
@@ -173,6 +207,9 @@ class HeaderEditorDialog(QDialog):
                     QMessageBox.StandardButton.No
                 )
                 if reply == QMessageBox.StandardButton.Yes:
+                    # The confirmation ran its own event loop; check again.
+                    if self._refuse_if_file_changed():
+                        return
                     self.fits_reader.save()
                     QMessageBox.information(self, "Success", "FITS Header saved successfully.")
                 else:

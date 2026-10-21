@@ -156,3 +156,21 @@ def item_to_index(v):
 def item_to_pixel(v):
     """pyqtgraph ImageItem coordinate -> index of the pixel containing it."""
     return int(math.floor(float(v)))
+
+
+def box_index_slices(x0, y0, width, height, nx, ny):
+    """Whole pixels covered by a box in ImageItem coordinates, as `(x slice, y slice)`.
+
+    The box is `[x0, x0 + width) x [y0, y0 + height)`, and a pixel belongs to it when its
+    centre (`i + 0.5` in ImageItem coordinates) lies inside. Both ends of each slice are
+    computed from the unclamped box and only then clipped to `[0, nx) x [0, ny)`, so a box
+    hanging off the low edge keeps just the part that is on the image. Returns `None` when
+    no pixel remains, which a caller reports rather than substituting an edge pixel.
+    """
+    x_lo, x_hi = math.ceil(x0 - 0.5), math.ceil(x0 + width - 0.5)
+    y_lo, y_hi = math.ceil(y0 - 0.5), math.ceil(y0 + height - 0.5)
+    x_lo, x_hi = max(0, x_lo), min(nx, x_hi)
+    y_lo, y_hi = max(0, y_lo), min(ny, y_hi)
+    if x_hi <= x_lo or y_hi <= y_lo:
+        return None
+    return slice(x_lo, x_hi), slice(y_lo, y_hi)

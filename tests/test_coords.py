@@ -372,3 +372,27 @@ def test_a_right_click_is_clipped_to_the_displayed_plane(qapp, tmp_path):
     viewer.rot_angle = 90
     viewer.refresh_display()
     assert right_click_at(999, 999) == (ny - 1, nx - 1)
+
+
+# ------------------------------------------------------------------ box_index_slices
+
+@pytest.mark.parametrize("box, nx, ny, expected", [
+    # A box on pixel edges covers exactly those pixels.
+    ((35.0, 25.0, 10, 10), 80, 60, (slice(35, 45), slice(25, 35))),
+    # Half a pixel over: the centres in [35.5, 45.5) are still pixels 35..44.
+    ((35.5, 25.5, 10, 10), 80, 60, (slice(35, 45), slice(25, 35))),
+    # Hanging off the low edge keeps only what is on the image, not the box's full width.
+    ((-5, 0, 10, 4), 30, 30, (slice(0, 5), slice(0, 4))),
+    # Wholly off either side: nothing, not the edge column.
+    ((-50, 0, 10, 4), 30, 30, None),
+    ((100, 0, 10, 4), 30, 30, None),
+])
+def test_box_index_slices(box, nx, ny, expected):
+    assert coords.box_index_slices(*box, nx, ny) == expected
+
+
+def test_box_index_slices_clips_the_high_edge_and_rejects_an_empty_box():
+    # A box over the high edge keeps its low end, and a box too thin to contain a pixel
+    # centre selects nothing.
+    assert coords.box_index_slices(25.0, 0.0, 10, 4, 30, 30) == (slice(25, 30), slice(0, 4))
+    assert coords.box_index_slices(35.2, 5.0, 1e-5, 4, 80, 60) is None

@@ -121,6 +121,54 @@ def sample_3d_fits(tmp_path):
 
 
 @pytest.fixture
+def osiris_like_fits(tmp_path):
+    """Generate a cube with the shape, WCS and header cards of a real OSIRIS frame.
+
+    `sample_3d_fits` is square, unrotated, ICRS-free and has no TRUITIME, so it cannot catch
+    anything that depends on those. This one is not square (NAXIS 40 x 51 x 66), has the
+    sky axes rotated 35 degrees through a PC matrix, is FK5, and carries ITIME in
+    milliseconds beside TRUITIME in seconds, as OSIRIS cubes written since the 2016 detector
+    upgrade do.
+
+    The value at numpy index ``[i, j, k]`` is ``10000*i + 100*j + k``, so every voxel
+    identifies itself and a swapped or shifted index shows up in the number.
+    """
+    shape = (66, 51, 40)  # (RA, DEC, WAVE) in numpy order
+    i, j, k = np.indices(shape)
+    data = (10000 * i + 100 * j + k).astype(np.float32)
+
+    pixel_scale = 0.035 / 3600.0  # degrees
+    theta = np.deg2rad(35.0)
+
+    w = WCS(naxis=3)
+    w.wcs.ctype = ['WAVE', 'DEC--TAN', 'RA---TAN']
+    w.wcs.crval = [2.0e-6, 34.0, 266.4]
+    w.wcs.crpix = [1, 26, 33]
+    w.wcs.cdelt = [2.5e-10, pixel_scale, pixel_scale]
+    w.wcs.cunit = ['m', 'deg', 'deg']
+    w.wcs.pc = [[1, 0, 0],
+                [0, np.cos(theta), -np.sin(theta)],
+                [0, np.sin(theta), np.cos(theta)]]
+    w.wcs.radesys = 'FK5'
+    w.wcs.equinox = 2000.0
+
+    header = w.to_header()
+    # to_header() converts the spectral axis to metres; OSIRIS writes nanometres.
+    header['CUNIT1'] = 'nm'
+    header['CRVAL1'] = (2000.0, '[nm] Coordinate value at reference point')
+    header['CDELT1'] = (0.25, '[nm] Coordinate increment at reference point')
+    header['CURRINST'] = 'OSIRIS'
+    header['ITIME'] = 900000
+    header['TRUITIME'] = 899.92
+    header['COADDS'] = 1
+    header['BUNIT'] = 'ADU per second per coadd'
+
+    filepath = tmp_path / "osiris_like_cube.fits"
+    fits.PrimaryHDU(data=data, header=header).writeto(filepath, overwrite=True)
+    return str(filepath)
+
+
+@pytest.fixture
 def sample_2d_fits(tmp_path):
     """Generate a synthetic 2D FITS image for testing."""
     data = np.random.normal(50.0, 5.0, (100, 100)).astype(np.float32)

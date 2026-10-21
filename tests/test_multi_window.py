@@ -5,8 +5,7 @@ display settings, tool dialogs and directory watch. What needs testing is theref
 that a second window can be constructed -- it always could -- but the things that are
 process-wide and so could leak between windows or be lost when one closes:
 
-- the destination of a file that arrives without a window (Finder, or a shell while the
-  application is already running),
+- the destination of a file that arrives without a window (a Finder open-document event),
 - the settings file, which every window writes to,
 - a directory watch, which two windows must not hold at once,
 - and everything a closing window has to release.
@@ -193,13 +192,25 @@ def test_closing_a_window_releases_its_cube(manager, sample_3d_fits):
 def test_a_pending_auto_load_retry_does_not_revive_a_closed_window(manager, tmp_path,
                                                                    sample_3d_fits, monkeypatch):
     """Retries run on a timer, so one can fire after its window has been closed."""
-    win = MainWindow()
+    import shutil
+    from PySide6.QtTest import QTest
+
+    monkeypatch.setattr(MainWindow, "AUTO_LOAD_RETRY_DELAYS", (0.0, 0.02))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(
         lambda *a, **k: pytest.fail("warned from a closed window")))
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    win = MainWindow()
+    assert win.poller.start_polling(str(watched))
+
+    frame = str(tmp_path / "frame_0001.fits")
+    with open(frame, "wb") as f:
+        f.write(b"not yet a FITS file")
+    win.on_file_detected(frame)                 # fails; a retry is queued
     win.close()
 
-    last = len(MainWindow.AUTO_LOAD_RETRY_DELAYS) - 1
-    win._attempt_auto_load(sample_3d_fits, last)          # what the queued timer does
+    shutil.copy(sample_3d_fits, frame)          # the frame finishes arriving
+    QTest.qWait(200)                            # ten times the retry delay
 
     assert win.image_viewer.raw_data is None, "loaded a file into a closed window"
 

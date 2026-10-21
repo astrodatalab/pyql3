@@ -85,8 +85,9 @@ def is_fits_path(path):
     `os.path.splitext` is deliberately not used: it returns ``.gz`` for
     ``frame.fits.gz`` and would drop compressed cubes on the floor.
 
-    Hidden files are excluded. `FitsReader.save()` writes `.pyql3_save_*.fits` into
-    the same directory as the file being saved, so saving into a watched directory
+    Hidden files are excluded. `FitsReader.save()` writes a temp file named
+    `.pyql3_save_*.fits` (or `.pyql3_save_*.fits.gz` for a gzip target) into the same
+    directory as the file being saved, so saving into a watched directory
     would otherwise offer our own half-written temp file to the poller as if it were
     a new frame. No legitimate instrument product is a dotfile.
     """
@@ -127,6 +128,9 @@ class DirectoryPoller(QObject):
     file_detected = Signal(str)
     #: (number of files suppressed, path actually emitted) for a coalesced batch.
     batch_coalesced = Signal(int, str)
+    #: A running watch has stopped, including when `start_polling` replaces it. Files
+    #: announced before this belong to the old watch.
+    polling_stopped = Signal()
 
     # Internal: marshals a candidate from the observer thread onto the GUI thread.
     _candidate_seen = Signal(str)
@@ -213,6 +217,7 @@ class DirectoryPoller(QObject):
             self.observer.stop()
             self.observer.join(timeout=5)
             self.observer = None
+            self.polling_stopped.emit()
 
     # ------------------------------------------------------------------ innards
 

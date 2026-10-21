@@ -19,7 +19,12 @@ class StatisticsDialog(BaseToolDialog):
             val = QLabel("N/A")
             grid.addWidget(val, i, 1)
             self.value_labels[text] = val
-            
+
+        # A box that misses the image has nothing to report, and says so here.
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("color: #b00;")
+        grid.addWidget(self.lbl_status, len(labels), 0, 1, 2)
+
         if self.image_viewer and self.image_viewer.display_data is not None:
             shape = self.image_viewer.display_data.shape
             if len(shape) == 3:
@@ -42,15 +47,16 @@ class StatisticsDialog(BaseToolDialog):
     def update_stats(self):
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return
-            
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
-            
-        data = self.roi.getArrayRegion(img_data, self.image_viewer.imv.getImageItem())
-        if data is None or data.size == 0:
+
+        measured = self.roi_plane_pixels()
+        if measured is None:
+            for val in self.value_labels.values():
+                val.setText("N/A")
+            self.lbl_status.setText("The box does not overlap the image.")
             return
-            
+        self.lbl_status.setText("")
+        data, _ = measured
+
         valid_data = data[~np.isnan(data)]
         if valid_data.size == 0:
             for val in self.value_labels.values():

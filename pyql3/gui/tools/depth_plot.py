@@ -5,6 +5,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog, QWidget
 from PySide6.QtCore import Qt, QDir
+from pyql3.core import coords
 from pyql3.core.spectral_photometry import (
     ApertureError,
     annulus_spectrum,
@@ -467,7 +468,10 @@ class DepthPlotDialog(BaseToolDialog):
         self._y_autorange_before_drag = None
 
         r = DEFAULT_APERTURE_RADIUS
-        self.add_roi_to_viewer(self._build_roi([center_x - r, center_y - r], [r * 2, r * 2]))
+        # `center_x`, `center_y` are a numpy index (the pixel whose centre the circle is
+        # drawn on); the ROI is positioned in ImageItem coordinates.
+        item_x, item_y = coords.index_to_item(center_x), coords.index_to_item(center_y)
+        self.add_roi_to_viewer(self._build_roi([item_x - r, item_y - r], [r * 2, r * 2]))
         self._wire_drag_freeze(self.roi)
         self.sync_control_visibility()
         self.on_roi_changed()
@@ -506,7 +510,7 @@ class DepthPlotDialog(BaseToolDialog):
             elif not drawn and name in listed:
                 self.plot_legend.removeItem(item)
 
-    def _cut_region(self, plane, x0, x1, y0, y1):
+    def _cut_region(self, plane, x_slice, y_slice):
         """The pixels a cut collapses, or None when the aperture is off the plane.
 
         The cuts used to slice the ROI's *bounding box* whatever shape was selected, so
@@ -514,13 +518,33 @@ class DepthPlotDialog(BaseToolDialog):
         thing and the arithmetic did another. A cut collapses one axis of the extraction
         aperture, so it is the same aperture the Depth Plot draws.
         """
-        region = plane[x0:x1, y0:y1]
+        region = plane[x_slice, y_slice]
         if region.size == 0:
             return None
         mask = self._circular_mask(*region.shape)
         if mask is None:
             return region
         return np.where(mask, region.astype(float), np.nan)
+
+    @staticmethod
+    def _box_slices(roi, nx, ny):
+        """`(x slice, y slice)` of the whole pixels a rectangular ROI covers, or None.
+
+        Both edges come from the box as drawn and are only then clipped to the image, so a
+        box hanging off the low edge keeps just the part that is on it, and one that misses
+        the image entirely is `None` rather than the nearest edge column (`BUGS.md` R19).
+        """
+        pos, size = roi.pos(), roi.size()
+        return coords.box_index_slices(pos.x(), pos.y(), size.x(), size.y(), nx, ny)
+
+    def _show_box_off_image(self, what="box"):
+        """Say that a box misses the cube, and draw nothing that could be mistaken for data."""
+        self.lbl_bg_info.setText(
+            f"<span style='color:#b00'>the {what} does not overlap the cube</span>")
+        self.plot_data.setData([], [])
+        self.plot_bg.setData([], [])
+        self.plot_sub.setData([], [])
+        self.sync_legend()
 
     def _circular_mask(self, nx, ny):
         """Whole pixels of an `nx` by `ny` bounding box whose centres fall inside the circle.
@@ -538,10 +562,15 @@ class DepthPlotDialog(BaseToolDialog):
         return ((ix - cx) ** 2 + (iy - cy) ** 2) <= r ** 2
 
     def set_center(self, center):
+        """Centre the aperture on `center`, a fractional numpy index `(x, y)`.
+
+        An integer index is "the centre of that pixel", so the ROI, which lives in ImageItem
+        coordinates, is placed half a pixel further in (`coords.index_to_item`).
+        """
         center = as_center(center)
         if center is None or self.roi is None:
             return
-        cx, cy = center
+        cx, cy = coords.index_to_item(center[0]), coords.index_to_item(center[1])
         w = self.roi.size().x()
         h = self.roi.size().y()
         self.roi.setPos([cx - w / 2.0, cy - h / 2.0])
@@ -727,7 +756,12 @@ class DepthPlotDialog(BaseToolDialog):
         return roi
 
     def aperture_geometry(self):
-        """`(cx, cy, radius)` of the source ROI, in display pixels, or None without one.
+        """`(cx, cy, radius)` of the source ROI, or None without one.
+
+        The centre is a fractional numpy index of the displayed image -- pixel `i`'s centre
+        is `i` -- which is what photutils and `annulus_spectrum()` expect. The ROI itself is
+        in ImageItem coordinates, where pixel `i` spans `[i, i+1)`, so the centre is
+        converted here (`coords.item_to_index`) and nowhere else.
 
         The radius is the half-width of the shorter side, so a circle dragged out of square
         still measures a circle -- the same rule `update_plot`'s rectangle path uses for its
@@ -736,8 +770,8 @@ class DepthPlotDialog(BaseToolDialog):
         if self.roi is None:
             return None
         pos, size = self.roi.pos(), self.roi.size()
-        cx = pos.x() + size.x() / 2.0
-        cy = pos.y() + size.y() / 2.0
+        cx = coords.item_to_index(pos.x() + size.x() / 2.0)
+        cy = coords.item_to_index(pos.y() + size.y() / 2.0)
         return cx, cy, min(size.x(), size.y()) / 2.0
 
     def annulus_is_active(self):
@@ -757,6 +791,8 @@ class DepthPlotDialog(BaseToolDialog):
         r = self.spin_radius.value()
         if abs(r - current) < 1e-6:
             return
+        # The geometry's centre is an index; the ROI is positioned in ImageItem coordinates.
+        cx, cy = coords.index_to_item(cx), coords.index_to_item(cy)
         self.roi.blockSignals(True)
         self.roi.setPos([cx - r, cy - r])
         self.roi.setSize([r * 2, r * 2])
@@ -870,6 +906,7 @@ class DepthPlotDialog(BaseToolDialog):
         if geometry is None:
             return
         cx, cy, _ = geometry
+        cx, cy = coords.index_to_item(cx), coords.index_to_item(cy)   # rings are drawn items
         for ring, radius in ((self.ring_inner, self.spin_r_in.value()),
                              (self.ring_outer, self.spin_r_out.value())):
             ring.setPos([cx - radius, cy - radius])
@@ -885,23 +922,19 @@ class DepthPlotDialog(BaseToolDialog):
         if self.bg_roi is None:
             return None
         _, x_len, y_len = cube.shape
-        pos, size = self.bg_roi.pos(), self.bg_roi.size()
-        x0, y0 = int(pos.x()), int(pos.y())
-        w, h = int(size.x()), int(size.y())
+        slices = self._box_slices(self.bg_roi, x_len, y_len)
+        if slices is None:
+            return None
+        x_slice, y_slice = slices
 
-        x0 = max(0, min(x0, x_len - 1))
-        y0 = max(0, min(y0, y_len - 1))
-        x1 = max(x0 + 1, min(x0 + w, x_len))
-        y1 = max(y0 + 1, min(y0 + h, y_len))
-
-        region = cube[:, x0:x1, y0:y1].astype(float, copy=True)
+        region = cube[:, x_slice, y_slice].astype(float, copy=True)
         if region.size == 0:
             return None
 
         if self.combo_shape.currentText() == "Circle":
-            yy, xx = np.mgrid[:(x1 - x0), :(y1 - y0)]
-            cx, cy = (x1 - x0) / 2.0 - 0.5, (y1 - y0) / 2.0 - 0.5
-            r = min((x1 - x0) / 2.0, (y1 - y0) / 2.0)
+            yy, xx = np.mgrid[:region.shape[1], :region.shape[2]]
+            cx, cy = region.shape[1] / 2.0 - 0.5, region.shape[2] / 2.0 - 0.5
+            r = min(region.shape[1] / 2.0, region.shape[2] / 2.0)
             region = np.where(((xx - cy) ** 2 + (yy - cx) ** 2) <= r ** 2, region, np.nan)
 
         method = self.combo_bg_calc.currentText()
@@ -1534,20 +1567,8 @@ class DepthPlotDialog(BaseToolDialog):
         # Transform the 3D cube to match the display coordinates (rotation, flip)
         cube = self.image_viewer.apply_spatial_transforms(self.image_viewer.transposed_data)
 
-        pos = self.roi.pos()
-        size = self.roi.size()
-        
-        x0, y0 = int(pos.x()), int(pos.y())
-        w, h = int(size.x()), int(size.y())
-        
-        shape = cube.shape
-        z_len, x_len, y_len = shape
-        
-        x0 = max(0, min(x0, x_len-1))
-        y0 = max(0, min(y0, y_len-1))
-        x1 = max(x0+1, min(x0+w, x_len))
-        y1 = max(y0+1, min(y0+h, y_len))
-        
+        z_len, x_len, y_len = cube.shape
+
         if plot_type == "Depth Plot" and self.combo_shape.currentText() == "Circle":
             # The circular path goes through pyql3/core/spectral_photometry.py so that the
             # aperture is defined once -- with fractional edge pixels -- and means the same
@@ -1586,10 +1607,14 @@ class DepthPlotDialog(BaseToolDialog):
                 # same rule as the annulus so the two modes differ only in where the level
                 # was measured.
                 bg_spectrum = self.region_background_level(cube)
+                note = f"Aperture {result.aperture_area:.1f} px²"
                 if bg_spectrum is not None:
                     subtracted_spectrum = subtract_background(
                         spectrum, bg_spectrum, calc_method, result.aperture_area)
-                self.lbl_bg_info.setText(f"Aperture {result.aperture_area:.1f} px²")
+                elif self.bg_roi is not None:
+                    note += ("<br><span style='color:#b00'>the background box does not "
+                             "overlap the cube</span>")
+                self.lbl_bg_info.setText(note)
             else:
                 self.lbl_bg_info.setText("")
 
@@ -1597,12 +1622,20 @@ class DepthPlotDialog(BaseToolDialog):
                                     (cx, cy))
             return
 
+        # The whole pixels the box covers, from its drawn edges. `None` means it is entirely off
+        # the image, which is reported rather than measured at the nearest edge (R19).
+        box = self._box_slices(self.roi, x_len, y_len)
+        if box is None:
+            self._show_box_off_image()
+            return
+        x_slice, y_slice = box
+
         if plot_type == "Depth Plot":
-            region = cube[:, x0:x1, y0:y1].astype(float, copy=True)
+            region = cube[:, x_slice, y_slice].astype(float, copy=True)
             if region.size == 0:
                 return
 
-            mask = self._circular_mask(x1 - x0, y1 - y0)
+            mask = self._circular_mask(*region.shape[1:])
             if mask is not None:
                 region = np.where(mask, region, np.nan)
 
@@ -1617,20 +1650,19 @@ class DepthPlotDialog(BaseToolDialog):
             bg_spectrum = None
             subtracted_spectrum = None
 
+            bg_box = None
             if self.chk_enable_bg.isChecked() and self.bg_roi is not None:
-                bg_pos = self.bg_roi.pos()
-                bg_size = self.bg_roi.size()
-                bg_x0, bg_y0 = int(bg_pos.x()), int(bg_pos.y())
-                bg_w, bg_h = int(bg_size.x()), int(bg_size.y())
+                bg_box = self._box_slices(self.bg_roi, x_len, y_len)
+                if bg_box is None:
+                    self.lbl_bg_info.setText(
+                        "<span style='color:#b00'>the background box does not overlap "
+                        "the cube</span>")
 
-                bg_x0 = max(0, min(bg_x0, x_len-1))
-                bg_y0 = max(0, min(bg_y0, y_len-1))
-                bg_x1 = max(bg_x0+1, min(bg_x0+bg_w, x_len))
-                bg_y1 = max(bg_y0+1, min(bg_y0+bg_h, y_len))
-
-                bg_region = cube[:, bg_x0:bg_x1, bg_y0:bg_y1].astype(float, copy=True)
+            if bg_box is not None:
+                bg_x_slice, bg_y_slice = bg_box
+                bg_region = cube[:, bg_x_slice, bg_y_slice].astype(float, copy=True)
                 if bg_region.size > 0:
-                    mask_bg = self._circular_mask(bg_x1 - bg_x0, bg_y1 - bg_y0)
+                    mask_bg = self._circular_mask(*bg_region.shape[1:])
                     if mask_bg is not None:
                         bg_region = np.where(mask_bg, bg_region, np.nan)
 
@@ -1652,8 +1684,11 @@ class DepthPlotDialog(BaseToolDialog):
                     else:
                         subtracted_spectrum = np.nansum(subtracted_region, axis=(1, 2))
                 
-            self._draw_depth_curves(spectrum, bg_spectrum, subtracted_spectrum, z_len,
-                                    (x0 + w / 2.0, y0 + h / 2.0))
+            # The centre of the pixels measured, as a numpy index like the circular path's.
+            self._draw_depth_curves(
+                spectrum, bg_spectrum, subtracted_spectrum, z_len,
+                ((x_slice.start + x_slice.stop - 1) / 2.0,
+                 (y_slice.start + y_slice.stop - 1) / 2.0))
 
         elif plot_type == "Horizontal Cut":
             # Cut the plane that is actually on screen: in Boxcar or Z Range mode that is a
@@ -1661,7 +1696,7 @@ class DepthPlotDialog(BaseToolDialog):
             plane = self.image_viewer.current_plane()
             if plane is None or plane.ndim != 2:
                 return
-            region = self._cut_region(plane, x0, x1, y0, y1)
+            region = self._cut_region(plane, x_slice, y_slice)
             if region is None:
                 return
             if calc_method == "Average":
@@ -1676,7 +1711,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.current_wavelengths = None
             self.current_wavelength_unit = ""
                 
-            x_axis = np.arange(x0, x1)
+            x_axis = np.arange(x_slice.start, x_slice.stop)
             self.plot_widget.setLabel('bottom', "X Pixel")
             unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
             self.plot_widget.setLabel('left', f"Intensity ({unit})")
@@ -1688,7 +1723,7 @@ class DepthPlotDialog(BaseToolDialog):
             plane = self.image_viewer.current_plane()
             if plane is None or plane.ndim != 2:
                 return
-            region = self._cut_region(plane, x0, x1, y0, y1)
+            region = self._cut_region(plane, x_slice, y_slice)
             if region is None:
                 return
             if calc_method == "Average":
@@ -1702,7 +1737,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.plot_widget.hideAxis('top')
             self.current_wavelengths = None
             self.current_wavelength_unit = ""
-            x_axis = np.arange(y0, y1)
+            x_axis = np.arange(y_slice.start, y_slice.stop)
             self.plot_widget.setLabel('bottom', "Y Pixel")
             unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
             self.plot_widget.setLabel('left', f"Intensity ({unit})")

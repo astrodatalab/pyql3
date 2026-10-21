@@ -1,6 +1,7 @@
 import numpy as np
 from PySide6.QtWidgets import QGridLayout, QLabel, QDoubleSpinBox, QVBoxLayout
 import pyqtgraph as pg
+from pyql3.core import coords
 from pyql3.gui.tools.base_tool import BaseToolDialog
 from pyql3.analysis.strehl import calculate_strehl
 
@@ -55,6 +56,8 @@ class StrehlDialog(BaseToolDialog):
         else:
             center_x, center_y = 0, 0
             
+        # The default centre is a pixel's centre; the ROI is in ImageItem coordinates.
+        center_x, center_y = coords.index_to_item(center_x), coords.index_to_item(center_y)
         r = 10.0
         self.roi = pg.CircleROI([center_x - r, center_y - r], [r*2, r*2], pen=pg.mkPen((0, 255, 0), width=3), hoverPen=pg.mkPen((0, 255, 0), width=5))
         self.add_roi_to_viewer(self.roi)
@@ -76,8 +79,9 @@ class StrehlDialog(BaseToolDialog):
         
         pos = self.roi.pos()
         size = self.roi.size()
-        cx = pos.x() + size.x()/2.0
-        cy = pos.y() + size.y()/2.0
+        # The ROI is in ImageItem coordinates; calculate_strehl takes a numpy index.
+        cx = coords.item_to_index(pos.x() + size.x()/2.0)
+        cy = coords.item_to_index(pos.y() + size.y()/2.0)
         
         camname = '0.020'
         effwave = 2.1245

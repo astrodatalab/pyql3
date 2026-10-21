@@ -172,9 +172,10 @@ releases its cube.
   file into one; **`File -> Close Window`** closes the current window without exiting the
   application.
 * Several filenames on the command line open one window each.
-* A file arriving with no window attached — a Finder double-click, or `quicklook3 cube.fits`
-  while the application is already running — loads into the most recently used window, or
-  opens a new one if all have been closed.
+* A file opened from Finder while the application is running loads into the most recently
+  used window, or opens a new one if all have been closed.
+* `quicklook3 cube.fits` always starts a separate copy of the application with its own window;
+  it does not load into a copy that is already running.
 
 ### Directory Polling
 

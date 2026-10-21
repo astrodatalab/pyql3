@@ -58,7 +58,7 @@
 - Multiple cubes at once, one per window: **File ➔ New Window** / **Open in New Window...** /
   **Close Window**, several filenames on the command line, and the Arithmetic result. Each window
   owns its reader, viewer, display settings, tool dialogs and directory watch. Files arriving
-  without a window (Finder, `quicklook3` while running) go to the most recently used window, or
+  without a window (a Finder open-document event) go to the most recently used window, or
   open a new one if none are left; a directory is watched by one window at a time, and moving a
   watch asks first. The **Window** menu groups each window's tools under it.
 - Launch from a shell like ds9: **Help -> Install 'quicklook3' Command Line Tool...** (or `--install-cli`) writes a `quicklook3` launcher to /usr/local/bin or ~/.local/bin on macOS and Linux, with a quarantine guard for downloaded .app bundles. The menu action shows the exact path, the run command and the uninstall command, and installs only after confirmation. The macOS bundle also registers FITS document types, so Finder's Open With and double-click work.

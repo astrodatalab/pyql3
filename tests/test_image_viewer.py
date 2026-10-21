@@ -643,3 +643,23 @@ def test_a_finite_wcs_still_reads_out(loaded_viewer):
     """The guard must not swallow the ordinary case."""
     text = _hover_centre(loaded_viewer)
     assert "N/A" not in text and "nan" not in text, text
+
+
+def test_total_dn_uses_truitime_when_itime_is_milliseconds(qapp, osiris_like_fits):
+    """ITIME is 900000 (ms) in current OSIRIS cubes; the integration time in seconds is TRUITIME."""
+    reader = FitsReader(osiris_like_fits)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    viewer.disp_as_dn = True
+    assert viewer.data_multiplier == pytest.approx(899.92)
+
+
+def test_real_osiris_cube_total_dn_uses_truitime(qapp, real_osiris_fits):
+    if real_osiris_fits is None:
+        pytest.skip("PYQL3_TEST_CUBE not set")
+    reader = FitsReader(real_osiris_fits)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    viewer.disp_as_dn = True
+    header = reader.header
+    assert viewer.data_multiplier == pytest.approx(header['TRUITIME'] * header.get('COADDS', 1))

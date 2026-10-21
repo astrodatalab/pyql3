@@ -1,5 +1,6 @@
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QMenu, QFileDialog, QInputDialog,
@@ -10,7 +11,7 @@ from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.base_tool import as_center
 from pyql3.gui.window_manager import get_window_manager
-from pyql3.services.poller import DirectoryPoller, watcher_of
+from pyql3.services.poller import DirectoryPoller, is_fits_path, watcher_of
 from pyql3.gui.dialogs.polling import PollingDialog
 from pyql3.services.config import get_config
 from PySide6.QtCore import QEvent, Qt, QTimer
@@ -52,6 +53,13 @@ class MainWindow(QMainWindow):
         self.fits_reader = FitsReader()
         self.config = get_config()
 
+        # Auto-load state (see on_file_detected). A retry runs only while the
+        # generation it was queued under is still current.
+        self._auto_load_generation = 0
+        self._auto_load_hold = False
+        self._deferred_auto_load = None
+        self._last_load_error = ""
+
         # Registered before anything can fail below, so a half-built window is still
         # removed from the list when it is closed.
         get_window_manager().register(self)
@@ -60,6 +68,7 @@ class MainWindow(QMainWindow):
         self.poller = DirectoryPoller(self)
         self.poller.file_detected.connect(self.on_file_detected)
         self.poller.batch_coalesced.connect(self.on_batch_coalesced)
+        self.poller.polling_stopped.connect(self._cancel_auto_loads)
 
         saved_poll_dir = self.config.get("polling_dir")
         if saved_poll_dir:
@@ -604,14 +613,23 @@ class MainWindow(QMainWindow):
                 # Already destroyed by Qt; nothing left to tidy.
                 pass
 
-    def load_fits(self, filepath, ext=None, force=False, show_errors=True):
+    def load_fits(self, filepath, ext=None, force=False, show_errors=True,
+                  cancel_auto_load=True):
         """Load and display a FITS file.
 
         Returns True on success. `show_errors=False` suppresses the error dialog and
         reports failure through the return value instead, which the polling auto-load
         uses so it can retry a file that is still arriving rather than interrupting
         the observer with a dialog on the first attempt.
+
+        `cancel_auto_load=True`, the default for every load the user asked for, cancels
+        pending auto-load retries and any auto-load held by `auto_load_held()`, so a
+        frame that finishes arriving later cannot replace the file the user chose. The
+        auto-load passes False.
         """
+        if cancel_auto_load:
+            self._cancel_auto_loads()
+        self._last_load_error = ""
         try:
             self.fits_reader.load(filepath, ext=ext, force=force)
             data = self.fits_reader.get_data()
@@ -642,6 +660,7 @@ class MainWindow(QMainWindow):
             else:
                 if show_errors:
                     QMessageBox.warning(self, "Warning", "No valid data found in FITS file.")
+                self._last_load_error = "no image data"
                 return False
         except Exception as e:
             if show_errors:
@@ -698,20 +717,39 @@ class MainWindow(QMainWindow):
 
 
     def save_file_as(self):
-        data = self.fits_reader.get_data()
-        if data is None:
+        if self.fits_reader.get_data() is None:
             QMessageBox.warning(self, "Warning", "No data to save.")
             return
-            
-        header = self.fits_reader.get_header()
-        filepath, _ = QFileDialog.getSaveFileName(self, "Save FITS File", "", "FITS Files (*.fits)")
-        if filepath:
-            if not filepath.endswith('.fits'):
+
+        # getSaveFileName runs a nested event loop, in which the poller keeps announcing
+        # frames. Hold auto-loads so the save writes the file shown when the user asked.
+        # A file opened by hand (a Finder open) still reaches load_fits, so the reader
+        # is also checked afterwards, as HeaderEditorDialog does.
+        opened_on = (self.fits_reader.filepath, self.fits_reader.hdul)
+        with self.auto_load_held():
+            filepath, _ = QFileDialog.getSaveFileName(
+                self, "Save FITS File", "", self.FITS_FILE_FILTER)
+            if not filepath:
+                return
+            if (self.fits_reader.filepath != opened_on[0]
+                    or self.fits_reader.hdul is not opened_on[1]):
+                before = os.path.basename(opened_on[0]) if opened_on[0] else "the in-memory image"
+                now = (os.path.basename(self.fits_reader.filepath)
+                       if self.fits_reader.filepath else "an in-memory image")
+                QMessageBox.warning(
+                    self,
+                    "File changed",
+                    f"Save As was started on {before}, but the window now shows {now}.\n\n"
+                    "Nothing was written. Choose Save FITS As again to save the file "
+                    "now shown.",
+                )
+                return
+            if not is_fits_path(filepath):
                 filepath += '.fits'
             try:
-                from astropy.io import fits
-                hdu = fits.PrimaryHDU(data=data, header=header)
-                hdu.writeto(filepath, overwrite=True)
+                # FitsReader.save() writes every HDU through a temp file and os.replace,
+                # keeps the target's mode, and releases the open handle first (Windows).
+                self.fits_reader.save(filepath)
                 QMessageBox.information(self, "Success", f"Saved {filepath}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save FITS file:\n{str(e)}")
@@ -797,7 +835,10 @@ class MainWindow(QMainWindow):
             return
             
         dialog = HeaderEditorDialog(self.fits_reader, self)
-        dialog.exec()
+        # exec() runs a nested event loop, so the poller keeps announcing frames while
+        # the editor is open. Loading one would change the file the editor writes to.
+        with self.auto_load_held():
+            dialog.exec()
 
     def open_depth_plot(self, initial_center=None):
         initial_center = as_center(initial_center)
@@ -1352,27 +1393,65 @@ class MainWindow(QMainWindow):
     AUTO_LOAD_RETRY_DELAYS = (0.0, 1.0, 2.0, 4.0, 8.0)
 
     def on_file_detected(self, filepath):
-        self._attempt_auto_load(filepath, 0)
+        """Display a frame the poller announced, retrying while it fails to parse.
 
-    def _attempt_auto_load(self, filepath, attempt):
+        A new detection supersedes the retries of every earlier one, as do a load the
+        user asks for (`load_fits(cancel_auto_load=True)`) and the end of the watch
+        (`DirectoryPoller.polling_stopped`). While `auto_load_held()` is active, an
+        attempt that comes due stores its path instead, and only the newest is loaded
+        afterwards.
+        """
+        self._auto_load_generation += 1
+        self._attempt_auto_load(filepath, 0, self._auto_load_generation)
+
+    def _cancel_auto_loads(self):
+        """Drop every pending retry and any held auto-load."""
+        self._auto_load_generation += 1
+        self._deferred_auto_load = None
+
+    @contextmanager
+    def auto_load_held(self):
+        """Defer auto-loads until the block exits, then load the newest one detected."""
+        previous = self._auto_load_hold
+        self._auto_load_hold = True
+        try:
+            yield
+        finally:
+            self._auto_load_hold = previous
+            if not previous and self._deferred_auto_load is not None:
+                filepath, self._deferred_auto_load = self._deferred_auto_load, None
+                self.on_file_detected(filepath)
+
+    def _attempt_auto_load(self, filepath, attempt, generation):
         # A retry is scheduled on a timer, so it can outlive the window it belongs to.
         # Loading into a closed window -- or worse, warning from one -- is not wanted.
+        # closeEvent stops the poller, whose polling_stopped already makes every
+        # queued retry stale, so this is a second guard rather than the only one.
         if getattr(self, '_closed', False):
             return
+        # Nor is loading once a newer frame, a file the user opened, or the end of
+        # the watch has superseded this one. The generation covers every retry; the
+        # is_polling() test only matters for a direct call made with no watch running.
+        if generation != self._auto_load_generation or not self.poller.is_polling():
+            return
+        if self._auto_load_hold:
+            self._deferred_auto_load = filepath
+            return
 
-        if self.load_fits(filepath, show_errors=False):
+        if self.load_fits(filepath, show_errors=False, cancel_auto_load=False):
             return
 
         next_attempt = attempt + 1
         if next_attempt < len(self.AUTO_LOAD_RETRY_DELAYS):
             delay_ms = int(self.AUTO_LOAD_RETRY_DELAYS[next_attempt] * 1000)
             QTimer.singleShot(
-                delay_ms, lambda: self._attempt_auto_load(filepath, next_attempt)
+                delay_ms,
+                lambda: self._attempt_auto_load(filepath, next_attempt, generation),
             )
             return
 
         waited = sum(self.AUTO_LOAD_RETRY_DELAYS)
-        detail = getattr(self, "_last_load_error", "") or "unknown error"
+        detail = self._last_load_error or "unknown error"
         QMessageBox.warning(
             self,
             "Could not display new file",
