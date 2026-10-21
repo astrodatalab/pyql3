@@ -29,11 +29,10 @@ from PySide6.QtCore import QObject, QPoint, QPointF, Qt, QTimer, Signal
 from pyql3.core import coords
 from pyql3.core.regions_model import Arrow, Box, Circle, Region, Text, resolve_color
 from pyql3.gui.label_policy import (
-    LABEL_CULL_MARGIN,
     LABEL_REDRAW_DELAY_MS,
     LABEL_SAFETY_LIMIT,
     LabelDensityGuard,
-    grown_for_labels,
+    labels_in_view,
 )
 
 #: Shapes `begin_draw` understands, by the name used in the file format.
@@ -255,6 +254,11 @@ class RegionLayer(QObject):
         self._bulk_items = []
         #: Labels drawn over the aggregate overlay; rebuilt for whatever is in view.
         self._bulk_labels = []
+        #: `(region, anchor)` for every label the aggregate overlay could draw, from its last
+        #: draw, so a rotation or the end of a pan can cull them again without redrawing it.
+        self._bulk_labelled = []
+        #: `ImageViewer.placement_key()` at the last full placement. See `_on_display_changed`.
+        self._placed_key = None
         #: Items taken out of the scene but not yet released. See `_destroy_items`.
         self._retired = []
         #: Whether labels are drawn at all. The user's choice, not the layer's.
@@ -268,12 +272,23 @@ class RegionLayer(QObject):
         self._label_timer.setSingleShot(True)
         self._label_timer.timeout.connect(self._labels_settled)
 
+        #: The view rotation in force at the last full cull of the labels, in either render mode.
+        #: `_on_view_rotation_changed` skips an angle the labels were already culled under.
+        self._culled_rotation = getattr(image_viewer, 'view_rotation', 0.0)
+        #: What `_current_channel` returned when the aggregate overlay was last drawn, so that a
+        #: `plane_changed` that leaves it unchanged (a flip, a unit change) does not redraw.
+        self._drawn_channel = None
+
         if image_viewer is not None:
-            image_viewer.display_changed.connect(self.refresh)
-            slider = getattr(image_viewer, 'slider_slice', None)
-            if slider is not None:
-                # Channel visibility is cheap to update and should follow the slider live.
-                slider.valueChanged.connect(self.update_channel_visibility)
+            # A flip, a 90° rotation, an axis remap or new data moves every region; `refresh`
+            # re-places them. It always follows a `plane_changed`.
+            image_viewer.display_changed.connect(self._on_display_changed)
+            # Every change of the plane on screen: a slider step, a boxcar, entering or changing
+            # Collapse Region (R36).
+            image_viewer.plane_changed.connect(self._on_plane_changed)
+            # A view rotation moves labels on screen without moving the view, so nothing else
+            # would cull them again (R45).
+            image_viewer.view_rotation_changed.connect(self._on_view_rotation_changed)
             view = image_viewer.imv.getView()
             if view is not None:
                 view.sigRangeChanged.connect(self._on_view_range_changed)
@@ -449,6 +464,7 @@ class RegionLayer(QObject):
             self._draw_bulk()
             return
 
+        self._placed_key = self.viewer.placement_key()
         self._placing = True
         try:
             for entry in self._entries:
@@ -456,6 +472,16 @@ class RegionLayer(QObject):
         finally:
             self._placing = False
         self.update_channel_visibility()
+
+    def _on_display_changed(self):
+        """Re-place the regions, unless what decides their placement is unchanged.
+
+        A unit change emits `display_changed` and moves nothing; re-placing a 650-region
+        overlay for it cost 148 ms.
+        """
+        if self.viewer is not None and self.viewer.placement_key() == self._placed_key:
+            return
+        self.refresh()
 
     def update_channel_visibility(self):
         """Hide regions whose `z_range` excludes the channel on screen."""
@@ -465,19 +491,69 @@ class RegionLayer(QObject):
             # Filtering happens while the aggregate arrays are built.
             self._draw_bulk()
             return
+        self._culled_rotation = getattr(self.viewer, 'view_rotation', 0.0)
         current = self._current_channel()
-        rect = self._view_rect()
-        show_labels = self._labels_fit(self._labels_in_view(current, rect))
+        labelled = [entry for entry in self._entries
+                    if entry.label is not None and entry.region.visible
+                    and self._in_channel_range(entry.region, current)]
+        in_view = self._labels_in_view([entry.label for entry in labelled])
+        show = self._labels_fit(int(np.count_nonzero(in_view))) and not self._panning
+        shown = ({id(entry) for entry, keep in zip(labelled, in_view, strict=True) if keep}
+                 if show else set())
         for entry in self._entries:
-            self._apply_visibility(entry, current, rect, show_labels=show_labels)
+            self._apply_visibility(entry, current, id(entry) in shown)
 
-    def _labels_in_view(self, channel, rect):
-        """How many labels would be drawn right now, before the density rule is applied."""
-        return sum(1 for entry in self._entries
-                   if entry.label is not None
-                   and entry.region.visible
-                   and self._in_channel_range(entry.region, channel)
-                   and self._label_in_view(entry.label, rect, ignore_panning=True))
+    def _on_plane_changed(self):
+        """The plane on screen changed: show or hide regions by their channel range.
+
+        In aggregate mode a redraw is the only way to apply visibility, so the overlay is redrawn
+        only when that could change it: the channels on screen are not those it was drawn for, and
+        some region has a channel range. A flip, a 90° rotation or a load is followed by
+        `display_changed`, which redraws it anyway.
+        """
+        if self._bulk and (
+                self._current_channel() == self._drawn_channel
+                or not any(entry.region.z_range is not None for entry in self._entries)):
+            return
+        self.update_channel_visibility()
+
+    def _on_view_rotation_changed(self, angle):
+        """Cull the labels again for a new view rotation.
+
+        Skipped when the labels were last culled under this angle. `set_data` announces its
+        rotation of 0.0 after the new plane has been drawn and culled, so a load does not cull
+        twice, rotated or not. In aggregate mode only the labels are redrawn: the shapes are
+        parented to the ImageItem and turn with it.
+        """
+        if angle == self._culled_rotation:
+            return
+        self._cull_labels_again()
+
+    def _cull_labels_again(self):
+        """Show the labels now in view, after a rotation or a pan that moved nothing else."""
+        if self._bulk:
+            self._culled_rotation = getattr(self.viewer, 'view_rotation', 0.0)
+            self._clear_bulk_labels()
+            self._draw_bulk_labels(self._bulk_labelled)
+        else:
+            self.update_channel_visibility()
+
+    def _labels_in_view(self, labels):
+        """A boolean mask: which of `labels` (items parented to the ImageItem) are in view.
+
+        Culled on where each label's anchor is on screen, through the view rotation, mapped in
+        one step (`ImageViewer.items_to_view`): one `mapToView` per label cost 35 ms per redraw
+        at 10,000 regions. The rect test is the shared one (`label_policy.labels_in_view`).
+        """
+        if not labels:
+            return np.zeros(0, dtype=bool)
+        anchors = np.array([(label.pos().x(), label.pos().y()) for label in labels], dtype=float)
+        return self._anchors_in_view(anchors)
+
+    def _anchors_in_view(self, anchors):
+        """`labels_in_view` for an `(N, 2)` array of ImageItem anchors."""
+        xs, ys = self.viewer.items_to_view(anchors[:, 0], anchors[:, 1])
+        return labels_in_view(xs, ys, self._view_rect())
 
     @property
     def labels_visible(self):
@@ -513,10 +589,17 @@ class RegionLayer(QObject):
 
     def _clear_bulk_items(self):
         # Retires, never releases — see `_destroy_items` for why the flush cannot happen here.
-        for item in self._bulk_items + self._bulk_labels:
+        for item in self._bulk_items:
             self._remove_from_scene(item)
             self._retired.append(item)
         self._bulk_items = []
+        self._clear_bulk_labels()
+
+    def _clear_bulk_labels(self):
+        """Take the aggregate overlay's labels off the scene and retire them."""
+        for item in self._bulk_labels:
+            self._remove_from_scene(item)
+            self._retired.append(item)
         self._bulk_labels = []
         if self._retired:
             QTimer.singleShot(0, self._drop_retired)
@@ -535,10 +618,14 @@ class RegionLayer(QObject):
         so their positions show even when the labels do not.
         """
         self._clear_bulk_items()
+        self._bulk_labelled = []
         if self.viewer is None or not self._entries:
             return
 
+        self._placed_key = self.viewer.placement_key()
         channel = self._current_channel()
+        self._drawn_channel = channel
+        self._culled_rotation = getattr(self.viewer, 'view_rotation', 0.0)
         groups = {}
         labelled = []
         for entry in self._entries:
@@ -550,7 +637,9 @@ class RegionLayer(QObject):
                 continue
 
             if region.text:
-                labelled.append((region, placed))
+                # The label's anchor, in ImageItem coordinates: on a text region's point, and
+                # above any other shape.
+                labelled.append((region, (placed[0], placed[1] + _label_offset(region))))
 
             group = groups.setdefault((region.color, region.line_width, region.dash),
                                       {"circles": [], "marks": [], "paths": []})
@@ -573,6 +662,7 @@ class RegionLayer(QObject):
                 self._add_to_scene(item)
                 self._bulk_items.append(item)
 
+        self._bulk_labelled = labelled
         self._draw_bulk_labels(labelled)
 
     def _draw_bulk_labels(self, labelled):
@@ -580,74 +670,73 @@ class RegionLayer(QObject):
         if self._panning:
             return
 
-        rect = self._view_rect()
-        in_view = [(region, place) for region, place in labelled
-                   if rect is None or rect.contains(QPointF(*place))]
+        if labelled:
+            # Culled on where each label is on screen, not on its region's centre
+            inside = self._anchors_in_view(np.array([anchor for _, anchor in labelled],
+                                                    dtype=float))
+            in_view = [entry for entry, keep in zip(labelled, inside, strict=True) if keep]
+        else:
+            in_view = []
         if not self._labels_fit(len(in_view)):
             return
 
-        for region, place in in_view:
+        for region, anchor in in_view:
             label = _label_item(region, anchor=(0.5, 1.0))
-            label.setPos(place[0], place[1] + _label_offset(region))
+            label.setPos(*anchor)
             label.setZValue(21)
             self._add_to_scene(label)
             self._bulk_labels.append(label)
 
     def _current_channel(self):
-        if getattr(self.viewer, 'transposed_data', None) is None:
-            return 0
+        """The channels on screen: one index, a `(zmin, zmax)` range when the plane combines
+        several (Collapse Region mode, or a Boxcar wider than one), or None where there are no
+        channels, as on a 2-D image (R63)."""
+        data = getattr(self.viewer, 'transposed_data', None)
+        if data is None or data.ndim != 3:
+            return None
+        if self.viewer.radio_range.isChecked():
+            window = self.viewer.z_range_from_fields()
+        elif self.viewer.boxcar_width() > 1:
+            window = self.viewer.boxcar_range()
+        else:
+            window = None
+        if window is not None:
+            return tuple(window)
         return self.viewer.current_z()
 
-    def _apply_visibility(self, entry, channel, view_rect=None, show_labels=True):
+    def _apply_visibility(self, entry, channel, label_shown):
         """Show or hide one entry's items. Per-entry so adding a region is not O(N).
 
         Adding used to end by refreshing *every* region's visibility, which made loading a
         catalogue-sized region file quadratic: 10,000 regions took 48 seconds, nearly all of it
         here.
 
-        A label is held to a stricter test than the shape it belongs to: hidden outright while the
-        view is moving, and otherwise only shown if it falls inside the visible rect. Text is the
-        most expensive thing here to paint (see `LABEL_REDRAW_DELAY_MS`).
+        A label is held to a stricter test than the shape it belongs to, which the caller has
+        applied in `label_shown`: hidden outright while the view is moving, and otherwise only
+        shown if it falls inside the visible rect. Text is the most expensive thing here to paint
+        (see `LABEL_REDRAW_DELAY_MS`).
         """
         visible = entry.region.visible and self._in_channel_range(entry.region, channel)
         for item in entry.items:
             if item is entry.label:
-                item.setVisible(visible and show_labels
-                                and self._label_in_view(item, view_rect))
+                item.setVisible(visible and label_shown)
             else:
                 item.setVisible(visible)
 
-    def _label_in_view(self, label, view_rect=None, ignore_panning=False):
-        """True if `label` is worth painting: not mid-pan, and inside the visible rect."""
-        if self._panning and not ignore_panning:
-            return False
-        rect = view_rect if view_rect is not None else self._view_rect()
-        if rect is None:
-            return True
-        return rect.contains(self._label_view_position(label))
+    def _show_one(self, entry):
+        """Apply visibility to one entry just built or restyled, under the current label rules."""
+        label_shown = (entry.label is not None and self._labels_visible and not self._panning
+                       and not self._label_guard.suppressing
+                       and bool(self._labels_in_view([entry.label])[0]))
+        self._apply_visibility(entry, self._current_channel(), label_shown)
 
     def _view_rect(self):
-        """The visible rect, grown so that text just off the edge is not culled."""
+        """The visible rect, or None if the view cannot be read. `labels_in_view` grows it by
+        `LABEL_CULL_MARGIN`, so that text just off the edge is not culled."""
         try:
-            rect = self.viewer.imv.getView().viewRect()
+            return self.viewer.imv.getView().viewRect()
         except Exception:
             return None
-        return grown_for_labels(rect, LABEL_CULL_MARGIN)
-
-    def _label_view_position(self, label):
-        """A label's anchor in view coordinates.
-
-        Labels are parented to the ImageItem, so their own position is in *its* coordinates —
-        which differ from the view's whenever a view rotation is applied, that being a transform on
-        the ImageItem.
-        """
-        image_item = self.viewer.imv.getImageItem()
-        if image_item is None:
-            return label.pos()
-        try:
-            return image_item.mapToView(label.pos())
-        except Exception:
-            return label.pos()
 
     def _on_view_range_changed(self):
         """Hide labels the moment the view starts moving; a debounce brings back the visible ones.
@@ -674,13 +763,18 @@ class RegionLayer(QObject):
     def _labels_settled(self):
         """The view has stopped moving: bring back the labels that are actually on screen."""
         self._panning = False
-        self.update_channel_visibility()
+        self._cull_labels_again()
 
     @staticmethod
     def _in_channel_range(region, channel):
-        if region.z_range is None:
+        """Whether `region` shows on `channel`, as `_current_channel` returns it. Against a range
+        of channels, a region shows if its own range overlaps it."""
+        if region.z_range is None or channel is None:
             return True
-        return region.z_range[0] <= channel <= region.z_range[1]
+        low, high = region.z_range
+        if isinstance(channel, tuple):
+            return low <= channel[1] and channel[0] <= high
+        return low <= channel <= high
 
     def _to_item(self, x, y):
         """Orig coordinates to ImageItem coordinates, or None if there is no data.
@@ -692,6 +786,14 @@ class RegionLayer(QObject):
         if shown is None:
             return None
         return coords.index_to_item(shown[0]), coords.index_to_item(shown[1])
+
+    def orig_to_view(self, x, y):
+        """Orig coordinates to view (ViewBox) coordinates, through the view rotation, or None if
+        there is no data. What the view's range and visible rect are in."""
+        placed = self._to_item(x, y)
+        if placed is None:
+            return None
+        return self.viewer.item_to_view(*placed)
 
     def _from_item(self, x, y):
         """ImageItem coordinates back to orig coordinates, or None."""
@@ -863,7 +965,7 @@ class RegionLayer(QObject):
             self._place(entry)
         finally:
             self._placing = False
-        self._apply_visibility(entry, self._current_channel(), self._view_rect())
+        self._show_one(entry)
 
     def _connect(self, entry):
         handle = entry.handle
@@ -1014,7 +1116,7 @@ class RegionLayer(QObject):
             self._place(entry)
         finally:
             self._placing = False
-        self._apply_visibility(entry, self._current_channel(), self._view_rect())
+        self._show_one(entry)
 
     # -------------------------------------------------------------- drawing
 

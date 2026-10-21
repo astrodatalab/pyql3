@@ -1087,3 +1087,189 @@ def test_a_circular_aperture_with_a_background_box_off_the_image_says_so(loaded_
     assert xs is None or len(xs) == 0
     assert "overlap" in d.lbl_bg_info.text()
     d.close()
+
+
+# ---------------------------------------------------------------------------
+# The Depth Plot follows the viewer (BUGS.md R7, R28)
+# ---------------------------------------------------------------------------
+
+def _channel_cube(base, shape=(30, 20, 5)):
+    """A cube whose channel z holds `base + z` everywhere."""
+    return np.broadcast_to(base + np.arange(float(shape[2])), shape).copy()
+
+
+def _plotted(dialog):
+    return np.asarray(dialog.plot_data.getData()[1], dtype=float)
+
+
+def _curve_is_empty(curve):
+    x, y = curve.getData()
+    return x is None or y is None or len(x) == 0 or len(y) == 0
+
+
+def test_a_new_cube_replaces_the_plotted_spectrum(qapp):
+    """Loading a cube, as File > Open and the poller do, redraws the spectrum (R7)."""
+    viewer = ImageViewer()
+    viewer.set_data(_channel_cube(0.0), None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.combo_calc.setCurrentText("Average")
+        assert _plotted(dialog) == pytest.approx([0, 1, 2, 3, 4])
+
+        viewer.set_data(_channel_cube(50.0), None)      # no update_plot() call
+        assert _plotted(dialog) == pytest.approx([50, 51, 52, 53, 54])
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_flip_replaces_the_plotted_spectrum(qapp):
+    """A flip moves the aperture over different pixels, so the spectrum changes (R7)."""
+    x_ramp = np.broadcast_to(np.arange(30.0)[:, None, None], (30, 20, 5)).copy()
+    viewer = ImageViewer()
+    viewer.set_data(x_ramp, None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.combo_calc.setCurrentText("Average")
+        dialog.set_center((5, 10))
+        dialog.spin_radius.setValue(1.0)
+        before = _plotted(dialog)
+        assert before == pytest.approx(5.0, abs=1e-6)
+
+        viewer.flip = True
+        viewer.refresh_display()                        # what Rotate Image > Flip does
+        assert _plotted(dialog) == pytest.approx(24.0, abs=1e-6)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_2d_load_clears_every_curve(qapp):
+    """A 2-D image has no spectrum; the previous cube's must not stay drawn (R7)."""
+    viewer = ImageViewer()
+    viewer.set_data(_channel_cube(0.0), None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.chk_enable_bg.setChecked(True)           # fills all three curves
+        for curve in (dialog.plot_data, dialog.plot_bg, dialog.plot_sub):
+            assert len(curve.getData()[0]) > 0, "no curve to go stale"
+
+        viewer.set_data(np.full((40, 40), 7.0), None)
+        for curve in (dialog.plot_data, dialog.plot_bg, dialog.plot_sub):
+            assert _curve_is_empty(curve)
+        assert _legend_names(dialog) == ["Source"]
+        assert "spectrum" in dialog.lbl_bg_info.text().lower()
+
+        dialog.plot_data.setData([1.0, 2.0], [3.0, 4.0])
+        dialog.update_plot()                            # an explicit call clears too
+        assert _curve_is_empty(dialog.plot_data)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_cut_modes_follow_the_slider(qapp):
+    """A cut is taken through the plane on screen, so a slider step recomputes it (R7)."""
+    viewer = ImageViewer()
+    viewer.set_data(_channel_cube(0.0), None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.combo_calc.setCurrentText("Average")
+        for mode in ("Horizontal Cut", "Vertical Cut"):
+            dialog.combo_type.setCurrentText(mode)
+            viewer.slider_slice.setValue(1)
+            assert _plotted(dialog)[0] == pytest.approx(1.0), mode
+            viewer.slider_slice.setValue(4)
+            assert _plotted(dialog)[0] == pytest.approx(4.0), mode
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_the_intensity_label_follows_the_display_unit(qapp):
+    """The left label names the unit the plotted values are in, in every mode (R28)."""
+    from astropy.io import fits
+    header = fits.Header()
+    header['ITIME'] = 10.0
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((30, 20, 5)), header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.combo_calc.setCurrentText("Average")
+
+        def left_label():
+            return dialog.plot_widget.getAxis('left').labelText
+
+        for mode in ("Depth Plot", "Horizontal Cut"):
+            dialog.combo_type.setCurrentText(mode)
+            viewer.disp_as_dn = False
+            viewer.refresh_display()
+            assert left_label() == "Intensity (DN/s)", mode
+            value = _plotted(dialog)[0]
+
+            viewer.disp_as_dn = True                    # MainWindow.set_display_unit(True)
+            viewer.refresh_display()
+            assert left_label() == "Intensity (DN)", mode
+            assert _plotted(dialog)[0] == pytest.approx(value * 10.0), mode
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_each_change_recomputes_the_depth_plot_once(qapp):
+    """Depth mode: a flip or a load recomputes once and a slider step not at all; a cut mode
+    recomputes once per slider step and, again, once per flip."""
+    viewer = ImageViewer()
+    viewer.set_data(_channel_cube(0.0), None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    calls = []
+    original = dialog.update_plot
+    dialog.update_plot = lambda *a, **k: (calls.append(1), original(*a, **k))[1]
+    try:
+        dialog.show()
+        for action in (lambda: setattr(viewer, 'flip', True) or viewer.refresh_display(),
+                       lambda: viewer.set_data(_channel_cube(3.0), None)):
+            calls.clear()
+            action()
+            assert len(calls) == 1
+        calls.clear()
+        viewer.slider_slice.setValue(2)
+        assert calls == []
+
+        dialog.combo_type.setCurrentText("Vertical Cut")
+        calls.clear()
+        viewer.slider_slice.setValue(3)
+        assert len(calls) == 1
+        viewer.flip = False
+        calls.clear()
+        viewer.refresh_display()
+        assert len(calls) == 1
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_2d_load_leaves_no_line_overlay_or_wavelength_readout(loaded_viewer):
+    """The previous cube's spectral lines and wavelength axis must not outlive it (R7)."""
+    dialog = DepthPlotDialog(image_viewer=loaded_viewer, initial_center=(20, 20))
+    try:
+        dialog.show()
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_plot()
+        assert dialog.line_items, "no line overlay to go stale"
+        assert dialog.current_wavelengths is not None
+
+        loaded_viewer.set_data(np.full((40, 40), 7.0), None)
+        assert dialog.line_items == []
+        assert dialog.current_wavelengths is None
+
+        centre = dialog.plot_widget.plotItem.vb.sceneBoundingRect().center()
+        dialog.mouse_moved([centre])
+        assert "Wavelength" not in dialog.lbl_cursor.text()
+    finally:
+        dialog.close()

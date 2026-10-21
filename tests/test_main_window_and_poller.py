@@ -63,8 +63,8 @@ def test_main_window_tool_lifecycle(qapp, sample_3d_fits):
     win.open_plot_catalog()
     assert hasattr(win, '_plot_catalog_dialog') and win._plot_catalog_dialog is not None
 
-    # Update tools for display unit change
-    win.update_tools_for_unit()
+    # Every open tool follows a display unit change
+    win.set_display_unit(True)
 
     win.close()
 

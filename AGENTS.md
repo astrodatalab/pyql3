@@ -111,12 +111,25 @@ fits_reader.hdul)` when it opens and refuses to write if either has changed.
 
 `MainWindow` caches each tool as a `self._<name>_dialog` attribute and reopens it only if
 not already visible. Those attribute names are listed once, in `MainWindow.TOOL_DIALOG_ATTRS`,
-and two things walk the list: `update_tools_for_unit()` (calls each dialog's `update_plot()` /
-`update_stats()` when the display unit changes between DN/s and Total DN, so labels and graphs
-refresh instantly) and `close_tool_dialogs()` from `closeEvent`. **A new tool must be added to
-`TOOL_DIALOG_ATTRS`** or it will silently go stale on a unit change *and* be left on screen
-after its window closes. Every opener goes through `MainWindow._open_tool()`, which raises a
-visible dialog and replaces (and deletes) a hidden one, so a window never holds two copies of a tool.
+which `close_tool_dialogs()` walks from `closeEvent`. **A new tool must be added to
+`TOOL_DIALOG_ATTRS`** or it will be left on screen after its window closes. Every opener goes
+through `MainWindow._open_tool()`, which raises a visible dialog and replaces (and deletes) a hidden
+one, so a window never holds two copies of a tool.
+
+**Tools follow the viewer through its three signals, connected once in `BaseToolDialog.__init__`
+and disconnected in `tear_down()`** (`BUGS.md` R14). While the dialog is visible, `plane_changed`
+calls `on_plane_changed()`, `display_changed` calls `on_geometry_changed()` and
+`view_rotation_changed` calls `on_view_rotated(angle)`. The default `on_plane_changed()` calls
+`on_roi_changed()`, which is the recompute for every measuring tool; the other two do nothing,
+because every `display_changed` follows a `plane_changed` and recomputing on both does the work
+twice per flip, load or unit change. Override `on_geometry_changed()` only for output that depends
+on the geometry and not on the plane's values. A unit change also emits `display_changed` and
+moves nothing, so an overlay that re-places items on it compares `ImageViewer.placement_key()` with
+the key it last placed under and skips an unchanged one, as the region layer and the catalog do.
+A unit change reaches the tools the same way, so
+`set_display_unit()` calls none of them; do not connect a tool to `imv.sigTimeChanged`, which a
+Z Range apply and a Boxcar width change at the same slider value never send, so a tool connected
+to it misses those planes.
 
 **A tool releases what it put on the viewer in `tear_down()`, never in `closeEvent`.** Escape
 reaches `QDialog.reject()`, which hides the dialog without sending a close event, so cleanup in
@@ -259,6 +272,19 @@ ds9-style annotations — circle, box, arrow, text — drawn over the image, sav
   reaches the hook must stub it**, like `confirm_cli_install` — `QMessageBox.exec` blocks the suite.
 - **Items are parented to the ImageItem**, so view rotation is inherited for free, and are
   removed with `ViewBox.removeItem()` — `setParentItem(None)` leaves them painted (`BUGS.md` B7).
+  Anything that compares a region with the view goes through `item_to_view`: Zoom To through
+  `RegionLayer.orig_to_view()`, label culling (both render modes) on each label's own anchor, not
+  its region's centre, which a large circle's label is a radius away from. The overlay maps its
+  anchors in one step with `ImageViewer.items_to_view()`; one `mapToView` per label cost 35 ms per
+  redraw at 10,000 regions. The layer culls its labels again on `view_rotation_changed`, because a
+  rotation moves them on screen without moving the view (`BUGS.md` R45); in aggregate mode only
+  the labels are redrawn for it, since the shapes turn with the ImageItem.
+- **A channel range is checked on every `plane_changed`**, not only on slider moves. Against a
+  plane that combines channels — a Collapse Region range, or a Boxcar wider than one — a region
+  shows if the two ranges overlap; on a 2-D image a channel range hides nothing
+  (`RegionLayer._current_channel()` returns None there; `BUGS.md` R36, R63). The aggregate overlay
+  is redrawn on `plane_changed` only when those channels changed, so a flip or a load draws it
+  once when the channel on screen is unchanged.
 - **Colour names are kept, not resolved, in the model and in files.** `resolve_color()` maps them
   to ds9's RGB only for painting, because ds9's `green` is `#00ff00` while Qt's is `#008000`;
   resolving early would write a colour ds9 never chose back out to a `.reg`.
@@ -313,8 +339,10 @@ Four Qt traps here each cost real time. They are not hypothetical:
 
 **Overlay label policy lives in `pyql3/gui/label_policy.py`, and only the policy (CRITICAL).**
 Culling to the visible rect, hiding text while panning, and refusing to build an enormous set at
-once are shared by the region layer and `plot_catalog.py`: the redraw delay, the cull margin
-(`grown_for_labels`) and the safety ceiling (`LabelDensityGuard`) are defined there once. They were
+once are shared by the region layer and `plot_catalog.py`: the redraw delay, the cull itself
+(`labels_in_view`, a rect test on anchors that each overlay has mapped into the view with
+`ImageViewer.items_to_view`, grown by `grown_for_labels`) and the safety ceiling
+(`LabelDensityGuard`) are defined there once. They were
 written twice before, and the second copy was already missing the margin and the ceiling entirely —
 the same drift `coords.py` exists to prevent. The module holds no Qt import, so it is testable
 without a display (`tests/test_label_policy.py`).

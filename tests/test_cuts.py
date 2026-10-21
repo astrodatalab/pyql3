@@ -221,3 +221,38 @@ def test_cut_uses_the_displayed_plane_in_collapse_mode(qapp):
     viewer.radio_range.setChecked(True)
     dialog.update_plot()
     assert not np.allclose(got, _profile(dialog))
+
+
+def test_cuts_follow_boxcar_and_range(qapp):
+    """The cuts listened to `imv.sigTimeChanged`, which a Z Range apply and a Boxcar width
+    change at the same slider value never send: those are drawn past the ImageView, so the
+    profile stayed on the last single channel (BUGS.md R14)."""
+    channel_values = np.array([0., 50., 3., 80., 1., 90., 7., 20., 60., 5.])
+    cube = np.broadcast_to(channel_values, (40, 30, 10)).astype(np.float32)  # channel k: values[k]
+    viewer = ImageViewer()
+    viewer.set_data(cube)
+    dialogs = [CutPlotDialog(cut_type, None, viewer) for cut_type in ("horizontal", "vertical")]
+    for dialog in dialogs:
+        dialog.combo_calc.setCurrentText("Average")
+        dialog.show()
+    try:
+        viewer.txt_boxcar.setText("3")
+        viewer.btn_apply_slice.click()
+        viewer.slider_slice.setValue(6)             # median of channels 5-7: 90, 7, 20
+        for dialog in dialogs:
+            assert np.allclose(_profile(dialog), 20.0), dialog.cut_type
+
+        viewer.combo_collapse.setCurrentText("Mean")
+        viewer.txt_zmin.setText("2")
+        viewer.txt_zmax.setText("4")
+        viewer.radio_range.setChecked(True)         # mean of channels 2-4: 3, 80, 1
+        for dialog in dialogs:
+            assert np.allclose(_profile(dialog), 28.0), dialog.cut_type
+
+        viewer.txt_zmax.setText("3")
+        viewer.btn_apply_range.click()              # mean of channels 2-3
+        for dialog in dialogs:
+            assert np.allclose(_profile(dialog), 41.5), dialog.cut_type
+    finally:
+        for dialog in dialogs:
+            dialog.close()

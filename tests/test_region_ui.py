@@ -17,7 +17,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QPointF
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from pyql3.core.regions_io import load_regions, save_regions, suggested_filename, with_sky_anchors
@@ -651,6 +651,23 @@ def test_zooming_to_a_region_centres_the_view(dialog, window):
     assert rect.center().y() == pytest.approx(where[1], abs=1.0)
 
 
+def test_zoom_to_lands_on_the_region_under_a_view_rotation(dialog, window):
+    """A view rotation is a transform on the ImageItem, so Zoom To has to aim at where the
+    region is in view coordinates, not in ImageItem coordinates (`BUGS.md` R45)."""
+    viewer = window.image_viewer
+    region = window.region_layer.regions[0]
+    viewer.apply_view_rotation(90.0)
+
+    dialog.zoom_to(region)
+
+    rect = viewer.imv.getView().viewRect()
+    drawn = viewer.imv.getImageItem().mapToView(
+        QPointF(*window.region_layer._to_item(region.x, region.y)))
+    assert rect.contains(drawn), f"view {rect} does not hold the region at {drawn}"
+    assert rect.center().x() == pytest.approx(drawn.x(), abs=1.0)
+    assert rect.center().y() == pytest.approx(drawn.y(), abs=1.0)
+
+
 def test_copying_coordinates_includes_the_sky_position(dialog, window, qapp):
     region = window.region_layer.regions[0]
     dialog.copy_coordinates(region)
@@ -918,7 +935,7 @@ def test_the_catalog_lands_on_the_same_pixels_as_the_regions(window, some_region
 
     # The catalogue's own mapping of row 0 must agree with where the region is drawn.
     first = some_regions[0]
-    placed = catalog._row_to_display(catalog.catalog_data[0])
+    placed = catalog._row_to_display(0)
     assert placed == pytest.approx(window.image_viewer.orig_to_display(first.x, first.y))
 
 

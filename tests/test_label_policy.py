@@ -4,6 +4,7 @@
 and without building a viewer. `QRectF` is imported only to have a rect to hand it.
 """
 
+import numpy as np
 from PySide6.QtCore import QRectF
 
 from pyql3.gui.label_policy import (
@@ -11,6 +12,7 @@ from pyql3.gui.label_policy import (
     LABEL_SAFETY_LIMIT,
     LabelDensityGuard,
     grown_for_labels,
+    labels_in_view,
 )
 
 
@@ -79,3 +81,25 @@ def test_the_limit_is_per_call_so_each_overlay_can_set_its_own():
 
 def test_the_shared_default_limit_is_a_positive_count():
     assert isinstance(LABEL_SAFETY_LIMIT, int) and LABEL_SAFETY_LIMIT > 0
+
+
+def test_labels_in_view_culls_on_the_grown_rect():
+    """Both overlays cull with this one test: anchors already mapped into the view, and the
+    visible rect grown by the label margin on every side."""
+    rect = QRectF(0.0, 0.0, 100.0, 50.0)
+    xs = np.array([50.0, -9.0, -11.0, 109.0, 111.0, 50.0, 50.0, 50.0])
+    ys = np.array([25.0, 25.0, 25.0, 25.0, 25.0, -4.0, 54.0, 56.0])
+    assert labels_in_view(xs, ys, rect).tolist() == [
+        True, True, False, True, False, True, True, False]
+
+
+def test_labels_in_view_uses_the_margin_it_is_given():
+    rect = QRectF(0.0, 0.0, 100.0, 100.0)
+    xs, ys = np.array([-5.0, 50.0]), np.array([50.0, 50.0])
+    assert labels_in_view(xs, ys, rect, margin=0.0).tolist() == [False, True]
+
+
+def test_labels_in_view_without_a_rect_keeps_everything():
+    """No rect means the view could not be read, which callers take as 'do not cull'."""
+    assert labels_in_view(np.array([1e9, -1e9]), np.array([0.0, 0.0]), None).tolist() == [
+        True, True]

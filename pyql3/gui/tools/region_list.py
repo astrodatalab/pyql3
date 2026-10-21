@@ -107,7 +107,7 @@ class RegionListDialog(BaseToolDialog):
         return getattr(self.image_viewer, 'region_layer', None)
 
     def update_plot(self):
-        """Rebuild the table from the layer. Named for `update_tools_for_unit`'s benefit."""
+        """Rebuild the table from the layer."""
         if self.layer is None:
             return
 
@@ -278,11 +278,12 @@ class RegionListDialog(BaseToolDialog):
         """Centre the view on `region`, with room around it.
 
         Goes through the layer's own placement so the view lands where the region is *drawn*,
-        whatever flip or rotation is in force.
+        whatever flip, 90° rotation or view rotation is in force. The view's range is in view
+        coordinates, which a view rotation separates from ImageItem coordinates (R45).
         """
         if self.layer is None or self.image_viewer is None:
             return
-        placed = self.layer._to_item(region.x, region.y)
+        placed = self.layer.orig_to_view(region.x, region.y)
         if placed is None:
             return
 

@@ -107,11 +107,12 @@ class PhotometryDialog(BaseToolDialog):
             self.roi.setSize([r*2, r*2])
             self.roi.blockSignals(False)
             
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
-            
-        data = img_data
+        # The plane on screen, whichever z mode drew it; `imv.currentIndex` names no plane in
+        # Boxcar or Z Range mode.
+        plane = self.image_viewer.current_plane()
+        if plane is None:
+            return
+        data = plane * self.image_viewer.data_multiplier
         pos = self.roi.pos()
         size = self.roi.size()
         # The ROI and the rings are drawn in ImageItem coordinates (pixel i spans [i, i+1));

@@ -38,6 +38,8 @@ them shifts things by half or a whole pixel:
 
 import math
 
+import numpy as np
+
 
 def _steps(rot_angle):
     """`rot_angle` in degrees as a number of 90° `np.rot90` steps, 0-3."""
@@ -67,9 +69,22 @@ def orig_to_display(x, y, nx, ny, flip=False, rot_angle=0):
     then the rotations. Reversing that order is a different transform whenever both are
     active (see `BUGS.md` B20).
     """
-    cx, cy = float(x), float(y)
-    mx, my = float(nx), float(ny)
+    return _orig_to_display(float(x), float(y), float(nx), float(ny), flip, rot_angle)
 
+
+def orig_to_display_arrays(x, y, nx, ny, flip=False, rot_angle=0):
+    """`orig_to_display` over whole arrays of coordinates at once, returning two float arrays.
+
+    For overlays with one position per catalog row, where a call per row costs more than the
+    rest of the redraw (`BUGS.md` R31). A NaN stays NaN. The arithmetic is the same function
+    the scalar version uses.
+    """
+    return _orig_to_display(np.asarray(x, dtype=float), np.asarray(y, dtype=float),
+                            float(nx), float(ny), flip, rot_angle)
+
+
+def _orig_to_display(cx, cy, mx, my, flip, rot_angle):
+    """The mapping behind both `orig_to_display` variants; `cx`, `cy` are floats or arrays."""
     if flip:
         cx = mx - 1.0 - cx
 

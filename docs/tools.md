@@ -258,6 +258,11 @@ For catalogs specified in celestial World Coordinates $(\text{RA}, \text{DEC})$,
 
 $$(x_{\text{fits}}, y_{\text{fits}}) = \text{WCS}^{-1}(\text{RA}, \text{DEC})$$
 
+The RA and Dec axes are identified from the WCS rather than assumed to be FITS axes 1 and 2, so
+an image with Dec on axis 1 (an OSIRIS cube collapsed along wavelength) is handled. The whole
+catalog is converted in one call, and the result is kept until the catalog, the coordinate
+columns, the coordinate mode or the image's WCS changes.
+
 #### B. Display Rotation & Flip Mapping
 To ensure source overlays track the image viewport when the astronomer rotates or flips the view, original FITS coordinates $(x_0, y_0)$ are mapped to current display coordinates $(x_{\text{disp}}, y_{\text{disp}})$ via the transformation algorithm:
 
@@ -269,8 +274,13 @@ To ensure source overlays track the image viewport when the astronomer rotates o
    For $k = \frac{\theta}{90^\circ}$ orthogonal rotations:
    $$(x_{i+1}, y_{i+1}) = (N_{y,i} - 1 - y_i, \; x_i)$$
 
+The markers, labels and selection highlight are re-placed whenever the displayed image changes: a
+flip or 90° rotation, a new AXIS mapping, another extension, another file or a frame auto-loaded
+by the poller. A catalog loaded before any image is plotted when the first image arrives. Labels
+also follow a view rotation. *Display Pixels* are used as given and are not mapped.
+
 #### C. Interactive Highlighting & Filtering
-- **Interactive Source Selection**: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it.
+- **Interactive Source Selection**: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it, also when the view is rotated. Changing a marker, label or unit control redraws the ring without moving the view; *Center on Source* in the row's context menu recentres on request.
 - **Clearing a selection**: press **Escape** in the table, use the **Clear Selection** button beside the search box, or pick **Clear Selection** from the row's right-click menu. The view stays where it is. (Qt's own way out of a single-selection table is ctrl-clicking the selected row, which few people find.)
 - **Search & Filter**: Real-time text search hides the table rows that do not match. It filters the table only; every source stays marked on the image.
 - **Custom Marker Styling**: Supports customizable marker shapes (Circles, Squares, Triangles, Diamonds, Crosses), sizes, colors, and text labels.
@@ -316,8 +326,11 @@ List — to open an editor for everything it carries: position and size, angle, 
 width, dashing, text size, tag, visibility, and a channel range.
 
 A **channel range** restricts a region to part of a cube, so a marker on an emission-line feature
-appears only across the channels where the feature is. This has no equivalent in ds9 and is dropped
-when exporting a `.reg` file, which the export report says.
+appears only across the channels where the feature is. When the plane on screen combines several
+channels, in **Collapse Region** mode or with a **Boxcar** wider than one, the region is shown if
+its channel range overlaps those channels. On a 2-D image, which has no channels, it is always
+shown. This has no equivalent in ds9 and is dropped when exporting a `.reg` file, which the export
+report says.
 
 **Region ➔ Region List…** shows every region in a table — type, position, size, angle, label, colour
 and visibility — editable in place. Double-click the *Colour* cell for a colour picker, or the

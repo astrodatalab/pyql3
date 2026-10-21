@@ -25,19 +25,20 @@ class SurfacePlotDialog(BaseToolDialog):
         self.surface_item = None
         if self.gl_available:
             self.update_plot()
-        
-        if self.image_viewer and self.image_viewer.imv:
-            self.image_viewer.imv.sigTimeChanged.connect(self.update_plot)
+
+    def on_plane_changed(self):
+        self.update_plot()
         
     def update_plot(self):
         if not getattr(self, 'gl_available', True):
             return
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return
-            
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
+
+        img_data = self.image_viewer.current_plane()
+        if img_data is None:
+            return
+        img_data = img_data * self.image_viewer.data_multiplier
             
         # Downsample the data for the surface plot to maintain performance
         # 3D surface plots of e.g. 2048x2048 arrays will freeze the UI
@@ -75,16 +76,6 @@ class SurfacePlotDialog(BaseToolDialog):
         if not hasattr(self, '_camera_set'):
             self.gl_widget.setCameraPosition(distance=max(data.shape)*1.5, elevation=30, azimuth=45)
             self._camera_set = True
-            
-    def tear_down(self):
-        if self._torn_down:
-            return
-        if self.image_viewer and self.image_viewer.imv:
-            try:
-                self.image_viewer.imv.sigTimeChanged.disconnect(self.update_plot)
-            except (TypeError, RuntimeError):
-                pass
-        super().tear_down()
 
 
 class ContourDialog(BaseToolDialog):
@@ -113,18 +104,20 @@ class ContourDialog(BaseToolDialog):
         
         self.iso_items = []
         self.update_plot()
-        
-        if self.image_viewer and self.image_viewer.imv:
-            self.image_viewer.imv.sigTimeChanged.connect(self.update_plot)
+
+    def on_plane_changed(self):
+        self.update_plot()
         
     def clear_contours(self):
-        if self.image_viewer and self.image_viewer.imv:
-            view = self.image_viewer.imv.getView()
-            for item in self.iso_items:
-                try:
-                    view.removeItem(item)
-                except Exception:
-                    pass
+        """Take the contours off the image and retire them.
+
+        Retired, not dropped: `update_plot` builds the new contours straight after this, and
+        dropping the last reference to the old ones let the collector free one inside the
+        construction of its replacement (`BUGS.md` M18, R87). `retire_roi` takes any graphics
+        item, and `tear_down` releases what it holds.
+        """
+        for item in self.iso_items:
+            self.retire_roi(item)
         self.iso_items = []
         
     def toggle_contours(self, checked):
@@ -134,29 +127,44 @@ class ContourDialog(BaseToolDialog):
             self.clear_contours()
             
     def update_plot(self):
+        """Draw the contours of the plane on screen.
+
+        While the number of levels is unchanged the existing `IsocurveItem`s are given the new
+        plane and levels in place. Replacing them retires the old ones, and releasing retired
+        items runs a `gc.collect()`, which cost 35-38 ms per slider step in a session holding a
+        large catalog. Only a change in the number of levels builds new items.
+        """
         if not self.chk_show.isChecked():
             return
-            
-        self.clear_contours()
-        
+
         if self.image_viewer is None or self.image_viewer.display_data is None:
+            self.clear_contours()
             return
             
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
+        img_data = self.image_viewer.current_plane()
+        if img_data is None:
+            self.clear_contours()
+            return
+        img_data = img_data * self.image_viewer.data_multiplier
             
         # Calculate levels
         min_val = np.nanmin(img_data)
         max_val = np.nanmax(img_data)
         
         if np.isnan(min_val) or np.isnan(max_val) or min_val == max_val:
+            self.clear_contours()
             return
             
         num_levels = self.spin_levels.value()
         # Create linearly spaced levels
         levels = np.linspace(min_val, max_val, num_levels + 2)[1:-1]
-        
+
+        if len(self.iso_items) == len(levels):
+            for iso, level in zip(self.iso_items, levels, strict=True):
+                iso.setData(img_data, level=level)
+            return
+
+        self.clear_contours()
         for level in levels:
             iso = pg.IsocurveItem(data=img_data, level=level, pen='r')
             # The IsocurveItem must be linked to the image item to overlay correctly
@@ -167,9 +175,4 @@ class ContourDialog(BaseToolDialog):
         if self._torn_down:
             return
         self.clear_contours()
-        if self.image_viewer and self.image_viewer.imv:
-            try:
-                self.image_viewer.imv.sigTimeChanged.disconnect(self.update_plot)
-            except (TypeError, RuntimeError):
-                pass
         super().tear_down()

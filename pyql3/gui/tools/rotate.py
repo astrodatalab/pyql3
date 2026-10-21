@@ -115,6 +115,19 @@ class RotateDialog(BaseToolDialog):
             direction = "CW" if offset < 0 else "CCW"
             self.lbl_pa.setText(f"North Angle: {abs(offset):.1f}° {direction} from up")
 
+    def on_view_rotated(self, angle):
+        # Every view rotation arrives here, the dialog's own included, and `set_data` resets it
+        # to 0 on each load (`BUGS.md` R68). Signals stay blocked so showing the angle does not
+        # apply it again.
+        self.spin_view_rot.blockSignals(True)
+        self.spin_view_rot.setValue(angle)
+        self.spin_view_rot.blockSignals(False)
+        self.update_pa_info()
+
+    def on_geometry_changed(self):
+        # A flip or 90 degree rotation moves North on screen without touching the spin box.
+        self.update_pa_info()
+
     def on_rotate_changed(self, angle):
         if self.image_viewer:
             self.image_viewer.rot_angle = angle

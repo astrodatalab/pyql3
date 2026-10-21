@@ -2709,7 +2709,11 @@ parametrized over view rotations 0, 37, 90 and 180, hovering over the scene posi
 
 ## R7. The Depth Plot is not recomputed when the viewer's data or orientation changes
 
-- **Status:** open
+- **Status:** ✅ FIXED — `depth_plot.py` (`on_plane_changed`, `on_geometry_changed`, the non-3-D
+  branch of `update_plot`), on the hooks added in Task 11, covered by
+  `tests/test_depth_plot.py::test_a_new_cube_replaces_the_plotted_spectrum`,
+  `::test_a_flip_replaces_the_plotted_spectrum`, `::test_a_2d_load_clears_every_curve`,
+  `::test_cut_modes_follow_the_slider` and `::test_each_change_recomputes_the_depth_plot_once`
 - **Severity:** high — after the poller loads a new frame, the plot keeps showing the
   previous frame's spectrum, with nothing to say it is stale
 - **Files:** `pyql3/gui/main_window.py:607-650`, `pyql3/gui/viewers/image_viewer.py:59`,
@@ -2792,7 +2796,7 @@ after a 2-D load: [50. 51. 52. 53. 54.]
 
 ## R8. Catalog markers, labels and the highlight stay where they were drawn when the displayed image changes
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py`, `pyql3/core/coords.py`, covered by `test_markers_follow_a_flip_and_a_new_image`, `test_markers_follow_a_view_rotation`, `test_catalog_given_before_any_image_plots_when_one_arrives`
 - **Severity:** high — every marker is drawn at the wrong position, and nothing on screen says so
 - **Files:** `pyql3/gui/tools/plot_catalog.py:899-1000`, `pyql3/gui/tools/plot_catalog.py:1063-1123`,
   `pyql3/gui/viewers/image_viewer.py:59`, `pyql3/gui/viewers/image_viewer.py:1098`,
@@ -3180,7 +3184,7 @@ with a deliberately broken WCS (e.g. `CTYPE1 = 'WAVE'`, `CUNIT1 = 'parsec'`) loa
 
 ## R14. Statistics, Photometry, Peak Fit and Strehl never refresh when the plane or the file changes
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/base_tool.py`, `photometry.py`, `strehl.py`, `cuts.py`, `advanced_plots.py`, `pyql3/gui/viewers/image_viewer.py` (`_apply_entered`), `pyql3/gui/main_window.py` (`set_display_unit`), covered by `tests/test_analysis_tools.py::test_tools_follow_the_displayed_plane`, `::test_each_change_recomputes_a_tool_once`, `::test_a_slider_step_does_not_recompute_overlay_tools`, `tests/test_cuts.py::test_cuts_follow_boxcar_and_range`
 - **Severity:** medium — numbers for a channel or a frame that is no longer on screen are shown as current. With directory polling this happens on every new frame.
 - **Files:** `pyql3/gui/tools/statistics.py:39-40`, `pyql3/gui/tools/photometry.py:85-93`, `pyql3/gui/tools/fitting.py:214-231`, `pyql3/gui/tools/strehl.py:64-65`, `pyql3/gui/tools/cuts.py:92-93`, `pyql3/gui/tools/advanced_plots.py:29-30`, `:115-116`, `pyql3/gui/viewers/image_viewer.py:958`, `:1033`
 - **Related:** B4 item 3 records that the Statistics dialog reports 30.00 for a collapsed 4-8 Sum. That is true when the dialog computes; nothing makes it compute again. S5/B17 fixed which plane the cuts read, not when they read it.
@@ -4087,7 +4091,9 @@ over `boxcar_range()`. `::test_boxcar_playback_at_the_end_keeps_the_median` cove
 
 ## R28. In Depth Plot mode the Y-axis label keeps the unit the dialog opened with
 
-- **Status:** open
+- **Status:** ✅ FIXED — `depth_plot.py` (`_set_intensity_label`, called from `__init__`,
+  `_draw_depth_curves` and both cut branches), covered by
+  `tests/test_depth_plot.py::test_the_intensity_label_follows_the_display_unit`
 - **Severity:** medium — after a DN/s ↔ Total DN switch, the label and the plotted values
   disagree by ITIME × COADDS
 - **Files:** `pyql3/gui/tools/depth_plot.py:139-140`, `:1418-1503`, `:1681-1682`, `:1707-1708`;
@@ -4142,7 +4148,7 @@ contains "DN" and not "DN/s".
 
 ## R29. Selecting a catalog row under a view rotation recentres the view somewhere else
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py`, covered by `test_selecting_a_row_centres_it_under_a_view_rotation`
 - **Severity:** medium — the selected source is moved off screen instead of to the centre
 - **Files:** `pyql3/gui/tools/plot_catalog.py:1204-1221`
 
@@ -4245,7 +4251,9 @@ World (RA/DEC) ALPHA_J2000 marker (10.5, 20.5) pixel (10, 20) value 100.0
 
 ### Root cause
 The *FITS Pixels* branch of `_row_to_display` uses the column values unchanged as orig coordinates
-(`plot_catalog.py:858-866`), which are 0-based. `send_regions_to_catalog` relies on that, since regions
+(`plot_catalog.py:858-866`), which are 0-based. (Since Task 13 that branch is in
+`PlotCatalogDialog._resolve_orig_positions`, which reads both columns with `float_column` and uses
+them unchanged; `_row_to_display` now only reads that cache for the highlight.) `send_regions_to_catalog` relies on that, since regions
 are stored in 0-based orig coordinates (`main_window.py:1108-1110`). But `coords.py:32-36` defines
 FITS/ds9 coordinates as 1-based and provides `fits_to_index` (`:128-130`) for the conversion, and
 `X_COLUMN_NAMES`/`Y_COLUMN_NAMES` (`plot_catalog.py:48-51`) include SExtractor's 1-based `x_image` and
@@ -4263,7 +4271,7 @@ above and assert that the *FITS Pixels* marker and the World marker for the same
 
 ## R31. An RA/Dec catalog takes 9.5 s to load and 9.6 s for every change to a marker control
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py`, `pyql3/core/coords.py`, covered by `test_world_catalog_refresh_is_not_per_row`, `test_one_unreadable_sexagesimal_cell_costs_only_its_own_row`, `test_the_array_mapping_agrees_with_the_scalar_one`
 - **Severity:** medium — the tool works, but each spin-box step on a large RA/Dec catalog stops the window for about ten seconds
 - **Files:** `pyql3/gui/tools/plot_catalog.py:846-857`, `pyql3/gui/tools/plot_catalog.py:868-895`,
   `pyql3/gui/tools/plot_catalog.py:957-958`, `pyql3/gui/tools/plot_catalog.py:429-473`
@@ -4578,7 +4586,7 @@ switched on. Hiding the existing `_bulk_labels` can stay as it is.
 
 ## R36. A region's channel range is not re-checked when the viewer enters or changes Collapse Region mode
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (channel visibility follows `plane_changed`; a range shows if it overlaps the collapse range or the boxcar window), covered by `tests/test_region_layer.py::test_channel_ranges_follow_a_collapse_range`, `::test_a_channel_range_follows_the_boxcar_window` and `::test_the_overlay_is_drawn_once_per_flip_and_per_load`
 - **Severity:** medium — regions restricted to an emission line show or hide according to the previous mode, not what is on screen
 - **Files:** `pyql3/gui/viewers/image_viewer.py:878-897`, `:926-961`, `:1004-1039`, `pyql3/gui/viewers/region_layer.py:271-276`
 
@@ -5114,7 +5122,7 @@ box and arrow: `translate` the ROI, then assert `label_for(region).pos()` equals
 
 ## R45. View rotation is ignored by the Region List's Zoom To and by region label culling
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (both label-culling paths cull each label's anchor in view coordinates, re-cull on `view_rotation_changed`; `RegionLayer.orig_to_view` for Zoom To), `pyql3/gui/viewers/image_viewer.py` (`items_to_view`), `pyql3/gui/tools/region_list.py` (`zoom_to`), covered by `tests/test_region_layer.py::test_labels_are_culled_in_view_coordinates_under_a_view_rotation` and `tests/test_region_ui.py::test_zoom_to_lands_on_the_region_under_a_view_rotation`
 - **Severity:** medium — with a North Up rotation, which Keck data usually needs, Zoom To moves the view away from the region and labels on screen go undrawn
 - **Files:** `pyql3/gui/tools/region_list.py:266-282`, `pyql3/gui/viewers/region_layer.py:578-594`, `:637-650`, `pyql3/gui/viewers/image_viewer.py:1380-1400`
 - **Related:** B20 (view rotation composed with the array transforms). Here the rotation is left
@@ -5407,7 +5415,7 @@ Connect Exit to `QApplication.closeAllWindows()`. That runs every window's `clos
 
 ## R50. With *Show All* off, catalog labels come back on the next pan
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py` (in Task 13: `_plot_markers` empties `_label_positions`, which replaced `all_label_points`, before its *Show All* early return, so a later redraw has no labels to draw), covered by `test_labels_stay_hidden_with_show_all_off_after_a_pan`
 - **Severity:** low — the overlay the user turned off reappears as text without markers
 - **Files:** `pyql3/gui/tools/plot_catalog.py:925-929`, `pyql3/gui/tools/plot_catalog.py:955`,
   `pyql3/gui/tools/plot_catalog.py:1035-1041`, `pyql3/gui/tools/plot_catalog.py:1083-1089`
@@ -5462,7 +5470,7 @@ the snippet above and asserting that no `text_items` entry is visible after the 
 
 ## R51. With Show Region Labels off, new and edited regions still draw their labels, and text regions disappear
 
-- **Status:** open
+- **Status:** open — **partly fixed in the Phase 4 review fix wave:** new and restyled regions now obey Show Region Labels (their captions stay hidden while labels are off, via `RegionLayer._show_one`). Still open: a text region, whose label is the region itself, vanishes with labels off — and since that change it vanishes as soon as it is drawn or restyled, not only on the next redraw; aggregate mode still keeps a "+" marker for it, so the two render modes disagree. Plan Task 33 finishes it.
 - **Severity:** low — the toggle does not do what it says for new or edited regions, and text regions cannot be seen or picked up while it is off
 - **Files:** `pyql3/gui/viewers/region_layer.py:601-618`, `:866`, `:1017`
 
@@ -5993,7 +6001,7 @@ In `WindowManager.open_path`, send a path to a new window when the target window
 
 ## R60. Changing any catalog control recentres the view on the selected source
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py`, covered by `test_a_style_change_does_not_move_the_view`
 - **Severity:** low — the view jumps back to an earlier selection, undoing the user's pan
 - **Files:** `pyql3/gui/tools/plot_catalog.py:1000`, `pyql3/gui/tools/plot_catalog.py:1204-1221`,
   `pyql3/gui/main_window.py:783-792`
@@ -6051,7 +6059,7 @@ above and asserting that the view centre after `spin_size.setValue` equals the c
 
 ## R61. On a 2-D image whose first FITS axis is Dec, every RA/Dec source lands off the image
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py`, covered by `test_world_catalog_on_a_dec_first_2d_image`
 - **Severity:** low — affects only 2-D images with the celestial axes in Dec, RA order, but then no source is placed
 - **Files:** `pyql3/gui/tools/plot_catalog.py:873-874`, `pyql3/gui/tools/plot_catalog.py:875-893`
 
@@ -6170,7 +6178,7 @@ the snippet, asserting that switching to World raises nothing and that
 
 ## R63. A region with a channel range is always hidden on a 2-D image
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (`_current_channel` returns None for non-3-D data), covered by `tests/test_region_layer.py::test_a_channel_range_does_not_hide_a_region_on_a_2d_image`
 - **Severity:** low — regions from a cube's region file disappear on an image of the same field, with nothing on screen saying why
 - **Files:** `pyql3/gui/viewers/region_layer.py:596-599`, `:679-683`, `pyql3/gui/viewers/image_viewer.py:422-430`
 
@@ -6443,7 +6451,7 @@ event-loop pass later `_drop_retired_rois` deleted it in C++.
 | R65 | `pyql3/gui/viewers/image_viewer.py:1784-1794` | The colorbar shows the scaled render values but is labelled "Pixel Value (DN/s)". For data from 25 to 9825 it reads 0 to 99.0 under Sqrt, 0 to 3.99 under Logarithmic and 0 to 1 under HistEq. | Label the axis with the scale in use for non-linear modes, or map its ticks back to data values through the inverse of the scale. |
 | R66 | `pyql3/gui/viewers/image_viewer.py:834-854` | The "1:1" buttons set the range to the whole image, so they behave like Fit. A 300×200 image in a 900×900 window shows 0.333 data px per screen px after 1:1 and 0.356 after Fit. QL2's 1:1 sets the zoom factor to 1. | Set the view range so that one data pixel covers one screen pixel (width and height of the ViewBox in screen pixels), centred on the current view. |
 | R67 | `pyql3/gui/viewers/image_viewer.py:1389-1391` | ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`_set_view_transform`), covered by `tests/test_image_viewer.py::test_view_rotation_pivots_on_the_plane_centre`. `apply_view_rotation` rotates about `((shape[-1]-1)/2, (shape[-2]-1)/2)`, which swaps x and y and drops the half-pixel offset of the ImageItem. On a 51×66 plane a 180° view rotation moves the image centre from (25.5, 33.0) to (39.5, 17.0). | Pivot on `(shape[-2] / 2, shape[-1] / 2)`, the centre of the ImageItem's bounding rect. |
-| R68 | `pyql3/gui/viewers/image_viewer.py:1071`, `pyql3/gui/tools/rotate.py:95-116` | `set_data` resets `view_rotation` to 0 on every load, including each poller auto-load, but an open Rotate dialog is not told. After a 30.0° view rotation and a reload, the view is unrotated while the dialog shows 30.0 and "30.0° CCW from up". The Main Window review measured that after North Up, the next frame draws North at 55.0° with rotation 0 while the dialog still shows 35.0 and "North is Up". | Either keep the view rotation across a reload of the same field, or emit a signal from `set_data` that the Rotate dialog uses to reset its spin box and call `update_pa_info()`. |
+| R68 | ✅ FIXED — `pyql3/gui/tools/rotate.py` (`on_view_rotated`, `on_geometry_changed`), covered by `test_rotate_dialog_follows_a_reload`, `test_rotate_dialog_own_rotation_is_not_undone`. By plan decision North Up is not kept across frames: each load shows the new frame unrotated and the dialog says so (keeping it would be a feature, not a fix). `pyql3/gui/viewers/image_viewer.py:1071`, `pyql3/gui/tools/rotate.py:95-116` | `set_data` resets `view_rotation` to 0 on every load, including each poller auto-load, but an open Rotate dialog is not told. After a 30.0° view rotation and a reload, the view is unrotated while the dialog shows 30.0 and "30.0° CCW from up". The Main Window review measured that after North Up, the next frame draws North at 55.0° with rotation 0 while the dialog still shows 35.0 and "North is Up". | Either keep the view rotation across a reload of the same field, or emit a signal from `set_data` that the Rotate dialog uses to reset its spin box and call `update_pa_info()`. |
 | R69 | `pyql3/gui/main_window.py:723` | `load_from_memory` applies `os.path.basename` to the Arithmetic expression, so any division keeps only the text after the `/`: `(ActiveImage / 2.0)` is titled `QuickLook 3 -  2.0)`, and `(a001.fits / a002.fits)` is titled ` a002.fits)`, which reads as if the window held `a002.fits`. | Use the title as given for in-memory data, and apply `basename` only to real file paths. |
 | R70 | `pyql3/services/poller.py:110-120`, `pyql3/core/fits_reader.py:259` | Saving the displayed file's header in place, inside a watched directory, replaces the file with `os.replace`. The poller re-announces it about one scan later, and the reload resets the view: a 5 x 5 px zoom on a 30 x 30 px frame came back as the full frame (a 31.5 x 32.4 px view). | In `MainWindow`, skip an auto-load whose path and `(st_size, st_mtime_ns, st_ino)` match what `fits_reader` itself just wrote. |
 | R71 | `pyql3/core/fits_reader.py:67`, `:232-233`, `:256` | A header-only save (Header Editor → Save Header → Yes) re-encodes scaled integer data. A BITPIX 16 file with BSCALE 0.5, BZERO 100 and BLANK was rewritten as BITPIX −32 with all three keywords removed. Values are preserved, but the data type on disk changes. | Open with `fits.open(..., memmap=False, scale_back=True)` so `writeto` restores the original BITPIX and scaling. |
@@ -6457,8 +6465,8 @@ event-loop pass later `_drop_retired_rois` deleted it in C++.
 | R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
 | R80 | `pyql3/gui/tools/depth_plot.py:549-562` (`_circular_mask`), called from `_cut_region` `:524` and the background box `:1665` | With Shape set to Circle, a cut (Horizontal/Vertical Cut through the aperture) or a background box that hangs off the image builds its circular mask from the box *after* `coords.box_index_slices` has clipped it to the image. The mask is centred on the clipped box and its radius is half the clipped box's shorter side, so it measures a smaller circle shifted toward the image interior instead of the part of the drawn circle that is on the image. Pre-existing; found in the Phase 1 review (2026-10-21), and reachable more often since R19 made an off-edge box measure its on-image part. | Build the mask from the unclamped circle (the drawn box's centre and radius, in the clipped box's index frame) and intersect it with the image, so the pixels kept are the drawn circle's on-image pixels. |
 | R84 | `pyql3/gui/viewers/image_viewer.py` (`apply_z_range`, reached from `show_current_plane`) | An unparsable Z Min or Z Max ("abc") present during `set_data` or any redisplay in Z Range mode makes `apply_z_range` stop at "Collapsed: Invalid Range" after `_give_imageview_the_cube()` has already loaded the cube, so channel 0 stays painted with the previous image's levels and `display_data` is left as the full cube copy that `apply_axis_mapping` made, not the plane on screen. Measured: Sum over 4-8 of a cube whose channel k holds k + 100 (530.0, levels 530-531); Z Min set to "abc" and the cube reloaded ×10: the screen shows channel 0 (1000.0) at levels 530-531. No `plane_changed` is emitted, while `display_changed` is. Found in the Phase 2 review (2026-10-21). | Put a `QIntValidator` on Z Min, Z Max and the Boxcar field so an unparsable value cannot be entered, or fall back to the full range with a message in `lbl_slice_info`. |
-| R86 | `pyql3/gui/tools/plot_catalog.py:1030-1033` (`_clear_text_items`), `:1283-1285` (`tear_down`) | `_clear_text_items` takes every label off the scene and then empties `self.text_items`, and `tear_down` does the same to `scatter_item` and `highlight_item` (`setattr(self, attr, None)`), so the last Python reference to each `QGraphicsItem` is dropped rather than retired — `M18`'s pattern. `tear_down` then calls `_release_retired()`, whose `gc.collect()` frees them in whatever order their reference cycles are walked (`M31`). Both run only from `tear_down`; a catalog reload reuses the two scatter items and the label pool. Pre-existing; found in the Phase 3 review (2026-10-21). | Route the labels and both scatter items through `_retire_items` into `_retired`, which `tear_down` already releases with `_release_retired()`; as in `BaseToolDialog._drop_retired_rois`, `shiboken6.delete` each still-valid item before the `gc.collect()`. |
-| R87 | `pyql3/gui/tools/advanced_plots.py:136-164` (Contour `update_plot`), `:120-128` (`clear_contours`) | `update_plot` calls `clear_contours()`, which takes each `IsocurveItem` off the view and then drops them all (`self.iso_items = []`), and goes straight on to build the new ones — `M18`'s drop-then-build pattern, in which the collector can run inside the construction of a replacement item and free the old one. It runs on every `sigTimeChanged` while contours are shown, so stepping through a cube with contours on rebuilds them each frame. Pre-existing; found in the Phase 3 review (2026-10-21). | Retire the old items instead of dropping them: a `_retired` list released from `QTimer.singleShot(0, ...)` and in `tear_down`, with `shiboken6.delete` before the `gc.collect()` as in `BaseToolDialog._drop_retired_rois`. |
+| R86 | `pyql3/gui/tools/plot_catalog.py:1030-1033` (`_clear_text_items`), `:1283-1285` (`tear_down`) | ✅ FIXED — `_clear_text_items` takes every label off the scene and then empties `self.text_items`, and `tear_down` does the same to `scatter_item` and `highlight_item` (`setattr(self, attr, None)`), so the last Python reference to each `QGraphicsItem` is dropped rather than retired — `M18`'s pattern. `tear_down` then calls `_release_retired()`, whose `gc.collect()` frees them in whatever order their reference cycles are walked (`M31`). Both run only from `tear_down`; a catalog reload reuses the two scatter items and the label pool. Pre-existing; found in the Phase 3 review (2026-10-21). | Route the labels and both scatter items through `_retire_items` into `_retired`, which `tear_down` already releases with `_release_retired()`; as in `BaseToolDialog._drop_retired_rois`, `shiboken6.delete` each still-valid item before the `gc.collect()`. |
+| R87 | `pyql3/gui/tools/advanced_plots.py:136-164` (Contour `update_plot`), `:120-128` (`clear_contours`) | ✅ FIXED — `update_plot` calls `clear_contours()`, which takes each `IsocurveItem` off the view and then drops them all (`self.iso_items = []`), and goes straight on to build the new ones — `M18`'s drop-then-build pattern, in which the collector can run inside the construction of a replacement item and free the old one. It runs on every `sigTimeChanged` while contours are shown, so stepping through a cube with contours on rebuilds them each frame. Pre-existing; found in the Phase 3 review (2026-10-21). | Retire the old items instead of dropping them: a `_retired` list released from `QTimer.singleShot(0, ...)` and in `tear_down`, with `shiboken6.delete` before the `gc.collect()` as in `BaseToolDialog._drop_retired_rois`. |
 
 ## Working checklist — code review 2026-10-21
 
@@ -6469,8 +6477,8 @@ High
 - [x] R4 Header editor + auto-load writes one frame's header onto another — plan Task 5
 - [x] R5 Flip/rotate/unit/reload replaces a collapsed or boxcar plane with channel 0 — plan Task 6
 - [x] R6 Hover readout ignores view rotation — plan Task 8
-- [ ] R7 Depth Plot not recomputed on load, flip, rotation or remap — plan Task 12
-- [ ] R8 Catalog markers not re-placed when the displayed image changes — plan Task 13
+- [x] R7 Depth Plot not recomputed on load, flip, rotation or remap — plan Task 12
+- [x] R8 Catalog markers not re-placed when the displayed image changes — plan Task 13
 - [x] R9 Statistics and Peak Fit sample interpolated values, zeros off the image — plan Task 4
 - [ ] R10 Sky anchors assume ICRS (galactic reload raises, FK4 angles, FK5/ICRS offset) — plan Task 35
 
@@ -6478,7 +6486,7 @@ Medium
 - [x] R11 Auto-load retries never cancelled — plan Task 5
 - [ ] R12 A failed load leaves `FitsReader` on a different file — plan Task 17
 - [ ] R13 An unparseable WCS fails the load and leaves the viewer half-updated — plan Task 18
-- [ ] R14 Statistics, Photometry, Peak Fit, Strehl never refresh; cuts miss Boxcar/Range — plan Task 11
+- [x] R14 Statistics, Photometry, Peak Fit, Strehl never refresh; cuts miss Boxcar/Range — plan Task 11
 - [x] R15 Escape hides a tool without its teardown — plan Task 9
 - [x] R16 Tool dialogs fall outside `TOOL_DIALOG_ATTRS` — plan Task 10
 - [ ] R17 Arrow-only ds9 export declares `icrs` whatever the WCS frame — plan Task 35
@@ -6492,15 +6500,15 @@ Medium
 - [ ] R25 Non-science extension set up from its own header only — plan Task 21
 - [ ] R26 Duplicate axis choice leaves `current_y_axis` wrong — plan Task 20
 - [x] R27 Arrow keys / Home / End show a raw channel in collapse mode — plan Task 6
-- [ ] R28 Depth Plot Y label not updated for Total DN — plan Task 12
-- [ ] R29 Catalog recentre wrong under view rotation — plan Task 14
+- [x] R28 Depth Plot Y label not updated for Total DN — plan Task 12
+- [x] R29 Catalog recentre wrong under view rotation — plan Task 14
 - [ ] R30 SExtractor `X_IMAGE`/`Y_IMAGE` plotted one pixel off — plan Task 28
-- [ ] R31 RA/Dec catalogs take 9.5 s per refresh at 66k rows — plan Task 13
+- [x] R31 RA/Dec catalogs take 9.5 s per refresh at 66k rows — plan Task 13
 - [ ] R32 VizieR coordinate names not recognised — plan Task 29
 - [ ] R33 Region properties dialog undoes a drag made while it is open — plan Task 31
 - [ ] R34 Region List Delete can remove the wrong region — plan Task 32
 - [ ] R35 Aggregate-mode labels never come back after a pan — plan Task 33
-- [ ] R36 Channel-range visibility ignores Collapse Region mode — plan Task 15
+- [x] R36 Channel-range visibility ignores Collapse Region mode — plan Task 15
 - [ ] R37 Non-square pixels: region angles wrong and not round-trip stable — plan Task 36
 - [ ] R38 Swapped display axes: box and arrow angles not converted — plan Task 36
 - [ ] R39 Angle 0 vs 360 makes a file look moved on its own image — plan Task 37
@@ -6509,14 +6517,14 @@ Medium
 - [ ] R42 Header Editor writes rows back by keyword name — plan Task 26
 - [ ] R43 Restarting a watch loses seen-but-unannounced files — plan Task 19
 - [ ] R44 A shape's caption stays behind when the shape is dragged — plan Task 33
-- [ ] R45 View rotation ignored by Zoom To and label culling — plan Task 15
+- [x] R45 View rotation ignored by Zoom To and label culling — plan Task 15
 - [ ] R46 Region drawing mode cannot be cancelled — plan Task 34
 - [ ] R47 ds9 vector frame tracking misses common forms — plan Task 38
 
 Low
 - [ ] R48 ds9 conversion drops information with an empty Report — plan Task 39
 - [ ] R49 File → Exit closes only the current window — plan Task 40
-- [ ] R50 Catalog labels return with Show All off — plan Task 30
+- [x] R50 Catalog labels return with Show All off — plan Task 13
 - [ ] R51 Show Region Labels off: new labels shown, text regions vanish — plan Task 33
 - [ ] R52 2-D image with a 3-axis WCS: readout and compass wrong — plan Task 20
 - [ ] R53 Depth Plot Log X removes the line list and breaks the readout — plan Task 23
@@ -6526,10 +6534,10 @@ Low
 - [x] R57 Display → Scaling menu drops timeline and manual levels — plan Task 6
 - [ ] R58 Recent Files stale across windows and processes — plan Task 40
 - [ ] R59 Finder multi-select into one window; `--poll-dir` misses `.fits.gz` — plan Task 41
-- [ ] R60 Catalog control changes recentre the view — plan Task 14
-- [ ] R61 Catalog RA/Dec passed by position on a Dec-first 2-D image — plan Task 13
+- [x] R60 Catalog control changes recentre the view — plan Task 14
+- [x] R61 Catalog RA/Dec passed by position on a Dec-first 2-D image — plan Task 13
 - [ ] R62 A `SkyCoord` catalog column leaves the X/Y selectors dead — plan Task 29
-- [ ] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
+- [x] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
 - [ ] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
 
 Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review, R85 from Task 9, R86–R87 from the Phase 3 review)
@@ -6538,14 +6546,14 @@ Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase
 - [ ] R83 Total DN offered whatever the data's unit; `EXPTIME` ignored — plan Task 44
 - [ ] R84 Unparsable Z field in range mode leaves channel 0 with old levels — plan Task 43
 - [x] R85 Photometry and Strehl delete their own ROI one event-loop pass after opening — plan Task 9
-- [ ] R86 Catalog markers and labels dropped without retiring — plan Task 13
-- [ ] R87 Contour items dropped then rebuilt each update — plan Task 11
+- [x] R86 Catalog markers and labels dropped without retiring — plan Task 13
+- [x] R87 Contour items dropped then rebuilt each update — plan Task 11
 
 Minor items (table)
 - [ ] R65 Colorbar shows transformed values — plan Task 43
 - [ ] R66 "1:1" zoom only fits the image — plan Task 43
 - [x] R67 View-rotation pivot off-centre — plan Task 7
-- [ ] R68 Rotate dialog stale after a reload; North Up dropped per frame — plan Task 16
+- [x] R68 Rotate dialog stale after a reload; North Up dropped per frame — plan Task 16
 - [ ] R69 Arithmetic result window title — plan Task 25
 - [ ] R70 In-place header save in a watched directory re-announces the file — plan Task 19
 - [ ] R71 Header-only save re-encodes scaled integer data — plan Task 26

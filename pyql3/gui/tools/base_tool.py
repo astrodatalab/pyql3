@@ -64,6 +64,60 @@ class BaseToolDialog(QDialog):
         
         # Don't block the main window
         self.setModal(False)
+
+        # Every tool follows the viewer through these three, and only these (`BUGS.md` R14).
+        # `tear_down` disconnects them.
+        for signal, slot in self._viewer_signals():
+            signal.connect(slot)
+
+    def _viewer_signals(self):
+        """The viewer's change signals and the private slot each one is connected to."""
+        viewer = self.image_viewer
+        if viewer is None or not hasattr(viewer, 'plane_changed'):
+            return []
+        return [(viewer.plane_changed, self._viewer_plane_changed),
+                (viewer.display_changed, self._viewer_display_changed),
+                (viewer.view_rotation_changed, self._viewer_rotated)]
+
+    def _following_viewer(self):
+        # A hidden tool shows nothing, so it has nothing to keep current; `_open_tool` builds
+        # a new one rather than showing a hidden one again.
+        return not self._torn_down and self.isVisible()
+
+    def _viewer_plane_changed(self):
+        if self._following_viewer():
+            self.on_plane_changed()
+
+    def _viewer_display_changed(self):
+        if self._following_viewer():
+            self.on_geometry_changed()
+
+    def _viewer_rotated(self, angle):
+        if self._following_viewer():
+            self.on_view_rotated(angle)
+
+    def on_plane_changed(self):
+        """The values on screen changed: a slider step, a Boxcar or Z Range collapse, a flip,
+        a 90° rotation, a unit change or new data. Recompute from `current_plane()`.
+
+        The default treats it like a moved ROI, which is what every measuring tool needs.
+        """
+        self.on_roi_changed()
+
+    def on_geometry_changed(self):
+        """The displayed plane's geometry may have changed (`ImageViewer.display_changed`).
+
+        Does nothing by default. Every `display_changed` follows a `plane_changed`, so a tool
+        that measures the plane has already recomputed when this arrives; recomputing here as
+        well would do the work twice for every flip, load and unit change. Override it only
+        for output that depends on the geometry and not on the plane's values.
+        """
+
+    def on_view_rotated(self, angle):
+        """The view was rotated to `angle` degrees (`ImageViewer.view_rotation_changed`).
+
+        Does nothing by default: an item parented to the ImageItem turns with it.
+        """
         
     def showEvent(self, event):
         """Make sure the dialog is somewhere the user can see it, the first time it opens.
@@ -138,8 +192,9 @@ class BaseToolDialog(QDialog):
 
         For every ROI a tool discards, not only `self.roi`: dropping the last reference instead
         leaves the ROI, its handles and its menu to the collector, which frees them in whatever
-        order their reference cycles are walked (`BUGS.md` M31). The caller still drops its
-        own attribute.
+        order their reference cycles are walked (`BUGS.md` M31). Any other graphics item a tool
+        puts on the image is retired the same way; the Contour tool's isocurves are (R87). The
+        caller still drops its own attribute.
         """
         self._release_scene_references(roi)
         try:
@@ -228,9 +283,21 @@ class BaseToolDialog(QDialog):
         if self._torn_down:
             return
         self._torn_down = True
+        self._disconnect_viewer_signals()
         self.disable_draw_mode()
         self.remove_roi_from_viewer()
         self._drop_retired_rois()
+
+    def _disconnect_viewer_signals(self):
+        import warnings
+        for signal, slot in self._viewer_signals():
+            # PySide6 warns, rather than raises, when the connection is already gone
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
 
     def closeEvent(self, event):
         self.tear_down()

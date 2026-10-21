@@ -45,6 +45,13 @@ def _marker_items(viewer):
     return [it for it in scene.items() if isinstance(it, (pg.ScatterPlotItem, pg.TextItem))]
 
 
+def _off_the_scene(item):
+    """True once `item` is out of the scene: removed from it, or deleted outright (R86)."""
+    import shiboken6
+
+    return not shiboken6.isValid(item) or item.scene() is None
+
+
 def _open_dialog(viewer, catalog_file, with_labels=True):
     dlg = PlotCatalogDialog(None, viewer)
     dlg.load_catalog_file(catalog_file)
@@ -77,11 +84,15 @@ def test_catalog_markers_are_removed_from_the_scene_on_close(viewer, catalog_fil
 
     dlg.close()
 
-    assert scatter.scene() is None, "scatter item left in the scene"
-    assert highlight.scene() is None, "highlight item left in the scene"
+    assert _off_the_scene(scatter), "scatter item left in the scene"
+    assert _off_the_scene(highlight), "highlight item left in the scene"
     for txt in texts:
-        assert txt.scene() is None, "text label left in the scene"
+        assert _off_the_scene(txt), "text label left in the scene"
     assert _marker_items(viewer) == []
+    # Deleting an item would also pass the checks above; the ViewBox must have let go of it too
+    added = viewer.imv.getView().addedItems
+    assert not any(item is entry for item in [scatter, highlight] + texts for entry in added), \
+        "an item was deleted without being removed from the ViewBox"
     assert dlg.scatter_item is None and dlg.highlight_item is None
     assert dlg.text_items == []
 
@@ -163,8 +174,9 @@ def test_removal_does_not_depend_on_garbage_collection(viewer, catalog_file):
     """B7, the actual defect: the scene must be clean *before* refcounting gets involved.
 
     Pre-fix, `_marker_items()` came back empty here too -- but only because dropping the
-    dialog's last reference destroyed the C++ objects. Asserting emptiness while the items
-    are still alive is what distinguishes explicit removal from accidental cleanup.
+    dialog's last reference destroyed the C++ objects. Asserting emptiness with the collector
+    off is what distinguishes explicit removal from accidental cleanup. Since R86 the dialog
+    also deletes the items itself, so each is either out of the scene or gone.
     """
     import gc
 
@@ -178,9 +190,7 @@ def test_removal_does_not_depend_on_garbage_collection(viewer, catalog_file):
     finally:
         gc.enable()
 
-    # the objects are still alive, they are simply no longer in the scene
-    assert all(item is not None for item in alive)
-    assert all(item.scene() is None for item in alive)
+    assert all(_off_the_scene(item) for item in alive)
 
 
 # --------------------------------------------------------------------------------------
@@ -1026,3 +1036,427 @@ def test_closing_the_catalog_releases_its_retired_labels(viewer, tmp_path, monke
     dlg.close()
 
     assert dlg._retired == []
+
+
+# --------------------------------------------------------------------------------------
+# Markers follow the image: resolved once per geometry, re-placed when the image changes
+# --------------------------------------------------------------------------------------
+
+
+def _tan_wcs(ctype=('RA---TAN', 'DEC--TAN'), crval=(266.4, -29.0), crpix=(30, 20),
+             cdelt=(-0.0001, 0.0001)):
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.ctype = list(ctype)
+    w.wcs.crval = list(crval)
+    w.wcs.crpix = list(crpix)
+    w.wcs.cdelt = list(cdelt)
+    return w
+
+
+def _scatter_points(dlg):
+    xs, ys = dlg.scatter_item.getData()
+    return [(float(x), float(y)) for x, y in zip(xs, ys, strict=True)]
+
+
+def test_markers_follow_a_flip_and_a_new_image(qapp):
+    """R8: markers kept the display coordinates they were drawn at when the image changed."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))     # orig dims (60, 40)
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.show()
+    try:
+        dlg.set_catalog_table(Table({"name": ["a", "b"], "x": [5.0, 50.0], "y": [7.0, 30.0]}),
+                              "t")
+        assert _scatter_points(dlg) == [(5.5, 7.5), (50.5, 30.5)]
+        dlg.table.selectRow(0)
+
+        # Where the user has panned to must survive the redraw (R60 is about recentring)
+        view = viewer.imv.getView()
+        view.setRange(xRange=(20, 30), yRange=(20, 30), padding=0)
+        before = view.viewRect()
+
+        viewer.flip = True                               # what the Rotate tool's Flip does
+        viewer.refresh_display()
+
+        expected = [tuple(c + 0.5 for c in viewer.orig_to_display(x, y))
+                    for x, y in ((5.0, 7.0), (50.0, 30.0))]
+        assert _scatter_points(dlg) == pytest.approx(expected)
+        hx, hy = dlg.highlight_item.getData()
+        assert (float(hx[0]), float(hy[0])) == pytest.approx(expected[0]), \
+            "the highlight stayed where it was drawn"
+        assert view.viewRect() == before, "re-placing the markers moved the view"
+
+        viewer.flip = False
+        viewer.set_data(np.zeros((20, 20), np.float32))  # a new file; source b is off it
+        assert _scatter_points(dlg) == [(5.5, 7.5)]
+        assert "1 plotted | 1 out of bounds" in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_markers_follow_a_view_rotation(qapp):
+    """R8: the markers turn with the ImageItem; the labels sit on the ViewBox and stayed put."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.show()
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [5.0], "y": [7.0]}), "t")
+        dlg.chk_show_name.setChecked(True)
+        viewer.imv.getView().setRange(xRange=(-40, 100), yRange=(-40, 100), padding=0)
+        dlg.update_visible_text_labels()
+
+        viewer.apply_view_rotation(90.0)
+
+        (mx, my), = _scatter_points(dlg)
+        assert (mx, my) == (5.5, 7.5), "the marker is in ImageItem coordinates and stays there"
+        shown = [txt for txt in dlg.text_items if txt.isVisible()]
+        assert len(shown) == 1, "the label was dropped"
+        pos = shown[0].pos()
+        assert (pos.x(), pos.y()) == pytest.approx(viewer.item_to_view(mx, my)), \
+            "the label did not follow the view rotation"
+    finally:
+        dlg.close()
+
+
+def test_a_unit_change_does_not_re_place_the_catalog(qapp, monkeypatch):
+    """A unit change emits `display_changed`, and the catalog re-placed every marker and label
+    for it although nothing moved: 56 ms with a 66k-row catalog. A flip still re-places them."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.show()
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [5.0], "y": [7.0]}), "t")
+        placed = []
+        real = dlg._plot_markers
+        monkeypatch.setattr(dlg, "_plot_markers", lambda: (placed.append(1), real())[1])
+
+        viewer.disp_as_dn = True
+        viewer.refresh_display()
+        assert placed == [], "a unit change re-placed the markers"
+
+        viewer.flip = True
+        viewer.refresh_display()
+        assert placed == [1], "a flip did not re-place the markers"
+    finally:
+        dlg.close()
+
+
+def test_an_unchanged_view_rotation_re_places_no_label(qapp, monkeypatch):
+    """`set_data` draws the new plane unrotated and then announces the rotation of 0.0; the
+    catalog re-placed its labels for both, 45 ms per load with 3500 labels."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.show()
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [5.0], "y": [7.0]}), "t")
+        dlg.chk_show_name.setChecked(True)
+        viewer.apply_view_rotation(20.0)
+        labelled = []
+        real = dlg.update_visible_text_labels
+        monkeypatch.setattr(dlg, "update_visible_text_labels",
+                            lambda: (labelled.append(1), real())[1])
+
+        viewer.view_rotation_changed.emit(20.0)
+        assert labelled == [], "an unchanged angle re-placed the labels"
+
+        viewer.set_data(np.ones((40, 60), np.float32))
+        assert labelled == [1], f"a load re-placed the labels {len(labelled)} times"
+        assert [t for t in dlg.text_items if t.isVisible()], "the label was lost"
+    finally:
+        dlg.close()
+
+
+def test_catalog_given_before_any_image_plots_when_one_arrives(qapp):
+    """R8: `--catalog` with no image, or `--poll-dir` on an empty directory."""
+    from astropy.table import Table
+
+    w = _tan_wcs()
+    ra, dec = w.pixel_to_world_values(10.0, 25.0)
+    viewer = ImageViewer()
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.show()
+    try:
+        dlg.set_catalog_table(Table({"name": ["s"], "ra": [float(ra)], "dec": [float(dec)]}),
+                              "t")
+        assert dlg.combo_coord_type.currentIndex() == 2
+
+        viewer.set_data(np.zeros((40, 60), np.float32), w.to_header())
+
+        (mx, my), = _scatter_points(dlg)
+        assert (mx, my) == pytest.approx((10.5, 25.5), abs=0.01)
+        assert "1 plotted" in dlg.lbl_status.text()
+        assert "unusable" not in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_world_catalog_refresh_is_not_per_row(qapp):
+    """R31: each row built its own SkyCoord and made its own WCS call, about 0.14 ms a row, on
+    every change of a marker control."""
+    import time
+
+    from astropy.table import Table
+
+    w = _tan_wcs(crpix=(1000, 1000))
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((2000, 2000), np.float32), w.to_header())
+    n = 20000
+    x, y = np.random.default_rng(1).uniform(0, 2000, (2, n))
+    ra, dec = w.pixel_to_world_values(x, y)
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"id": np.arange(n), "ra": ra, "dec": dec}), "t")
+        assert dlg.combo_coord_type.currentIndex() == 2
+
+        start = time.perf_counter()
+        dlg.spin_size.setValue(11)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.5, f"one marker-size step took {elapsed:.2f} s"
+
+        resolved = dlg._resolve_orig_positions()
+        assert resolved.shape == (n, 2)
+        for i in (0, 1, n // 2, n - 1):
+            want = w.world_to_pixel_values(ra[i], dec[i])
+            assert tuple(resolved[i]) == pytest.approx(tuple(float(v) for v in want), abs=1e-6)
+    finally:
+        dlg.close()
+
+
+def test_world_catalog_on_a_dec_first_2d_image(qapp):
+    """R61: a collapsed OSIRIS cube leaves Dec on FITS axis 1; RA was passed first anyway."""
+    from astropy.table import Table
+
+    w = _tan_wcs(ctype=('DEC--TAN', 'RA---TAN'), crval=(-29.0, 266.4),
+                 cdelt=(0.0001, 0.0001))
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32), w.to_header())
+    dec, ra = w.pixel_to_world_values(10, 25)            # a star at 0-based pixel (10, 25)
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": ["s"], "ra": [float(ra)], "dec": [float(dec)]}),
+                              "t")
+        assert dlg.combo_coord_type.currentIndex() == 2
+        (mx, my), = _scatter_points(dlg)
+        assert (mx, my) == pytest.approx((10.5, 25.5), abs=0.01)
+    finally:
+        dlg.close()
+
+
+def test_closing_the_catalog_retires_its_markers_and_labels(viewer, catalog_file, monkeypatch):
+    """R86: tear_down dropped the scatter items and the label pool instead of retiring them,
+    leaving the collector to free them in whatever order it walked their cycles (M18, M31)."""
+    import shiboken6
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    dlg = _open_dialog(viewer, catalog_file)
+    dlg.show()
+    items = [dlg.scatter_item, dlg.highlight_item] + list(dlg.text_items)
+    assert len(items) > 2, "no labels were drawn, so this checks nothing"
+
+    released = []
+    original = dlg._release_retired
+
+    def spy():
+        released.extend(dlg._retired)
+        original()
+    monkeypatch.setattr(dlg, "_release_retired", spy)
+
+    QTest.keyClick(dlg, Qt.Key.Key_Escape)
+
+    assert not dlg.isVisible()
+    for item in items:
+        assert any(item is gone for gone in released), f"{item!r} was not retired"
+    assert not any(shiboken6.isValid(item) for item in items), "an item outlived the dialog"
+    assert dlg._retired == []
+
+
+def test_one_unreadable_sexagesimal_cell_costs_only_its_own_row():
+    """`sky_degrees` reads all text rows in one SkyCoord; a bad cell must not lose the rest."""
+    from astropy.table import MaskedColumn
+
+    from pyql3.gui.tools.plot_catalog import sky_degrees
+
+    ra = MaskedColumn(["17:45:40.0", "nonsense", "266.4", "17:45:40.0"],
+                      mask=[False, False, False, True])
+    dec = MaskedColumn(["-29:00:28", "-29:00:00", "-29.0", "-29:00:28"])
+
+    got_ra, got_dec = sky_degrees(ra, dec)
+
+    assert got_ra[0] == pytest.approx(266.41667, abs=1e-4)
+    assert got_dec[0] == pytest.approx(-29.00778, abs=1e-4)
+    assert np.isnan(got_ra[1]) and np.isnan(got_dec[1])
+    assert (got_ra[2], got_dec[2]) == pytest.approx((266.4, -29.0)), "numbers are degrees"
+    assert np.isnan(got_ra[3]), "a masked cell was given a position"
+
+
+def test_labels_stay_hidden_with_show_all_off_after_a_pan(qapp):
+    """R50: with Show All off, the next pan redrew the previous label list without markers."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.show()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": [f"s{i}" for i in range(10)],
+                                     "x": [3.0 + 5 * i for i in range(10)],
+                                     "y": [3.0 + 3 * i for i in range(10)]}), "t")
+        dlg.chk_show_name.setChecked(True)
+        assert sum(t.isVisible() for t in dlg.text_items) == 10
+
+        dlg.chk_master_toggle.setChecked(False)
+        dlg._on_view_range_changed()          # a pan frame
+        dlg.update_visible_text_labels()      # what the redraw timer then calls
+
+        assert len(dlg.scatter_item.getData()[0]) == 0
+        assert not any(t.isVisible() for t in dlg.text_items), "labels came back after a pan"
+    finally:
+        dlg.close()
+        viewer.close()
+
+
+def test_float_ids_keep_their_digits_in_labels(viewer):
+    """A float ID column (a pandas CSV with one missing ID is one) must not label 123456 and
+    123457 both `1.2346e+05`. The table keeps its compact `.5g` cells."""
+    from astropy.table import Table
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": [123456.0, 123457.0, 266.41667],
+                                     "x": [5.0, 10.0, 15.0], "y": [5.0, 10.0, 15.0]}), "t")
+        dlg.combo_name.setCurrentText("name")
+        dlg.chk_show_name.setChecked(True)
+
+        labels = sorted(t.toPlainText() for t in dlg.text_items if t.isVisible())
+        assert labels == ["123456", "123457", "266.41667"]
+        assert dlg.table.model().index(0, 0).data() == "1.2346e+05"
+    finally:
+        dlg.close()
+
+
+def test_selecting_a_row_after_unplaceable_rows_highlights_that_row(viewer):
+    """Rows that cannot be placed are not plotted, so plotted index and row number differ;
+    the highlight must still land on the selected row's own source."""
+    from astropy.table import Table
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": ["nan", "text", "good", "other"],
+                                     "x": ["nan", "abc", "12.0", "30.0"],
+                                     "y": ["4.0", "5.0", "21.0", "33.0"]}), "t")
+        dlg.combo_coord_type.setCurrentIndex(1)
+        dlg.combo_x.setCurrentText("x")
+        dlg.combo_y.setCurrentText("y")
+        assert "2 unusable" in dlg.lbl_status.text()
+
+        dlg.table.selectRow(2)
+        hx, hy = dlg.highlight_item.getData()
+        assert (float(hx[0]), float(hy[0])) == (12.5, 21.5)
+    finally:
+        dlg.close()
+
+
+def test_float32_labels_are_written_at_float32_precision(viewer):
+    """FITS format E columns are float32; widening them to a double printed 0.1 as
+    `0.10000000149011612`. A float64 column keeps its own digits."""
+    from astropy.table import Table
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        for dtype, expected in ((np.float32, ["0.1", "266.41666"]),
+                                (np.float64, ["0.1", "266.41667"])):
+            dlg.set_catalog_table(Table({"name": np.array([0.1, 266.41667], dtype=dtype),
+                                         "x": [5.0, 10.0], "y": [5.0, 10.0]}), "t")
+            dlg.combo_name.setCurrentText("name")
+            dlg.chk_show_name.setChecked(True)
+            dlg.update_visible_text_labels()
+
+            labels = [t.toPlainText() for t in dlg.text_items if t.isVisible()]
+            assert labels == expected, dtype
+    finally:
+        dlg.close()
+
+
+# ------------------------------------------- recentring: view coordinates, only when asked
+
+def _two_source_dialog(loaded_viewer):
+    """A catalog of two pixel-coordinate sources in a zoomed-in view."""
+    from astropy.table import Table
+
+    dialog = PlotCatalogDialog(None, loaded_viewer)
+    dialog.set_catalog_table(Table({
+        "name": ["a", "b"], "x": [5.0, 12.0], "y": [7.0, 9.0],
+    }), "test")
+    return dialog
+
+
+def test_selecting_a_row_centres_it_under_a_view_rotation(qapp, loaded_viewer):
+    """R29: the centre was passed to `setRange` in ImageItem coordinates, not view coordinates."""
+    dialog = _two_source_dialog(loaded_viewer)
+    try:
+        view = loaded_viewer.imv.getView()
+        view.setRange(xRange=(0, 6), yRange=(0, 6), padding=0)
+        loaded_viewer.apply_view_rotation(90.0)
+
+        dialog.table.selectRow(1)
+
+        resolved = dialog._row_to_display(1)
+        source = loaded_viewer.item_to_view(resolved[0] + 0.5, resolved[1] + 0.5)
+        rect = view.viewRect()
+        assert rect.contains(*source), "the selected source is off screen"
+        assert (rect.center().x(), rect.center().y()) == pytest.approx(source, abs=0.01)
+    finally:
+        dialog.close()
+
+
+def test_a_style_change_does_not_move_the_view(qapp, loaded_viewer):
+    """R60: every catalog control called `update_plot`, which recentred on the selection."""
+    dialog = _two_source_dialog(loaded_viewer)
+    try:
+        view = loaded_viewer.imv.getView()
+        view.setRange(xRange=(0, 6), yRange=(0, 6), padding=0)
+        dialog.table.selectRow(0)
+        view.setRange(xRange=(8, 14), yRange=(4, 10), padding=0)
+        before = view.viewRect().center()
+
+        dialog.spin_size.setValue(dialog.spin_size.value() + 4)
+
+        after = view.viewRect().center()
+        assert (after.x(), after.y()) == pytest.approx((before.x(), before.y()))
+        assert dialog.highlight_item.isVisible(), "the highlight must follow the new size"
+    finally:
+        dialog.close()
+
+
+def test_center_on_source_recentres_the_view(qapp, loaded_viewer):
+    """Recentring stays available on request, after the user has panned away."""
+    dialog = _two_source_dialog(loaded_viewer)
+    try:
+        view = loaded_viewer.imv.getView()
+        view.setRange(xRange=(0, 6), yRange=(0, 6), padding=0)
+        dialog.table.selectRow(1)
+        view.setRange(xRange=(0, 6), yRange=(0, 6), padding=0)
+
+        menu = dialog.build_context_menu(1)
+        next(a for a in menu.actions() if a.text() == "Center on Source").trigger()
+
+        source = loaded_viewer.item_to_view(*(c + 0.5 for c in dialog._row_to_display(1)))
+        centre = view.viewRect().center()
+        assert (centre.x(), centre.y()) == pytest.approx(source, abs=0.01)
+    finally:
+        dialog.close()

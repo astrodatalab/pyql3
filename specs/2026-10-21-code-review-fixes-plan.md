@@ -429,6 +429,8 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - `header_info.total_dn_multiplier(header)` falls back to `EXPTIME` (not multiplied by `COADDS`) when neither `TRUITIME` nor `ITIME` is usable, and returns `None` when no exposure keyword exists.
 - Produces: `ImageViewer.data_unit` (set in `set_data`, from `header` else `reference_header`), `ImageViewer.total_dn_available -> bool` (`data_unit.is_rate is True` and a multiplier exists), `ImageViewer.value_unit_label() -> str` (`"Total DN"` when showing Total DN, else `data_unit.label`). Every unit label in the application goes through `value_unit_label()`.
 - `MainWindow`: after each load, "As Total DN" is enabled only when `total_dn_available`; when disabled its tooltip is `data_unit.reason`. Loading a file that does not support Total DN while it is selected switches back to the native unit and says so in the status bar.
+- That switch is made inside `set_data`, before `plane_changed` / `display_changed` are emitted: `disp_as_dn` is cleared there when the new file does not support Total DN. Switching after the load calls `refresh_display` a second time and recomputes every open tool twice per load.
+- Strehl writes its unit label only when the computation succeeds, and labels its normalised profile "Intensity (DN/s)" today; fix both here (the label goes through `value_unit_label()`, and a normalised profile is not labelled with a data unit).
 
 - [ ] **Step 1: Write the failing tests.** `test_header_info.py::test_data_unit` (OSIRIS text, `MJy/sr`, `DN/s`, `electron/s`, missing), `::test_exptime_is_the_last_fallback`. `test_menu_actions.py::test_total_dn_is_offered_only_for_a_count_rate` (an MJy/sr cube and a cube without `BUNIT` leave "As Total DN" disabled with the tooltip; `osiris_like_fits` enables it), `::test_loading_a_non_rate_cube_leaves_total_dn`. `test_image_viewer.py::test_labels_use_the_declared_unit` (an MJy/sr cube's colorbar reads "MJy/sr"; a cube without `BUNIT` reads "Unknown").
 - [ ] **Step 2: Run them and see them fail.**
@@ -541,6 +543,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 **Interfaces:**
 - Consumes: `_resolve_orig_positions` (Task 13).
 - Produces: a *Pixel origin* control (`0-based (array)` / `1-based (FITS)`) beside the coordinate type, shown for pixel types; 1-based applies `coords.fits_to_index` to both columns. It defaults to 1-based when the chosen columns are SExtractor `*_IMAGE` names and to 0-based otherwise. Regions sent from the Region menu stay 0-based.
+- The pixel-origin choice must be part of `_resolve_orig_positions`'s cache key (the `settings` tuple), or changing it returns the positions resolved under the other origin.
 
 - [ ] **Step 1: Write the failing test.** `::test_sextractor_image_columns_are_one_based` (R30: the FITS-pixel and World markers for one row agree within 0.01 px).
 - [ ] **Step 2: Run it and see it fail.**
@@ -560,17 +563,21 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 4: Run them; they pass.**
 - [ ] **Step 5: Close-out** for R32 and R62.
 
-### Task 30: Catalog label visibility and the ceiling message (R50, R75)
+### Task 30: The catalog's label-ceiling message (R75)
+
+R50 (labels returning with *Show All* off) was closed in Task 13, whose `_plot_markers` empties the
+label positions before its *Show All* early return; `test_labels_stay_hidden_with_show_all_off_after_a_pan`
+was added there.
 
 **Files:**
 - Modify: `pyql3/gui/tools/plot_catalog.py:925-929`, `:955`, `:986-987`, `:1083-1102`
 - Test: `tests/test_plot_catalog.py`
 
-- [ ] **Step 1: Write the failing tests.** `::test_labels_stay_hidden_with_show_all_off_after_a_pan` (R50), `::test_the_label_ceiling_message_survives_a_style_change` (R75, with the limit lowered as the existing ceiling tests do).
-- [ ] **Step 2: Run them and see them fail.**
-- [ ] **Step 3: Implement:** `update_visible_text_labels` hides and returns when `chk_master_toggle` is unchecked; `update_plot`'s early returns clear `all_label_points`; after writing its status, `update_plot` re-applies the ceiling message while `self._label_guard.suppressing`.
-- [ ] **Step 4: Run them; they pass.**
-- [ ] **Step 5: Close-out** for R50 and R75. **End of Phase 8: stop and report the staged diff.**
+- [ ] **Step 1: Write the failing test.** `::test_the_label_ceiling_message_survives_a_style_change` (R75, with the limit lowered as the existing ceiling tests do).
+- [ ] **Step 2: Run it and see it fail.**
+- [ ] **Step 3: Implement:** after writing its status, `update_plot` re-applies the ceiling message while `self._label_guard.suppressing`.
+- [ ] **Step 4: Run it; it passes.**
+- [ ] **Step 5: Close-out** for R75. **End of Phase 8: stop and report the staged diff.**
 
 ---
 
@@ -611,7 +618,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 - [ ] **Step 1: Write the failing tests.** `::test_overlay_labels_appear_after_panning_from_an_empty_area`, `::test_overlay_labels_return_after_zooming_in_below_the_ceiling` (R35), `::test_a_caption_follows_its_dragged_shape` (R44, circle / box / arrow), `::test_new_and_restyled_regions_obey_the_labels_toggle`, `::test_a_text_region_stays_visible_with_labels_off` (R51).
 - [ ] **Step 2: Run them and see them fail.**
-- [ ] **Step 3: Implement:** in aggregate mode restart the label timer whenever labels are switched on and any visible region has `text`; `_item_edited` ends by calling `_place_label` under `_placing`; `_build_items` and `_restyle_in_place` pass `show_labels=self._labels_visible and not self._label_guard.suppressing`; `_apply_visibility` exempts an entry whose label is its handle.
+- [ ] **Step 3: Implement:** in aggregate mode restart the label timer whenever labels are switched on and any visible region has `text`; `_item_edited` ends by calling `_place_label` under `_placing`. For R51: the Phase 4 review already made new and restyled regions obey the labels switch through `RegionLayer._show_one` (`_apply_visibility` now takes `(entry, channel, label_shown)`); what remains is the text-region half — exempt an entry whose label is its handle (`entry.label is entry.handle`) from the label rule in both decision points, the `labelled`/`show` computation in `update_channel_visibility` (which also counts text regions against the label ceiling) and `_show_one`, so a text region stays visible with labels off in both render modes. `::test_new_and_restyled_regions_obey_the_labels_toggle` passes already (a regression guard; Step 2 does not apply to it); `::test_a_text_region_stays_visible_with_labels_off` must fail first.
 - [ ] **Step 4: Run the region test files; they pass.** M18 and M30 tests must still pass.
 - [ ] **Step 5: Close-out** for R35, R44, R51.
 

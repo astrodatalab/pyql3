@@ -71,11 +71,12 @@ class StrehlDialog(BaseToolDialog):
         if self.image_viewer is None or self.image_viewer.display_data is None:
             return
             
-        img_data = self.image_viewer.display_data
-        if img_data.ndim == 3:
-            img_data = img_data[self.image_viewer.imv.currentIndex]
-            
-        data = img_data.T # Transpose (nx, ny) -> (ny, nx) for analysis
+        # The plane on screen, whichever z mode drew it; `imv.currentIndex` names no plane in
+        # Boxcar or Z Range mode.
+        plane = self.image_viewer.current_plane()
+        if plane is None:
+            return
+        data = (plane * self.image_viewer.data_multiplier).T  # (nx, ny) -> (ny, nx) for analysis
         
         pos = self.roi.pos()
         size = self.roi.size()

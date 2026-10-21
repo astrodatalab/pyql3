@@ -22,7 +22,7 @@ import warnings
 from pyql3.gui.label_policy import (
     LABEL_REDRAW_DELAY_MS,
     LabelDensityGuard,
-    grown_for_labels,
+    labels_in_view,
 )
 from pyql3.gui.tools.base_tool import BaseToolDialog
 
@@ -364,15 +364,104 @@ class CatalogTableModel(QAbstractTableModel):
         return str(section + 1)
 
 
-def map_to_display(image_viewer, orig_x, orig_y):
-    """Map a FITS-axis pixel coordinate to display coordinates.
+def float_column(column):
+    """Every cell of one column as a float array, NaN wherever `to_float` would give None.
 
-    Kept as a module-level function because the catalog code calls it per row; the arithmetic
-    itself lives in `pyql3.core.coords` and is shared with the WCS readout and the Depth Plot
-    (`BUGS.md` B14). Unloaded viewers pass the coordinate through unchanged, as before.
+    Read as a whole column for the reason `column_texts` documents. Only a column of text or
+    objects is converted cell by cell, because only there can a cell fail to parse.
     """
-    mapped = image_viewer.orig_to_display(orig_x, orig_y)
-    return (orig_x, orig_y) if mapped is None else mapped
+    values = np.asarray(column)
+    if values.dtype.kind in 'fiub':
+        result = values.astype(float)
+    else:
+        result = np.array([np.nan if (f := to_float(v)) is None else f
+                           for v in values.tolist()], dtype=float)
+    result[~np.isfinite(result)] = np.nan
+    # np.asarray on a MaskedColumn hands back the fill values, so the mask is applied after
+    if np.ma.isMaskedArray(column):
+        result[np.ma.getmaskarray(column)] = np.nan
+    return result
+
+
+def _text_cells(column):
+    """True for each cell that holds text which is not a number. Masking is not considered."""
+    values = np.asarray(column)
+    if values.dtype.kind not in 'USO':
+        return np.zeros(len(values), dtype=bool)
+    return np.array([to_float(v) is None for v in values.tolist()], dtype=bool)
+
+
+def _cell_string(value):
+    return value.decode('utf-8', 'replace').strip() if isinstance(value, bytes) else str(value)
+
+
+def sky_degrees(ra_column, dec_column):
+    """RA and Dec of every row in degrees, as two arrays, NaN where a row cannot be read.
+
+    A row whose two cells are both numbers is read as decimal degrees; a row with text in either
+    cell is read as sexagesimal, RA in hours. Each kind is read with one `SkyCoord` over all of
+    its rows: a `SkyCoord` per row cost 0.14 ms a row, 9.5 s on a 66k-row catalog
+    (`BUGS.md` R31). Only when the sexagesimal batch fails as a whole are its rows read one at a
+    time, so that one bad cell costs its own row and not the rest.
+    """
+    ra, dec = float_column(ra_column), float_column(dec_column)
+    out_ra = np.full(len(ra), np.nan)
+    out_dec = np.full(len(ra), np.nan)
+
+    # A Dec beyond the pole is not a position; SkyCoord would reject the whole batch for it
+    numeric = np.isfinite(ra) & np.isfinite(dec) & (np.abs(dec) <= 90.0)
+    if numeric.any():
+        crd = SkyCoord(ra[numeric], dec[numeric], unit=(u.deg, u.deg))
+        out_ra[numeric] = crd.ra.deg
+        out_dec[numeric] = crd.dec.deg
+
+    text = _text_cells(ra_column) | _text_cells(dec_column)
+    # A masked cell is no position, whatever the other cell holds
+    for column in (ra_column, dec_column):
+        if np.ma.isMaskedArray(column):
+            text &= ~np.ma.getmaskarray(column)
+    rows = np.flatnonzero(text)
+    if len(rows):
+        ra_text = [_cell_string(v) for v in np.asarray(ra_column)[rows].tolist()]
+        dec_text = [_cell_string(v) for v in np.asarray(dec_column)[rows].tolist()]
+        try:
+            crd = SkyCoord(ra_text, dec_text, unit=(u.hourangle, u.deg))
+            out_ra[rows] = crd.ra.deg
+            out_dec[rows] = crd.dec.deg
+        except Exception:
+            for row, ra_cell, dec_cell in zip(rows, ra_text, dec_text, strict=True):
+                try:
+                    crd = SkyCoord(ra_cell, dec_cell, unit=(u.hourangle, u.deg))
+                except Exception:
+                    continue
+                out_ra[row] = crd.ra.deg
+                out_dec[row] = crd.dec.deg
+    return out_ra, out_dec
+
+
+def label_texts(column):
+    """Every cell of one column as label text, read as a whole column.
+
+    Unlike `column_texts`, a float keeps its digits: the table's `.5g` labelled IDs 123456.0
+    and 123457.0 both `1.2346e+05`, and a pandas-written CSV stores an ID column with one
+    missing value as floats. A whole-number float is written as an integer, any other float
+    in the shortest form that reads back as the same value at the column's own precision.
+    Other columns read as the table shows them.
+    """
+    values = np.asarray(column)
+    if values.dtype.kind != 'f':
+        return column_texts(column)
+    # A double reads fastest through tolist(). Any narrower float is iterated as its own numpy
+    # scalar instead, which prints at its own precision: tolist() widens a float32 0.1 to the
+    # double 0.10000000149011612 and prints every one of those digits.
+    cells = values.tolist() if values.dtype.itemsize == 8 else list(values)
+    texts = [str(int(v)) if v.is_integer() and abs(v) < 1e15 else str(v) for v in cells]
+    mask = np.ma.getmaskarray(column) if np.ma.isMaskedArray(column) else None
+    if mask is not None and mask.any():
+        texts = [MASKED_TEXT if m else t
+                 for t, m in zip(texts, mask.tolist(), strict=True)]
+    return texts
+
 
 class PlotCatalogDialog(BaseToolDialog):
     def __init__(self, parent=None, image_viewer=None):
@@ -387,12 +476,26 @@ class PlotCatalogDialog(BaseToolDialog):
         self.scatter_item = None
         self.highlight_item = None
         self.text_items = []
+        #: Every row's position, as `_resolve_orig_positions` last computed it, and what it was
+        #: computed from: `(table, wcs, columns and coordinate type)`. See `_forget_positions`.
+        self._orig_positions = None
+        self._orig_source = None
+        #: Every row's label text for one name column, as `(table, column, texts)`.
+        self._label_text_cache = None
+        #: The labelled markers: ImageItem positions (M, 2) and the catalog row of each.
+        self._label_positions = np.empty((0, 2))
+        self._label_rows = np.empty(0, dtype=int)
         #: The status line update_plot last wrote, restored when the label ceiling lifts.
         self._plot_status = ""
         #: Label items taken out of the scene but not yet released. See `_retire_items`.
         self._retired = []
         #: Applies CATALOG_LABEL_LIMIT and reports when that verdict changes.
         self._label_guard = LabelDensityGuard(on_change=self._on_labels_suppressed)
+        #: `ImageViewer.placement_key()` when the markers were last placed, and the view
+        #: rotation the labels were last placed under. See `on_geometry_changed` and
+        #: `on_view_rotated`.
+        self._placed_key = None
+        self._labelled_rotation = None
         
         # Default marker settings
         self.marker_color = QColor(255, 165, 0) # Orange default
@@ -603,6 +706,7 @@ class PlotCatalogDialog(BaseToolDialog):
         highlighting that this tool has and the region overlay does not.
         """
         self.catalog_data = table
+        self._forget_positions()
         self.lbl_file.setText(name)
 
         # A reload must not undo a column choice made by hand. Re-running the guess on every
@@ -824,92 +928,206 @@ class PlotCatalogDialog(BaseToolDialog):
         if shape_str.startswith("x"): return "x"
         return "o"
         
-    def _row_to_display(self, row):
-        """Resolve one catalog row to display pixel coordinates, or None if it cannot be.
+    def _forget_positions(self):
+        """Drop the resolved positions and label texts; the catalog itself changed.
 
-        Shared by the marker pass and by the table-selection highlight so the two cannot
-        drift apart. The returned pair is *not* half-pixel centred — callers add the 0.5
-        themselves.
+        Called on a new table and on a deleted row. A change of column, coordinate type, WCS or
+        displayed axes is noticed by `_resolve_orig_positions` itself.
         """
-        if self.catalog_data is None or self.image_viewer is None:
-            return None
+        self._orig_positions = None
+        self._orig_source = None
+        self._label_text_cache = None
 
-        x_col = self.combo_x.currentText()
-        y_col = self.combo_y.currentText()
-        if x_col not in self.catalog_data.colnames or y_col not in self.catalog_data.colnames:
-            return None
+    def _resolve_orig_positions(self):
+        """Where every catalog row sits, as an `(N, 2)` array; NaN where a row cannot be placed.
 
-        val_x = row[x_col]
-        val_y = row[y_col]
+        For *FITS Pixels* and *World (RA/DEC)* these are orig coordinates (`pyql3.core.coords`),
+        which do not change with a flip, a 90° rotation or a view rotation, so they are computed
+        once and kept until the catalog, the coordinate columns, the coordinate type, the WCS or
+        the displayed FITS axes change. *Display Pixels* are kept as given: they already name a
+        place on screen, and `_display_positions` does not map them.
+
+        Computed column-wise, never per row: one `SkyCoord` per kind of cell (`sky_degrees`) and
+        one `world_to_pixel_values` call. Per row, an RA/Dec catalog of 66k rows took 9.5 s, and
+        it was redone on every change of a marker control (`BUGS.md` R31).
+        """
+        table = self.catalog_data
+        if table is None:
+            return np.empty((0, 2))
         coord_idx = self.combo_coord_type.currentIndex()
+        wcs = getattr(self.image_viewer, 'wcs', None)
+        axes = (self.image_viewer.display_axis_indices()
+                if coord_idx == 2 and self.image_viewer is not None else None)
+        settings = (self.combo_x.currentText(), self.combo_y.currentText(), coord_idx, axes)
 
-        if coord_idx == 2:
-            # Decimal degrees when both cells are numbers, sexagesimal otherwise
-            f_x, f_y = to_float(val_x), to_float(val_y)
-            try:
-                if f_x is not None and f_y is not None:
-                    crd = SkyCoord(f_x, f_y, unit=(u.deg, u.deg))
-                else:
-                    crd = SkyCoord(val_x, val_y, unit=(u.hourangle, u.deg))
-                val_x = float(crd.ra.deg)
-                val_y = float(crd.dec.deg)
-            except Exception:
-                return None
-        else:
-            val_x, val_y = to_float(val_x), to_float(val_y)
-            if val_x is None or val_y is None:
-                return None
+        cached = self._orig_source
+        if (self._orig_positions is not None and cached is not None and cached[0] is table
+                and cached[1] is wcs and cached[2] == settings):
+            return self._orig_positions
 
-        if coord_idx == 0:
-            return val_x, val_y
+        x_col, y_col = settings[0], settings[1]
+        positions = np.full((len(table), 2), np.nan)
+        if x_col in table.colnames and y_col in table.colnames:
+            if coord_idx == 2:
+                positions = self._world_to_orig(*sky_degrees(table[x_col], table[y_col]))
+            else:
+                positions = np.column_stack([float_column(table[x_col]),
+                                             float_column(table[y_col])])
 
-        orig_x, orig_y = val_x, val_y
+        self._orig_positions = positions
+        self._orig_source = (table, wcs, settings)
+        return positions
 
-        if coord_idx == 2:
-            if getattr(self.image_viewer, 'wcs', None) is None:
-                return None
-            try:
-                wcs = self.image_viewer.wcs
-                if wcs.naxis == 2:
-                    orig_x, orig_y = wcs.world_to_pixel_values(val_x, val_y)
-                else:
-                    # Never index the celestial axes by position: OSIRIS puts RA on
-                    # FITS axis 3, other IFUs do not. Identify them from the WCS.
-                    phys = wcs.world_axis_physical_types
-                    coords_in = [0.0] * wcs.naxis
-                    for ax_idx, p in enumerate(phys):
-                        if p == 'pos.eq.ra':
-                            coords_in[ax_idx] = val_x
-                        elif p == 'pos.eq.dec':
-                            coords_in[ax_idx] = val_y
-                        else:
-                            coords_in[ax_idx] = wcs.wcs.crval[ax_idx]
+    def _world_to_orig(self, ra, dec):
+        """Orig coordinates of each (RA, Dec) in degrees, through the viewer's WCS, as `(N, 2)`.
 
-                    pixel_coords = wcs.world_to_pixel_values(*coords_in)
+        The celestial axes are identified from `world_axis_physical_types` for every `naxis`,
+        never by position: OSIRIS puts RA on FITS axis 3 of a cube, and a cube collapsed along
+        wavelength leaves Dec on axis 1 of a 2-D image, where passing RA first put every source
+        off the image (`BUGS.md` R61). Any other world axis is held at its reference value.
+        """
+        unplaced = np.full((len(ra), 2), np.nan)
+        wcs = getattr(self.image_viewer, 'wcs', None)
+        if wcs is None or not len(ra):
+            return unplaced
+        physical = list(wcs.world_axis_physical_types)
+        if 'pos.eq.ra' not in physical or 'pos.eq.dec' not in physical:
+            return unplaced
 
-                    ax1_idx, ax2_idx = self.image_viewer.display_axis_indices()
+        world = []
+        for axis, kind in enumerate(physical):
+            if kind == 'pos.eq.ra':
+                world.append(ra)
+            elif kind == 'pos.eq.dec':
+                world.append(dec)
+            else:
+                world.append(np.full(len(ra), wcs.wcs.crval[axis]))
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pixel = wcs.world_to_pixel_values(*world)
+        except Exception:
+            return unplaced
+        if wcs.pixel_n_dim == 1:
+            pixel = (pixel,)
 
-                    orig_x = float(pixel_coords[ax1_idx])
-                    orig_y = float(pixel_coords[ax2_idx])
-            except Exception:
-                return None
+        ax_x, ax_y = self.image_viewer.display_axis_indices()
+        if max(ax_x, ax_y) >= len(pixel):
+            return unplaced
+        return np.column_stack([np.asarray(pixel[ax_x], dtype=float),
+                                np.asarray(pixel[ax_y], dtype=float)])
 
-        return map_to_display(self.image_viewer, orig_x, orig_y)
+    def _display_positions(self):
+        """Every row's display position as an `(N, 2)` array, from the resolved positions.
+
+        Not half-pixel centred; callers add the 0.5.
+        """
+        positions = self._resolve_orig_positions()
+        if self.combo_coord_type.currentIndex() == 0 or self.image_viewer is None:
+            return positions
+        mapped = self.image_viewer.orig_to_display_arrays(positions[:, 0], positions[:, 1])
+        # Nothing loaded: the positions are used as they are, as before
+        return positions if mapped is None else np.column_stack(mapped)
+
+    def _display_extent(self):
+        """`(width, height)` of the plane on screen, or infinite extents with nothing loaded."""
+        display = getattr(self.image_viewer, 'display_data', None)
+        if display is None:
+            return float('inf'), float('inf')
+        shape = display.shape
+        if display.ndim == 3:
+            return shape[1], shape[2]
+        return shape[0], shape[1]
+
+    def _row_to_display(self, row_idx):
+        """Display pixel coordinates of catalog row `row_idx`, or None if it cannot be placed.
+
+        For the single-row highlight. Reads the same resolved positions as the marker pass, so
+        the two cannot drift apart. The returned pair is *not* half-pixel centred — callers add
+        the 0.5 themselves.
+        """
+        if self.catalog_data is None or not 0 <= row_idx < len(self.catalog_data):
+            return None
+        x, y = self._resolve_orig_positions()[row_idx]
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return None
+        if self.combo_coord_type.currentIndex() == 0 or self.image_viewer is None:
+            return float(x), float(y)
+        mapped = self.image_viewer.orig_to_display(x, y)
+        return (float(x), float(y)) if mapped is None else mapped
+
+    def _label_texts(self):
+        """Every row's label in the chosen name column, or None when there is no such column.
+
+        Built column-wise on first use and kept until the column or the catalog changes, so a
+        catalog nobody labels never pays for it.
+        """
+        name_col = self.combo_name.currentText()
+        table = self.catalog_data
+        if table is None or name_col not in table.colnames:
+            return None
+        cached = self._label_text_cache
+        if cached is None or cached[0] is not table or cached[1] != name_col:
+            cached = (table, name_col, label_texts(table[name_col]))
+            self._label_text_cache = cached
+        return cached[2]
+
+    def on_plane_changed(self):
+        """Nothing to do: a source's position does not depend on the values on screen."""
+
+    def on_geometry_changed(self):
+        """A flip, a rotation, an axis or extension change, or a new image: re-place the markers.
+
+        Also what plots a catalog loaded before any image (`BUGS.md` R8). Skipped when nothing
+        that places them changed (`ImageViewer.placement_key`): a unit change emits
+        `display_changed` too, and re-placing a 66k-row catalog for it cost 56 ms.
+        """
+        if self.image_viewer is not None and \
+                self.image_viewer.placement_key() == self._placed_key:
+            return
+        self.replot_markers()
+
+    def on_view_rotated(self, angle):
+        """The markers turn with the ImageItem; the labels sit on the ViewBox and are re-placed.
+
+        Skipped when the labels were last placed under this angle: `set_data` draws the new
+        plane unrotated and then announces the rotation of 0.0, which re-placed every label a
+        second time per load.
+        """
+        if angle == self._labelled_rotation:
+            return
+        self.update_visible_text_labels()
+
+    def replot_markers(self):
+        """Redraw the markers, the labels and the highlight from the resolved positions.
+
+        Leaves the view where it is: unlike `update_plot`, it is called because the image
+        changed, not because the user asked for something.
+        """
+        if self._plot_markers():
+            self._draw_highlight()
 
     def update_plot(self):
+        """Redraw after a catalog control changed. Leaves the view where it is (`BUGS.md` R60)."""
+        if self._plot_markers():
+            self._draw_highlight()
+
+    def _plot_markers(self):
+        """Put the markers and labels where the resolved positions say. True if anything drew."""
         # Suspended while a load assigns the columns: each assignment would otherwise cost a
         # full pass over every row for a plot that is about to be replaced anyway.
         if self._plot_suspended:
-            return
+            return False
         if self.image_viewer is None or self.catalog_data is None:
-            return
-            
+            return False
+        self._placed_key = self.image_viewer.placement_key()
+
         img_item = self.image_viewer.imv.getImageItem()
         if self.scatter_item is None:
             self.scatter_item = pg.ScatterPlotItem()
             self.scatter_item.setZValue(10)
             self.scatter_item.setParentItem(img_item)
-            
+
         if self.highlight_item is None:
             self.highlight_item = pg.ScatterPlotItem()
             self.highlight_item.setZValue(11)
@@ -918,68 +1136,45 @@ class PlotCatalogDialog(BaseToolDialog):
         # update_visible_text_labels, which reuses the items for whatever is now in view.
         # Destroying them here is what made every plot refresh pay to rebuild them.
         self._hide_all_labels()
+        self._label_positions = np.empty((0, 2))
+        self._label_rows = np.empty(0, dtype=int)
 
         if not hasattr(self, 'chk_master_toggle'):
-            return
-            
+            return False
+
         if not self.chk_master_toggle.isChecked():
             self.scatter_item.clear()
             self.highlight_item.clear()
-            self.lbl_status.setText(f"Loaded: {len(self.catalog_data) if self.catalog_data else 0} sources | Markers hidden")
-            return
-            
+            self.lbl_status.setText(f"Loaded: {len(self.catalog_data)} sources | Markers hidden")
+            return False
+
         x_col = self.combo_x.currentText()
         y_col = self.combo_y.currentText()
-        name_col = self.combo_name.currentText()
-        
-        if not x_col or not y_col or x_col not in self.catalog_data.colnames or y_col not in self.catalog_data.colnames:
+        cols = self.catalog_data.colnames
+        if not x_col or not y_col or x_col not in cols or y_col not in cols:
             self.scatter_item.clear()
-            return
-            
-        pts_x = []
-        pts_y = []
+            return False
 
-        oob_count = 0
-        bad_count = 0
+        positions = self._display_positions()
+        max_x, max_y = self._display_extent()
+        placed = np.isfinite(positions).all(axis=1)
+        with np.errstate(invalid='ignore'):
+            inside = (placed & (positions[:, 0] >= 0) & (positions[:, 0] < max_x)
+                      & (positions[:, 1] >= 0) & (positions[:, 1] < max_y))
+        bad_count = int(np.count_nonzero(~placed))
+        oob_count = int(np.count_nonzero(placed)) - int(np.count_nonzero(inside))
 
-        if self.image_viewer.display_data is not None:
-            shape = self.image_viewer.display_data.shape
-            is_3d = (self.image_viewer.display_data.ndim == 3)
-            max_x = shape[1] if is_3d else shape[0]
-            max_y = shape[2] if is_3d else shape[1]
-        else:
-            max_x = float('inf')
-            max_y = float('inf')
-        
-        # Save list of all valid label coordinates for viewport culling: (center_x, center_y, name_str)
-        self.all_label_points = []
+        # Centred on the pixel in ImageItem coordinates, which is also where the labels go
+        self._label_rows = np.flatnonzero(inside)
+        self._label_positions = positions[inside] + 0.5
 
-        for row in self.catalog_data:
-            resolved = self._row_to_display(row)
-            if resolved is None:
-                # Unparseable, masked, or not convertible through the WCS
-                bad_count += 1
-                continue
-            disp_x, disp_y = resolved
-
-            if 0 <= disp_x < max_x and 0 <= disp_y < max_y:
-                pts_x.append(disp_x + 0.5)
-                pts_y.append(disp_y + 0.5)
-                
-                if name_col in self.catalog_data.colnames:
-                    name_str = str(row[name_col])
-                    self.all_label_points.append((disp_x + 0.5, disp_y + 0.5, name_str))
-            else:
-                oob_count += 1
-                
-        symbol = self._get_pg_symbol()
-        size = self.spin_size.value()
-        
         pen = pg.mkPen(color=self.marker_color, width=2)
         brush = pg.mkBrush(color=(0, 0, 0, 0))
-        
-        self.scatter_item.setData(x=pts_x, y=pts_y, symbol=symbol, size=size, pen=pen, brush=brush)
-        status = f"Loaded: {len(self.catalog_data)} sources | {len(pts_x)} plotted | {oob_count} out of bounds"
+        self.scatter_item.setData(x=self._label_positions[:, 0], y=self._label_positions[:, 1],
+                                  symbol=self._get_pg_symbol(), size=self.spin_size.value(),
+                                  pen=pen, brush=brush)
+        status = (f"Loaded: {len(self.catalog_data)} sources | {len(self._label_rows)} plotted"
+                  f" | {oob_count} out of bounds")
         if bad_count:
             status += f" | {bad_count} unusable coordinates"
         # Kept so that _on_labels_suppressed can put it back after its own message
@@ -997,7 +1192,7 @@ class PlotCatalogDialog(BaseToolDialog):
             self._range_connected = True
 
         self.update_visible_text_labels()
-        self.on_table_selection()
+        return True
 
     def _remove_scene_item(self, item):
         """Take a graphics item out of the viewer's scene entirely.
@@ -1028,9 +1223,12 @@ class PlotCatalogDialog(BaseToolDialog):
             pass
 
     def _clear_text_items(self):
-        for txt in self.text_items:
-            self._remove_scene_item(txt)
+        """Take every pooled label off the scene and retire it (`BUGS.md` R86)."""
+        labels = list(self.text_items)
         self.text_items.clear()
+        for txt in labels:
+            self._remove_scene_item(txt)
+        self._retire_items(labels)
 
     def _on_view_range_changed(self):
         """Called on every pan/zoom frame. Hides text instantly and debounces re-render."""
@@ -1079,29 +1277,29 @@ class PlotCatalogDialog(BaseToolDialog):
         """
         if self.image_viewer is None or not hasattr(self.image_viewer, 'imv'):
             return
+        self._labelled_rotation = getattr(self.image_viewer, 'view_rotation', 0.0)
 
         if not hasattr(self, 'chk_show_name') or not self.chk_show_name.isChecked():
             self._hide_all_labels()
             return
 
-        if not getattr(self, 'all_label_points', None):
+        positions = self._label_positions
+        names = self._label_texts() if len(positions) else None
+        if names is None:
             self._hide_all_labels()
             return
 
         view = self.image_viewer.imv.getView()
-        img_item = self.image_viewer.imv.getImageItem()
-        rect = grown_for_labels(view.viewRect())
+        # Every anchor mapped into the view in one step, then the shared rect test
+        xs, ys = self.image_viewer.items_to_view(positions[:, 0], positions[:, 1])
+        in_view = np.flatnonzero(labels_in_view(xs, ys, view.viewRect()))
 
-        wanted = []
-        for px, py, name_str in self.all_label_points:
-            point = pg.QtCore.QPointF(px, py)
-            parent_pt = img_item.mapToParent(point) if img_item else point
-            if rect is None or rect.contains(parent_pt):
-                wanted.append((parent_pt, name_str))
-
-        if not self._label_guard.allows(len(wanted), CATALOG_LABEL_LIMIT):
+        if not self._label_guard.allows(len(in_view), CATALOG_LABEL_LIMIT):
             self._hide_all_labels()
             return
+
+        wanted = [(pg.QtCore.QPointF(xs[i], ys[i]), names[self._label_rows[i]])
+                  for i in in_view]
 
         # Grow the pool to what is needed; it is only ever added to here, and trimmed back
         # deliberately in _trim_label_pool
@@ -1154,8 +1352,18 @@ class PlotCatalogDialog(BaseToolDialog):
         QTimer.singleShot(0, self._release_retired)
 
     def _release_retired(self):
+        """Delete the retired items, then collect.
+
+        Each still-valid item is destroyed explicitly first, as `BaseToolDialog._drop_retired_rois`
+        does for ROIs: left to the collector, items in reference cycles are freed in whatever
+        order the cycles are walked, which is the crash `BUGS.md` M31 describes.
+        """
         if not self._retired:
             return
+        import shiboken6
+        for item in self._retired:
+            if shiboken6.isValid(item):
+                shiboken6.delete(item)
         self._retired.clear()
         gc.collect()
 
@@ -1174,24 +1382,62 @@ class PlotCatalogDialog(BaseToolDialog):
             self.btn_clear_selection.setEnabled(False)
 
     def on_table_selection(self):
-        if self.highlight_item is None or self.catalog_data is None:
+        """A row was chosen: ring its source and bring it to the centre of the view."""
+        if self._draw_highlight() is not None:
+            self._recentre_on_selection()
+
+    def _recentre_on_selection(self):
+        """Move the view so the selected source is at its centre, keeping the zoom.
+
+        Runs only when the user asks (choosing a row, *Center on Source*). `update_plot` and
+        `replot_markers` redraw the highlight alone, so changing a control or the unit does not
+        undo a pan (`BUGS.md` R60).
+        """
+        if self.image_viewer.display_data is None:
             return
-            
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+        resolved = self._row_to_display(selected_rows[0].row())
+        if resolved is None:
+            return
+        disp_x, disp_y = resolved
+
+        # Center view if within valid data range
+        max_x, max_y = self._display_extent()
+        if not (0 <= disp_x < max_x and 0 <= disp_y < max_y):
+            return
+        view = self.image_viewer.imv.getView()
+        view_rect = view.viewRect()
+        width = view_rect.width()
+        height = view_rect.height()
+        # `setRange` takes ViewBox coordinates; the source is at an ImageItem coordinate, and the
+        # two differ under a view rotation (`BUGS.md` R29). padding=0 preserves the zoom exactly.
+        center_x, center_y = self.image_viewer.item_to_view(disp_x + 0.5, disp_y + 0.5)
+        view.setRange(xRange=(center_x - width/2, center_x + width/2),
+                      yRange=(center_y - height/2, center_y + height/2),
+                      padding=0)
+
+    def _draw_highlight(self):
+        """Ring the selected row's source. Returns its display position, or None if none is drawn.
+
+        Does not move the view; `_recentre_on_selection` does that.
+        """
+        if self.highlight_item is None or self.catalog_data is None:
+            return None
+
         selected_rows = self.table.selectionModel().selectedRows()
         if hasattr(self, 'btn_clear_selection'):
             self.btn_clear_selection.setEnabled(bool(selected_rows))
         if not selected_rows:
             self.highlight_item.clear()
             self.highlight_item.setVisible(False)
-            return
-            
-        row_idx = selected_rows[0].row()
-        row = self.catalog_data[row_idx]
+            return None
 
-        resolved = self._row_to_display(row)
+        resolved = self._row_to_display(selected_rows[0].row())
         if resolved is None:
             self.highlight_item.clear()
-            return
+            return None
         disp_x, disp_y = resolved
 
         # Draw red highlight marker centered on pixel (disp_x + 0.5, disp_y + 0.5)
@@ -1200,26 +1446,8 @@ class PlotCatalogDialog(BaseToolDialog):
         size = self.spin_size.value() + 10
         self.highlight_item.setData(x=[disp_x + 0.5], y=[disp_y + 0.5], symbol='o', size=size, pen=pen, brush=brush)
         self.highlight_item.setVisible(True)
-        
-        # Center view if within valid data range
-        if self.image_viewer.display_data is not None:
-            shape = self.image_viewer.display_data.shape
-            is_3d = (self.image_viewer.display_data.ndim == 3)
-            max_x = shape[1] if is_3d else shape[0]
-            max_y = shape[2] if is_3d else shape[1]
-            
-            if 0 <= disp_x < max_x and 0 <= disp_y < max_y:
-                view = self.image_viewer.imv.getView()
-                view_rect = view.viewRect()
-                width = view_rect.width()
-                height = view_rect.height()
-                # Use setRange with padding=0 to preserve current zoom exactly
-                center_x = disp_x + 0.5
-                center_y = disp_y + 0.5
-                view.setRange(xRange=(center_x - width/2, center_x + width/2), 
-                              yRange=(center_y - height/2, center_y + height/2), 
-                              padding=0)
-        
+        return resolved
+
     def build_context_menu(self, row_idx):
         """The menu for one table row.
 
@@ -1253,6 +1481,7 @@ class PlotCatalogDialog(BaseToolDialog):
         and re-guessing here discarded a manual choice exactly as a reload used to (M28).
         """
         self.table_model.remove_row(row_idx)
+        self._forget_positions()
         # Every row below the deleted one has shifted up, so the search has to be re-applied
         # rather than left pointing at the rows its flags were computed for
         self.filter_table(self.search_bar.text())
@@ -1280,9 +1509,14 @@ class PlotCatalogDialog(BaseToolDialog):
         if hasattr(self, '_label_timer'):
             self._label_timer.stop()
 
-        for attr in ('scatter_item', 'highlight_item'):
-            self._remove_scene_item(getattr(self, attr, None))
-            setattr(self, attr, None)
+        # Retired, not dropped: dropping the last reference leaves the collector to free the
+        # items in whatever order it walks their cycles (`BUGS.md` M18, R86)
+        markers = [item for item in (self.scatter_item, self.highlight_item) if item is not None]
+        self.scatter_item = None
+        self.highlight_item = None
+        for item in markers:
+            self._remove_scene_item(item)
+        self._retire_items(markers)
 
         self._clear_text_items()
         # Now, not on the timer `_retire_items` set: a dialog that `MainWindow._open_tool`

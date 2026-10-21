@@ -197,7 +197,10 @@ single channel of the cube, so no `cube[z]` is the right data. Two accessors cov
 - **`current_plane()`** — the 2-D plane on screen, oriented like `display_data` but
   **without** the DN multiplier. Use it when the caller multiplies by `data_multiplier`
   itself (as the Depth Plot does at plot time); using `display_data` there would apply the
-  multiplier twice.
+  multiplier twice. In Z Range and Boxcar mode it returns the plane the viewer last drew
+  rather than collapsing the cube again, as long as the data, the range and the collapse
+  method are those it was drawn from (`ImageViewer.data_generation` changes with the data),
+  so any number of open tools cost one collapse per change. Treat the plane as read-only.
 - **`display_data`** — the same plane *with* the multiplier already folded in. Tools that
   plot it directly want this, and because it is 2-D whenever a collapse is displayed, the
   common `if img.ndim == 3: img = img[...]` idiom is already correct.
@@ -210,7 +213,7 @@ reuse them rather than re-deriving the range:
 | `clamp_z_range(zmin, zmax, write_back=False)` | clamp **both** ends to the cube and order them |
 | `z_range_from_fields(write_back=False)` | the Z Min / Z Max boxes, parsed and clamped; `None` if unparsable |
 | `boxcar_width()` / `boxcar_range(z)` | the Boxcar setting and the window it averages |
-| `collapse_plane(zmin, zmax, method=None)` | Median / Mean / Sum collapse over an inclusive range |
+| `collapse_plane(zmin, zmax, method=None)` | Median / Mean / Sum collapse over an inclusive range; always computes, so read the plane on screen through `current_plane()` |
 | `apply_spatial_transforms(arr)` | the flip/rotation half of `apply_transforms`, as a pure function on a 2-D plane or 3-D cube |
 
 !!! note "Empty and dead planes"
@@ -247,7 +250,7 @@ Every test touches Qt, so on a headless machine prefix with `QT_QPA_PLATFORM=off
 - `tests/test_spectral_photometry.py`: The Qt-free per-channel aperture photometry behind the Depth Plot's circular extraction — flux recovery over a known sky, the `(x, y)` vs `(y, x)` axis convention, NaN and edge handling, and agreement with the Aperture Photometry tool plane by plane.
 - `tests/test_analysis_tools.py`: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.
 - `tests/test_cuts.py`: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.
-- `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns.
+- `tests/test_plot_catalog.py`: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns; markers and labels following a flip, a new image and a view rotation, and the time a marker-control change takes on a 20,000-row RA/Dec catalog.
 - `tests/test_label_policy.py`: The shared overlay-label policy in `pyql3/gui/label_policy.py` — the cull margin and the `LabelDensityGuard` ceiling — run without a display.
 - `tests/test_menu_actions.py`: The `QAction.triggered` bool-vs-coordinate slot hazard and `as_center()` coercion (see the Qt slot gotcha in `AGENTS.md`).
 - `tests/test_main_window_and_poller.py`: `MainWindow` tool lifecycle, 2D guards, `DirectoryPoller` service, and the interaction of the header editor and Save FITS As with auto-load.

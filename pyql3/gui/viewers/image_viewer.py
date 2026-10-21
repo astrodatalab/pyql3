@@ -81,6 +81,29 @@ class ImageViewer(QWidget):
     #: with 0.0 last, after the new plane's `plane_changed` and `display_changed`.
     view_rotation_changed = Signal(float)
 
+    @property
+    def transposed_data(self):
+        """The cube or image in the axis order on screen; see AGENTS.md "Data state"."""
+        return getattr(self, '_transposed_data', None)
+
+    @transposed_data.setter
+    def transposed_data(self, value):
+        # Every assignment is new data as far as anything keyed on `data_generation` is
+        # concerned, including an axis remapping of the same raw array.
+        self._transposed_data = value
+        self._data_generation = getattr(self, '_data_generation', 0) + 1
+        self._drawn_collapse = None
+
+    @property
+    def data_generation(self):
+        """A counter that changes whenever `transposed_data` is replaced.
+
+        For caches of anything derived from the data: a new file, a new extension, a new axis
+        mapping and `release_data` each change it, while a flip, a rotation or a unit change
+        does not.
+        """
+        return getattr(self, '_data_generation', 0)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -183,6 +206,10 @@ class ImageViewer(QWidget):
         # Nonzero while apply_axis_mapping adjusts the slider, which redraws the plane
         # itself; see _announce_plane
         self._plane_changed_held = 0
+        # Planes drawn so far, announced or held back, and the last entry applied from the Z
+        # fields with the count after it was drawn; see _apply_entered
+        self._planes_drawn = 0
+        self._last_entry = None
 
         self.setup_zoom_contrast_panel()
         self.setup_extension_panel()
@@ -302,6 +329,31 @@ class ImageViewer(QWidget):
                 return np.nansum(subcube, axis=0)
         return subcube[0]
 
+    def _draw_collapse(self, zmin, zmax, method=None):
+        """`collapse_plane`, for the plane about to be drawn; kept for `current_plane`.
+
+        `apply_z_range` and `apply_z_slice` always collapse, so a redraw is never served from an
+        older plane, and record what they drew with a key of what produced it. Every open tool
+        then reads that plane through `current_plane()` rather than collapsing the cube again:
+        seven tools open in Z Range mode used to collapse 465 channels seven times for one
+        change. The plane is stored before the flip, the rotations and the DN multiplier, which
+        are applied afterwards, so the key does not depend on them.
+        """
+        method = method or self.combo_collapse.currentText()
+        plane = self.collapse_plane(zmin, zmax, method=method)
+        self._drawn_collapse = None if plane is None else (
+            (self.data_generation, zmin, zmax, method), plane)
+        return plane
+
+    def _collapse_for_reading(self, zmin, zmax, method=None):
+        """The collapse over `[zmin, zmax]`: the drawn plane if it was made from the same data,
+        range and method, otherwise a new collapse."""
+        method = method or self.combo_collapse.currentText()
+        drawn = getattr(self, '_drawn_collapse', None)
+        if drawn is not None and drawn[0] == (self.data_generation, zmin, zmax, method):
+            return drawn[1]
+        return self.collapse_plane(zmin, zmax, method=method)
+
     def apply_spatial_transforms(self, arr):
         """Return `arr` with the display flip and 90° rotations applied.
 
@@ -407,6 +459,20 @@ class ImageViewer(QWidget):
             return (0, 1)
         return (index_of('current_x_axis', 'AXIS 3'), index_of('current_y_axis', 'AXIS 2'))
 
+    def placement_key(self):
+        """Everything that decides where an overlay stored in orig or sky coordinates is drawn on
+        the ImageItem: the flip, the 90° rotation, the plane's dimensions, the displayed FITS
+        axes, the WCS and the data.
+
+        `display_changed` is also emitted for a unit change, which moves nothing. The region
+        layer and the catalog compare this with the key they last placed under and skip the
+        re-placement when it is unchanged; it cost 148 ms and 56 ms per unit change. The view
+        rotation is not part of it: it is a transform on the ImageItem, which items parented to
+        it follow (`view_rotation_changed`).
+        """
+        return (self.flip, self.rot_angle, self.orig_spatial_dims(), self.display_axis_indices(),
+                self.data_generation, id(self.wcs))
+
     def orig_to_display(self, x, y):
         """Map a `transposed_data` coordinate to its position on screen, or None if no data.
 
@@ -417,6 +483,17 @@ class ImageViewer(QWidget):
         if dims is None:
             return None
         return coords.orig_to_display(x, y, *dims, flip=self.flip, rot_angle=self.rot_angle)
+
+    def orig_to_display_arrays(self, xs, ys):
+        """`orig_to_display` over whole arrays of coordinates, or None if no data.
+
+        For overlays with one position per catalog row (`BUGS.md` R31).
+        """
+        dims = self.orig_spatial_dims()
+        if dims is None:
+            return None
+        return coords.orig_to_display_arrays(xs, ys, *dims, flip=self.flip,
+                                             rot_angle=self.rot_angle)
 
     def display_to_orig(self, x, y):
         """Map a screen coordinate back to a `transposed_data` coordinate, or None if no data."""
@@ -439,12 +516,14 @@ class ImageViewer(QWidget):
         if self.transposed_data.ndim != 3:
             return self.apply_spatial_transforms(self.transposed_data)
 
+        # The collapsed plane the viewer drew, when it is still the one these fields describe
         if hasattr(self, 'radio_range') and self.radio_range.isChecked():
             rng = self.z_range_from_fields()
-            plane = self.collapse_plane(*rng) if rng is not None else None
+            plane = self._collapse_for_reading(*rng) if rng is not None else None
         elif self.boxcar_width() > 1:
             rng = self.boxcar_range()
-            plane = self.collapse_plane(*rng, method="Median") if rng is not None else None
+            plane = (self._collapse_for_reading(*rng, method="Median")
+                     if rng is not None else None)
         else:
             plane = self.transposed_data[self.current_z()]
 
@@ -882,15 +961,15 @@ class ImageViewer(QWidget):
         range_hbox.addWidget(QLabel("Z Min:"))
         self.txt_zmin = QLineEdit("0")
         self.txt_zmin.setFixedWidth(50)
-        self.txt_zmin.editingFinished.connect(self.apply_z_range)
+        self.txt_zmin.editingFinished.connect(self.on_z_range_entered)
         range_hbox.addWidget(self.txt_zmin)
         range_hbox.addWidget(QLabel("Z Max:"))
         self.txt_zmax = QLineEdit("0")
         self.txt_zmax.setFixedWidth(50)
-        self.txt_zmax.editingFinished.connect(self.apply_z_range)
+        self.txt_zmax.editingFinished.connect(self.on_z_range_entered)
         range_hbox.addWidget(self.txt_zmax)
         self.btn_apply_range = QPushButton("Apply")
-        self.btn_apply_range.clicked.connect(self.apply_z_range)
+        self.btn_apply_range.clicked.connect(self.on_z_range_entered)
         range_hbox.addWidget(self.btn_apply_range)
         range_hbox.addStretch()
         layout_z.addLayout(range_hbox)
@@ -916,10 +995,10 @@ class ImageViewer(QWidget):
         slice_hbox.addWidget(QLabel("Boxcar:"))
         self.txt_boxcar = QLineEdit("1")
         self.txt_boxcar.setFixedWidth(40)
-        self.txt_boxcar.editingFinished.connect(self.apply_z_slice)
+        self.txt_boxcar.editingFinished.connect(self.on_boxcar_entered)
         slice_hbox.addWidget(self.txt_boxcar)
         self.btn_apply_slice = QPushButton("Apply")
-        self.btn_apply_slice.clicked.connect(self.apply_z_slice)
+        self.btn_apply_slice.clicked.connect(self.on_boxcar_entered)
         slice_hbox.addWidget(self.btn_apply_slice)
         slice_hbox.addStretch()
         layout_z.addLayout(slice_hbox)
@@ -1039,6 +1118,33 @@ class ImageViewer(QWidget):
             else:
                 self.apply_z_slice()
 
+    def on_z_range_entered(self):
+        """Z Min or Z Max was edited, or the Apply beside them clicked."""
+        self._apply_entered(('range', self.z_range_from_fields(write_back=True)),
+                            self.apply_z_range)
+
+    def on_boxcar_entered(self):
+        """Boxcar was edited, or the Apply beside it clicked."""
+        self._apply_entered(('boxcar', self.slider_slice.value(), self.boxcar_width()),
+                            self.apply_z_slice)
+
+    def _apply_entered(self, entry, apply):
+        """Run `apply` for an entry in the Z fields, unless that entry is already on screen.
+
+        With the cursor in Z Min, Z Max or Boxcar, a click on the Apply beside it sends two
+        signals: the field's `editingFinished` as focus leaves it, then the button's `clicked`.
+        Both stay connected, so that Enter, Tab and Apply each apply an entry, and the second
+        used to collapse the same range again and emit a second `plane_changed`, so every
+        open tool recomputed twice for one edit. An entry is skipped when it is the last one
+        applied and no plane has been drawn since. Anything else that redraws (a slider step,
+        a flip, a new file, another collapse method) draws a plane, so the next entry is
+        applied again.
+        """
+        if self._last_entry == (entry, self._planes_drawn):
+            return
+        apply()
+        self._last_entry = (entry, self._planes_drawn)
+
     def apply_z_range(self):
         if self.transposed_data is None or self.transposed_data.ndim != 3:
             return
@@ -1057,7 +1163,7 @@ class ImageViewer(QWidget):
         if getattr(self.imv, 'timeLine', None) is not None:
             self.imv.timeLine.hide()
 
-        collapsed = self.collapse_plane(zmin, zmax)
+        collapsed = self._draw_collapse(zmin, zmax)
         if collapsed is None:
             return
 
@@ -1136,7 +1242,7 @@ class ImageViewer(QWidget):
                 if getattr(self.imv, 'timeLine', None) is not None:
                     self.imv.timeLine.hide()
                 zmin, zmax = self.boxcar_range(val)
-                collapsed = self.collapse_plane(zmin, zmax, method="Median")
+                collapsed = self._draw_collapse(zmin, zmax, method="Median")
                 if collapsed is None:
                     return
                 self.display_data = collapsed
@@ -1413,6 +1519,7 @@ class ImageViewer(QWidget):
 
     def _announce_plane(self):
         """Emit `plane_changed`, unless `apply_axis_mapping` is holding it back."""
+        self._planes_drawn += 1
         if not self._plane_changed_held:
             self.plane_changed.emit()
 
@@ -1619,6 +1726,21 @@ class ImageViewer(QWidget):
         """Map an ImageItem coordinate to the ViewBox, through the view rotation."""
         point = self.imv.getImageItem().mapToView(QPointF(float(x), float(y)))
         return point.x(), point.y()
+
+    def items_to_view(self, xs, ys):
+        """`item_to_view` for arrays of ImageItem coordinates, in one step.
+
+        The ImageItem's mapping to the ViewBox is affine (the view rotation, and whatever
+        translation and scale the ViewBox applies), so the images of three points fix it. One
+        `mapToView` per point costs about 3 µs, which is 30 ms for a 10,000-region overlay.
+        """
+        xs = np.asarray(xs, dtype=float)
+        ys = np.asarray(ys, dtype=float)
+        ox, oy = self.item_to_view(0.0, 0.0)
+        ax, ay = self.item_to_view(1.0, 0.0)
+        bx, by = self.item_to_view(0.0, 1.0)
+        return (ox + (ax - ox) * xs + (bx - ox) * ys,
+                oy + (ay - oy) * xs + (by - oy) * ys)
 
     def view_to_item(self, x, y):
         """Map a ViewBox coordinate to the ImageItem, undoing the view rotation."""

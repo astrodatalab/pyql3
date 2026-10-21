@@ -123,6 +123,21 @@ def test_rotation_angle_is_taken_modulo_a_full_turn(rot):
         coords.orig_to_display(1, 2, NX, NY, rot_angle=equivalent)
 
 
+@pytest.mark.parametrize("flip,rot", COMBINATIONS, ids=COMBINATION_IDS)
+def test_the_array_mapping_agrees_with_the_scalar_one(flip, rot):
+    """The catalog maps whole columns at once (R31); NaN marks a row with no position."""
+    xs = np.array([0.0, 1.5, 4.0, np.nan, 2.25])
+    ys = np.array([0.0, 2.0, 0.5, 1.0, np.nan])
+
+    got_x, got_y = coords.orig_to_display_arrays(xs, ys, NX, NY, flip=flip, rot_angle=rot)
+
+    for x, y, gx, gy in zip(xs, ys, got_x, got_y, strict=True):
+        if np.isnan(x) or np.isnan(y):
+            assert np.isnan(gx) or np.isnan(gy)
+            continue
+        assert (gx, gy) == coords.orig_to_display(x, y, NX, NY, flip=flip, rot_angle=rot)
+
+
 # ------------------------------------------------------------------------ angles
 
 @pytest.mark.parametrize("flip,rot", COMBINATIONS, ids=COMBINATION_IDS)
@@ -311,6 +326,11 @@ def test_viewer_adapters_use_the_orig_spatial_dimensions(loaded_viewer, flip, ro
         assert shown == coords.orig_to_display(*point, nx, ny, flip=flip, rot_angle=rot)
         assert viewer.display_to_orig(*shown) == pytest.approx(point)
 
+    xs, ys = viewer.orig_to_display_arrays(np.array([0.0, nx - 1, 2.5]),
+                                           np.array([0.0, ny - 1, 1.5]))
+    for point, gx, gy in zip([(0, 0), (nx - 1, ny - 1), (2.5, 1.5)], xs, ys, strict=True):
+        assert (gx, gy) == viewer.orig_to_display(*point)
+
 
 def test_viewer_reports_which_fits_axes_are_displayed(loaded_viewer):
     """An OSIRIS cube shows FITS axis 3 against axis 2, which ds9's image frame never means."""
@@ -332,6 +352,7 @@ def test_viewer_adapters_report_nothing_without_data(qapp):
     assert viewer.orig_spatial_dims() is None
     assert viewer.orig_to_display(1, 2) is None
     assert viewer.display_to_orig(1, 2) is None
+    assert viewer.orig_to_display_arrays(np.array([1.0]), np.array([2.0])) is None
 
 
 def test_a_right_click_is_clipped_to_the_displayed_plane(qapp, tmp_path):

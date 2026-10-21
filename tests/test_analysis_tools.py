@@ -278,3 +278,360 @@ def test_peak_fit_with_too_few_pixels_on_the_image_clears_the_old_fit(qapp):
     assert dialog.lbl_status.text() == ""
     assert float(dialog.value_labels["FWHM X"].text()) > 0
     dialog.close()
+
+
+# ----------------------------------- tools follow the viewer's signals (BUGS.md R14, R87)
+
+#: Channel k of `_scaled_star_cube` is `CHANNEL_SCALE[k]` times one image of a star. No channel
+#: is zero, so the Peak Fit has a peak to fit on every plane, and every reading a tool makes is
+#: the channel-0 reading times the scale of the plane on screen.
+CHANNEL_SCALE = np.array([10., 50., 3., 80., 1., 90., 7., 20., 60., 5.])
+
+
+def _scaled_star_cube(shape=(40, 30)):
+    """numpy (x, y, z) with no header, so z is the last axis: channel k is
+    `CHANNEL_SCALE[k] * (1 + a star at the centre of the image)`."""
+    xx, yy = np.mgrid[0:shape[0], 0:shape[1]]
+    star = 1.0 + 100.0 * np.exp(-((xx - shape[0] / 2) ** 2 + (yy - shape[1] / 2) ** 2)
+                                / (2 * 1.5 ** 2))
+    return star[:, :, None] * CHANNEL_SCALE[None, None, :]
+
+
+def _readings(stats, phot, fit, cut, strehl_planes):
+    """One number from each tool, each proportional to the plane it measured."""
+    return {
+        "Statistics": float(stats.value_labels["Mean"].text()),
+        "Photometry": float(phot.lbl_flux.text()),
+        "Peak Fit": float(fit.value_labels["Max Pixel Value"].text()),
+        "Strehl": float(np.nanmax(strehl_planes[-1])),
+        "Horizontal Cut": float(np.nanmax(cut.plot_curve.getData()[1])),
+    }
+
+
+def test_tools_follow_the_displayed_plane(qapp, monkeypatch):
+    """Statistics, Photometry, Peak Fit and Strehl recomputed only when their ROI moved, and
+    the cuts followed only a single-slice slider step: a slider step, a Boxcar plane and a
+    reload all left numbers on screen for a plane that was no longer displayed (BUGS.md R14)."""
+    from pyql3.gui.tools import strehl as strehl_module
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+    strehl_planes = []
+    monkeypatch.setattr(strehl_module, "calculate_strehl",
+                        lambda data, center, **kw: strehl_planes.append(np.array(data)))
+    viewer = ImageViewer()
+    viewer.set_data(_scaled_star_cube())
+    stats, phot = StatisticsDialog(None, viewer), PhotometryDialog(None, viewer)
+    fit, strehl = GaussianFitDialog(None, viewer), StrehlDialog(None, viewer)
+    cut = CutPlotDialog("horizontal", None, viewer)
+    tools = (stats, phot, fit, strehl, cut)
+    for tool in tools:
+        tool.show()
+    try:
+        at_channel_0 = _readings(stats, phot, fit, cut, strehl_planes)
+
+        def scaled(by):
+            return {name: pytest.approx(value * by, rel=1e-4)
+                    for name, value in at_channel_0.items()}
+
+        viewer.slider_slice.setValue(3)
+        assert _readings(stats, phot, fit, cut, strehl_planes) == scaled(80 / 10)
+
+        viewer.txt_boxcar.setText("3")
+        viewer.btn_apply_slice.click()
+        viewer.slider_slice.setValue(6)         # median of channels 5-7: 90, 7, 20
+        assert _readings(stats, phot, fit, cut, strehl_planes) == scaled(20 / 10)
+
+        viewer.txt_boxcar.setText("1")
+        viewer.btn_apply_slice.click()
+        viewer.slider_slice.setValue(3)
+        viewer.set_data(_scaled_star_cube() * 100)
+        assert _readings(stats, phot, fit, cut, strehl_planes) == scaled(8000 / 10)
+    finally:
+        for tool in tools:
+            tool.close()
+
+
+def test_a_slider_step_does_not_recompute_overlay_tools(qapp, monkeypatch):
+    """A slider step changes the plane and nothing else. The catalog's markers and the Depth
+    Plot's spectrum do not depend on the plane, so neither may be redrawn ten times for ten
+    steps."""
+    from pyql3.gui.tools.depth_plot import DepthPlotDialog
+    from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+    calls = []
+    for cls in (PlotCatalogDialog, DepthPlotDialog):
+        original = cls.update_plot
+
+        def spy(self, *args, _original=original, _name=cls.__name__, **kwargs):
+            calls.append(_name)
+            return _original(self, *args, **kwargs)
+        monkeypatch.setattr(cls, "update_plot", spy)
+
+    viewer = ImageViewer()
+    viewer.set_data(_scaled_star_cube())
+    catalog, depth = PlotCatalogDialog(None, viewer), DepthPlotDialog(None, viewer)
+    try:
+        catalog.show()
+        depth.show()
+        assert depth.combo_type.currentText() == "Depth Plot"
+        calls.clear()
+
+        for z in range(1, 11):
+            viewer.slider_slice.setValue(z % 10)
+
+        assert calls == []
+    finally:
+        catalog.close()
+        depth.close()
+
+
+#: The method each measuring tool recomputes through, by class.
+RECOMPUTES = (
+    (StatisticsDialog, "update_stats"),
+    (PhotometryDialog, "update_photometry"),
+    (GaussianFitDialog, "update_fit"),
+    (StrehlDialog, "update_strehl"),
+    (CutPlotDialog, "update_plot"),
+)
+
+
+def _flip(win):
+    win.image_viewer.flip = True                # what Rotate Image > Flip Horizontal does
+    win.image_viewer.refresh_display()
+
+
+def _to_total_dn(win):
+    win.set_display_unit(True)
+
+
+def _reload(win):
+    win.image_viewer.set_data(win.image_viewer.raw_data * 2)
+
+
+def _type_then_click(win, field, text, button):
+    """Type into `field` with the cursor in it, then click `button`. Focus leaving the field
+    sends its `editingFinished`, and the click then sends the button's `clicked`."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    win.image_viewer.tabs.setCurrentWidget(win.image_viewer.tab_advanced)
+    # The tool opened last is the active window. `qWaitForWindowActive` does not wait for the
+    # main window to take over from it, because a window counts as active while one of its
+    # child windows is.
+    win.activateWindow()
+    for _ in range(100):
+        if QApplication.activeWindow() is win:
+            break
+        QTest.qWait(10)
+    field.setFocus()
+    field.selectAll()
+    QTest.keyClicks(field, text)
+    assert field.hasFocus()
+    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+
+
+def _z_range_mode(win):
+    win.image_viewer.radio_range.setChecked(True)
+
+
+def _apply_after_editing_z_min(win):
+    v = win.image_viewer
+    _type_then_click(win, v.txt_zmin, "4", v.btn_apply_range)
+
+
+def _apply_after_editing_boxcar(win):
+    v = win.image_viewer
+    _type_then_click(win, v.txt_boxcar, "3", v.btn_apply_slice)
+
+
+@pytest.mark.parametrize("setup,change", [
+    pytest.param(None, _flip, id="flip"),
+    pytest.param(None, _to_total_dn, id="unit-change"),
+    pytest.param(None, _reload, id="set_data"),
+    pytest.param(_z_range_mode, _apply_after_editing_z_min, id="apply-after-editing-z-min"),
+    pytest.param(None, _apply_after_editing_boxcar, id="apply-after-editing-boxcar"),
+])
+def test_each_change_recomputes_a_tool_once(qapp, monkeypatch, setup, change):
+    """A flip or a unit change emits `plane_changed` and then `display_changed`; a tool that
+    recomputed on both, or that `update_tools_for_unit` also called, did the work twice. With
+    the cursor in Z Min or Boxcar, a click on Apply ran the apply twice: once for the field's
+    `editingFinished` as focus left it, once for the button."""
+    from pyql3.gui.main_window import MainWindow
+    calls = []
+    for cls, name in RECOMPUTES:
+        original = getattr(cls, name)
+
+        def spy(self, *args, _original=original, _name=cls.__name__, **kwargs):
+            calls.append(_name)
+            return _original(self, *args, **kwargs)
+        monkeypatch.setattr(cls, name, spy)
+
+    win = MainWindow()
+    win.image_viewer.set_data(_scaled_star_cube())
+    win.show()
+    for open_tool in (win.open_statistics, win.open_photometry, win.open_gaussian_fit,
+                      win.open_strehl_tool, win.open_horizontal_cut):
+        open_tool()
+    try:
+        if setup is not None:
+            setup(win)
+        qapp.processEvents()
+        calls.clear()
+
+        change(win)
+        qapp.processEvents()
+
+        assert sorted(calls) == sorted(cls.__name__ for cls, _ in RECOMPUTES)
+    finally:
+        win.close()
+
+
+def test_contour_updates_retire_their_old_items(qapp):
+    """A Contour update that changes the number of levels took the old `IsocurveItem`s off the
+    image and dropped them before building the new ones, so the collector could free one inside
+    the construction of its replacement (`BUGS.md` M18, R87). They are retired, and released
+    once the event loop is back or when the dialog is torn down."""
+    import shiboken6
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from pyql3.gui.tools.advanced_plots import ContourDialog
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+    viewer = ImageViewer()
+    viewer.set_data(_scaled_star_cube())
+    dialog = ContourDialog(None, viewer)
+    dialog.show()
+    old = list(dialog.iso_items)
+    assert len(old) == 10
+
+    dialog.spin_levels.setValue(5)
+
+    assert len(dialog.iso_items) == 5 and not any(item in old for item in dialog.iso_items)
+    assert all(any(item is retired for retired in dialog._retired_rois) for item in old)
+    assert all(shiboken6.isValid(item) for item in old), "released before the event loop ran"
+
+    qapp.processEvents()
+    assert not any(shiboken6.isValid(item) for item in old)
+
+    shown = list(dialog.iso_items)
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+    assert not any(shiboken6.isValid(item) for item in shown)
+
+
+def test_a_plane_change_reuses_the_contours(qapp):
+    """With the number of levels unchanged, a new plane re-levels the same `IsocurveItem`s.
+    Retiring them on every slider step cost a `gc.collect()` per step: 35-38 ms in a session
+    holding a 66k-row catalog."""
+    from pyql3.gui.tools.advanced_plots import ContourDialog
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+    viewer = ImageViewer()
+    viewer.set_data(_scaled_star_cube())
+    dialog = ContourDialog(None, viewer)
+    dialog.show()
+    try:
+        old = list(dialog.iso_items)
+        old_top = max(item.level for item in old)
+        qapp.processEvents()
+
+        viewer.slider_slice.setValue(3)
+
+        assert len(dialog.iso_items) == len(old)
+        assert all(new is was for new, was in zip(dialog.iso_items, old, strict=True))
+        assert dialog._retired_rois == []
+        assert max(item.level for item in dialog.iso_items) == pytest.approx(old_top * 8)
+        assert np.nanmax(dialog.iso_items[0].data) == pytest.approx(
+            np.nanmax(viewer.current_plane()))
+    finally:
+        dialog.close()
+
+
+def _z_range_apply(viewer):
+    viewer.txt_zmin.setText("2")
+    viewer.txt_zmax.setText("7")
+    viewer.on_z_range_entered()
+
+
+def _flip_viewer(viewer):
+    viewer.flip = not viewer.flip
+    viewer.refresh_display()
+
+
+def _polled_set_data(viewer):
+    viewer.set_data(_scaled_star_cube() * 3)
+
+
+def _boxcar_step(viewer):
+    viewer.slider_slice.setValue(viewer.slider_slice.value() + 1)
+
+
+def _switch_to_z_range(viewer):
+    viewer.radio_range.setChecked(True)
+    _z_range_apply(viewer)
+
+
+def _switch_to_boxcar(viewer):
+    viewer.txt_boxcar.setText("3")
+    viewer.on_boxcar_entered()
+
+
+@pytest.mark.parametrize("setup,change", [
+    pytest.param(None, _z_range_apply, id="z-range-apply"),
+    pytest.param(_switch_to_z_range, _flip_viewer, id="flip-in-z-range"),
+    pytest.param(_switch_to_z_range, _polled_set_data, id="set_data-in-z-range"),
+    pytest.param(_switch_to_boxcar, _boxcar_step, id="boxcar-step"),
+    pytest.param(_switch_to_boxcar, _flip_viewer, id="flip-in-boxcar"),
+])
+def test_a_change_collapses_the_cube_once(qapp, monkeypatch, setup, change):
+    """With several tools open in Z Range or Boxcar mode, every tool's `current_plane()` call
+    collapsed the cube again: seven collapses of 465 channels for one Z Range apply, 586 ms
+    against 62 ms with no tools open. The plane the viewer drew is reused, and it is still the
+    plane on screen after the change."""
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+    collapses = []
+    original = ImageViewer.collapse_plane
+
+    def spy(self, *args, **kwargs):
+        collapses.append(args)
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(ImageViewer, "collapse_plane", spy)
+
+    viewer = ImageViewer()
+    viewer.set_data(_scaled_star_cube())
+    if change is _z_range_apply:
+        viewer.radio_range.setChecked(True)
+    stats, phot = StatisticsDialog(None, viewer), PhotometryDialog(None, viewer)
+    stats.show()
+    phot.show()
+    try:
+        if setup is not None:
+            setup(viewer)
+        collapses.clear()
+
+        change(viewer)
+
+        assert len(collapses) == 1, collapses
+        assert viewer.display_data.ndim == 2
+        assert np.allclose(viewer.current_plane(), viewer.display_data)
+        assert len(collapses) == 1, "current_plane() collapsed the cube again"
+    finally:
+        stats.close()
+        phot.close()
+
+
+def test_current_plane_is_not_served_from_an_old_collapse(qapp):
+    """The reused plane is keyed on what produced it: new data, another range or another
+    collapse method each give a new plane."""
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+    viewer = ImageViewer()
+    viewer.set_data(_scaled_star_cube())
+    viewer.radio_range.setChecked(True)
+    _z_range_apply(viewer)                       # channels 2-7: 3, 80, 1, 90, 7, 20
+    first = viewer.current_plane().copy()
+
+    viewer.set_data(_scaled_star_cube() * 2)
+    assert np.allclose(viewer.current_plane(), first * 2)
+
+    viewer.combo_collapse.setCurrentText("Sum")
+    assert np.allclose(viewer.current_plane(), first * 2 * (201 / 13.5))
+
+    viewer.txt_zmax.setText("3")                 # typed, not applied: the fields still rule
+    assert np.allclose(viewer.current_plane(), first * 2 * (83 / 13.5))

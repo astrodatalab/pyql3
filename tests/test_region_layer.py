@@ -12,7 +12,9 @@ Plus the exclusive-drag arbiter, which fixes a bug that predates regions: two to
 used to corrupt `mouseDragEvent` between them and leave the view unable to pan.
 """
 import math
+import time
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QPointF, Qt
 
@@ -284,6 +286,193 @@ def test_a_region_outside_its_channel_range_is_hidden(loaded_viewer, layer):
     loaded_viewer.slider_slice.setValue(30)
     assert not layer.item_for(inside).isVisible(), "shown outside its channel range"
     assert layer.item_for(always).isVisible(), "a region with no range must always show"
+
+
+def test_channel_ranges_follow_a_collapse_range(loaded_viewer, layer):
+    """Entering or changing Collapse Region used to leave regions shown or hidden for the
+    previous plane (`BUGS.md` R36). Against a collapse, a range shows if it overlaps it."""
+    region = layer.add(Circle(x=10.0, y=10.0, radius=2.0, z_range=(0, 5)))
+    item = layer.item_for(region)
+    loaded_viewer.slider_slice.setValue(2)
+    assert item.isVisible()
+
+    loaded_viewer.txt_zmin.setText("30")
+    loaded_viewer.txt_zmax.setText("40")
+    loaded_viewer.radio_range.setChecked(True)
+    assert not item.isVisible(), "shown against a collapse of 30-40"
+
+    loaded_viewer.radio_slice.setChecked(True)
+    loaded_viewer.slider_slice.setValue(45)
+    loaded_viewer.txt_zmin.setText("1")
+    loaded_viewer.txt_zmax.setText("4")
+    loaded_viewer.radio_range.setChecked(True)
+    assert item.isVisible(), "hidden against a collapse of 1-4"
+
+    loaded_viewer.txt_zmin.setText("30")
+    loaded_viewer.txt_zmax.setText("40")
+    loaded_viewer.on_z_range_entered()
+    assert not item.isVisible(), "a new range in Collapse Region mode was not applied"
+
+    loaded_viewer.txt_zmin.setText("4")
+    loaded_viewer.txt_zmax.setText("9")
+    loaded_viewer.on_z_range_entered()
+    assert item.isVisible(), "a collapse that overlaps the region's range must show it"
+
+
+@pytest.mark.parametrize("aggregate", [False, True], ids=["per-region", "aggregate"])
+def test_a_channel_range_does_not_hide_a_region_on_a_2d_image(qapp, aggregate):
+    """A 2-D image has no channels, so a channel range cannot exclude it (`BUGS.md` R63)."""
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((30, 40), np.float32))
+    layer = viewer.region_layer
+    if aggregate:
+        layer.interactive_limit = 1
+    region = Circle(x=10.0, y=10.0, radius=3.0, z_range=(120, 180), text="Br gamma knot")
+    layer.set_regions([region, Circle(x=20.0, y=20.0, radius=1.0)])
+
+    if aggregate:
+        assert layer.bulk is True
+        assert len(layer._bulk_items[0].getData()[0]) == 2, "the ranged circle was not drawn"
+    else:
+        assert layer.item_for(region).isVisible()
+
+
+def settle(qapp):
+    """Let the label debounce run, as it would once the user stops."""
+    from pyql3.gui.label_policy import LABEL_REDRAW_DELAY_MS
+
+    end = time.monotonic() + (LABEL_REDRAW_DELAY_MS + 150) / 1000.0
+    while time.monotonic() < end:
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("radius", [0.5, 8.0], ids=["small", "large"])
+@pytest.mark.parametrize("aggregate", [False, True], ids=["per-region", "aggregate"])
+def test_labels_are_culled_in_view_coordinates_under_a_view_rotation(loaded_viewer, layer, qapp,
+                                                                     aggregate, radius):
+    """View rotation is a transform on the ImageItem, so a label's ImageItem position is not
+    where it is on screen. The overlay culled on the former, and per-region labels were not
+    culled again when the rotation changed (`BUGS.md` R45).
+
+    A circle's label sits one radius above its centre, so the large radius checks that the cull
+    is on the label's anchor rather than on the region's centre."""
+    from pyql3.gui.label_policy import grown_for_labels
+
+    if aggregate:
+        layer.interactive_limit = 20
+    regions = [Circle(x=1.0 + 4 * (i % 10), y=1.0 + 4 * (i // 10), radius=radius, text=f"s{i}")
+               for i in range(100)]
+    layer.set_regions(regions)
+    assert layer.bulk is aggregate
+    view = loaded_viewer.imv.getView()
+    image_item = loaded_viewer.imv.getImageItem()
+
+    # Unlocked, so the rect is the one asked for rather than one widened to the widget's aspect:
+    # a label's offset then crosses the edge of the view in both directions.
+    view.setAspectLocked(False)
+    view.setRange(xRange=(22, 38), yRange=(2, 18), padding=0)
+    settle(qapp)
+    loaded_viewer.apply_view_rotation(90.0)
+    settle(qapp)
+
+    rect = view.viewRect()
+    grown = grown_for_labels(rect)
+    if aggregate:
+        drawn = {label.toPlainText() for label in layer._bulk_labels if label.isVisible()}
+    else:
+        drawn = {region.text for region in regions if layer.label_for(region).isVisible()}
+
+    on_screen, off_screen = set(), set()
+    for region in regions:
+        centre_x, centre_y = layer._to_item(region.x, region.y)
+        anchor = image_item.mapToView(QPointF(centre_x, centre_y + region.radius))
+        if rect.contains(anchor):
+            on_screen.add(region.text)
+        elif not grown.contains(anchor):
+            off_screen.add(region.text)
+    assert on_screen, "the view holds no regions; the test checks nothing"
+    assert on_screen <= drawn, f"labels on screen not drawn: {sorted(on_screen - drawn)}"
+    assert not drawn & off_screen, f"labels off screen drawn: {sorted(drawn & off_screen)}"
+
+
+def test_a_channel_range_follows_the_boxcar_window(loaded_viewer, layer):
+    """A Boxcar plane is the median of the channels around the slider, so a range that overlaps
+    that window is on screen even when the slider's own channel is outside it."""
+    region = layer.add(Circle(x=10.0, y=10.0, radius=2.0, z_range=(11, 20)))
+    item = layer.item_for(region)
+    loaded_viewer.slider_slice.setValue(9)
+    assert not item.isVisible()
+
+    loaded_viewer.txt_boxcar.setText("5")          # channels 7-11
+    loaded_viewer.on_boxcar_entered()
+
+    assert item.isVisible(), "hidden although the boxcar window overlaps its range"
+
+
+def test_the_overlay_is_drawn_once_per_flip_and_per_load(loaded_viewer, layer, monkeypatch):
+    """`plane_changed`, `display_changed` and `view_rotation_changed` all reach the layer, and
+    a redraw of a catalogue-sized overlay is the expensive part; one change, one redraw."""
+    layer.interactive_limit = 2
+    layer.set_regions(many_circles(9) + [Circle(x=3.0, y=3.0, radius=1.0, z_range=(0, 49))])
+    assert layer.bulk is True
+    draws = []
+    real_draw = layer._draw_bulk
+    monkeypatch.setattr(layer, "_draw_bulk", lambda: (draws.append(1), real_draw()))
+
+    loaded_viewer.flip = True
+    loaded_viewer.refresh_display()
+    assert len(draws) == 1, f"a flip redrew the overlay {len(draws)} times"
+
+    draws.clear()
+    loaded_viewer.set_data(loaded_viewer.raw_data, loaded_viewer.header)
+    assert len(draws) == 1, f"a load redrew the overlay {len(draws)} times"
+
+    loaded_viewer.apply_view_rotation(90.0)
+    draws.clear()
+    loaded_viewer.set_data(loaded_viewer.raw_data, loaded_viewer.header)
+    assert len(draws) == 1, f"a load under a view rotation redrew the overlay {len(draws)} times"
+
+
+@pytest.mark.parametrize("aggregate", [False, True], ids=["per-region", "aggregate"])
+def test_a_unit_change_does_not_re_place_the_regions(loaded_viewer, layer, monkeypatch, aggregate):
+    """A unit change emits `display_changed`, and the layer re-placed every region for it
+    although nothing moved: 148 ms for a 650-region overlay. A flip still re-places them."""
+    if aggregate:
+        layer.interactive_limit = 2
+    layer.set_regions(many_circles(9))
+    assert layer.bulk is aggregate
+    placed = []
+    real_draw, real_place = layer._draw_bulk, layer._place
+    monkeypatch.setattr(layer, "_draw_bulk", lambda: (placed.append(1), real_draw()))
+    monkeypatch.setattr(layer, "_place", lambda entry: (placed.append(1), real_place(entry)))
+
+    loaded_viewer.disp_as_dn = True
+    loaded_viewer.refresh_display()
+    assert placed == [], "a unit change re-placed the regions"
+
+    loaded_viewer.flip = True
+    loaded_viewer.refresh_display()
+    assert placed, "a flip did not re-place the regions"
+
+
+def test_a_rotation_relabels_the_overlay_without_redrawing_its_shapes(loaded_viewer, layer):
+    """In aggregate mode a view rotation rebuilt the whole overlay to cull its labels again; the
+    shapes are parented to the ImageItem and turn with it, so only the labels are redone."""
+    layer.interactive_limit = 2
+    layer.set_regions([Circle(x=float(i), y=float(i), radius=1.0, text=f"s{i}")
+                       for i in range(10)])
+    assert layer.bulk is True
+    shapes = list(layer._bulk_items)
+    labels = list(layer._bulk_labels)
+    assert labels
+
+    loaded_viewer.apply_view_rotation(30.0)
+
+    assert all(now is was for now, was in zip(layer._bulk_items, shapes, strict=True))
+    assert layer._bulk_labels and not any(
+        label is old for label in layer._bulk_labels for old in labels)
 
 
 def test_an_invisible_region_stays_hidden(loaded_viewer, layer):
@@ -1073,7 +1262,8 @@ def test_an_enormous_number_of_labels_is_refused_as_a_hang_guard(loaded_viewer, 
     assert layer._bulk_labels == []
     assert told and told[-1] == 12, f"the count was not reported: {told}"
 
-    look_at(loaded_viewer, (-0.5, 1.5), (-0.5, 0.5))
+    # Labels are culled where they are drawn, one radius above their circle's centre.
+    look_at(loaded_viewer, (-0.5, 1.5), (0.5, 1.5))
     layer._labels_settled()
     assert layer._bulk_labels, "labels did not come back once few enough were in view"
     assert told[-1] == 0

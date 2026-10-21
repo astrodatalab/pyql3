@@ -5,14 +5,17 @@ tool hide labels while the view moves, cull them to what is on screen, and refus
 enormous set at once. That policy was written twice — and the second copy was already missing two
 thirds of it — so it lives here once, imported by both.
 
-Deliberately holds no Qt import: `grown_for_labels` works through the rect it is handed, and the
-guard is arithmetic plus a callback. Both are therefore testable without a display.
+Deliberately holds no Qt import: `grown_for_labels` and `labels_in_view` work through the rect
+they are handed, and the guard is arithmetic plus a callback. All three are therefore testable
+without a display.
 
 What stays with each tool is **making the items**, which has nothing in common between the two: a
 region's label carries that region's colour, font and offset, while a catalog's carries a column
 value. Only the policy is shared, and each caller passes its own ceiling — the two overlays have
 different per-label costs and different reasons for the counts they see.
 """
+
+import numpy as np
 
 #: How long after panning stops before labels come back, in milliseconds.
 #:
@@ -51,6 +54,25 @@ def grown_for_labels(rect, margin=LABEL_CULL_MARGIN):
     dx = rect.width() * margin
     dy = rect.height() * margin
     return rect.adjusted(-dx, -dy, dx, dy)
+
+
+def labels_in_view(xs, ys, rect, margin=LABEL_CULL_MARGIN):
+    """Which label anchors to draw: a boolean mask, True where `(xs[i], ys[i])` lies inside
+    `rect` grown by `margin` (`grown_for_labels`).
+
+    The anchors must already be in the view's coordinates, the frame `rect` is in. Each overlay
+    maps its anchors there in one step with `ImageViewer.items_to_view`, which follows the view
+    rotation, so the test here is on arrays and costs nothing per label. With no rect every
+    label is kept.
+    """
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    grown = grown_for_labels(rect, margin)
+    if grown is None:
+        return np.ones(xs.shape, dtype=bool)
+    left, right = sorted((grown.left(), grown.right()))
+    top, bottom = sorted((grown.top(), grown.bottom()))
+    return (xs >= left) & (xs <= right) & (ys >= top) & (ys <= bottom)
 
 
 class LabelDensityGuard:

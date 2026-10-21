@@ -137,8 +137,7 @@ class DepthPlotDialog(BaseToolDialog):
         self.plot_widget = pg.PlotWidget(background='w', axisItems={'top': self.top_axis})
         
         self.plot_widget.setLabel('bottom', "Wavelength", units="µm")
-        unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-        self.plot_widget.setLabel('left', f"Intensity ({unit})")
+        self._set_intensity_label()
         
         # Dual axis setup
         self.plot_widget.showAxis('top')
@@ -1512,6 +1511,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
         
+        self._set_intensity_label()
         mult = self.image_viewer.data_multiplier
         self.plot_data.setData(x_axis, spectrum * mult)
 
@@ -1524,11 +1524,47 @@ class DepthPlotDialog(BaseToolDialog):
 
         self.sync_legend()
 
+    def _set_intensity_label(self):
+        """Name the unit the plotted values are in: DN/s, or DN under Total DN."""
+        unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
+        self.plot_widget.setLabel('left', f"Intensity ({unit})")
+
+    def on_plane_changed(self):
+        """A cut is taken through the plane on screen, so it follows every plane change.
+
+        The Depth Plot does not: its spectrum is read from the whole cube, and a slider step
+        leaves it as it was. `on_geometry_changed` redraws that one, for the flip, load or unit
+        change that does alter it. This must not be `on_roi_changed`, which also resyncs the
+        spin boxes and the annulus rings that a plane change cannot have moved.
+        """
+        if self.combo_type.currentText() != "Depth Plot":
+            self.update_plot()
+
+    def on_geometry_changed(self):
+        """The Depth Plot depends on which pixels the aperture covers, and on the unit.
+
+        A cut has already been redrawn by the `on_plane_changed` that precedes every
+        `display_changed`, and drawing it again would count each flip, load or unit change twice.
+        """
+        if self.combo_type.currentText() == "Depth Plot":
+            self.update_plot()
+
     def update_plot(self):
         if self.image_viewer is None or self.image_viewer.transposed_data is None:
             return
             
         if self.image_viewer.transposed_data.ndim != 3:
+            # A 2-D image has no spectrum. The curves from the previous cube would otherwise
+            # stay drawn as though they described this image (R7).
+            self.plot_data.setData([], [])
+            self.plot_bg.setData([], [])
+            self.plot_sub.setData([], [])
+            self.sync_legend()
+            # The lines and the cursor readout belong to the previous cube's wavelength axis.
+            self.clear_line_overlays()
+            self.current_wavelengths = None
+            self.current_wavelength_unit = ""
+            self.lbl_bg_info.setText("The displayed image is 2-D: it has no spectrum to plot.")
             return
             
         plot_type = self.combo_type.currentText()
@@ -1702,8 +1738,7 @@ class DepthPlotDialog(BaseToolDialog):
                 
             x_axis = np.arange(x_slice.start, x_slice.stop)
             self.plot_widget.setLabel('bottom', "X Pixel")
-            unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-            self.plot_widget.setLabel('left', f"Intensity ({unit})")
+            self._set_intensity_label()
             self.plot_data.setData(x_axis, cut * self.image_viewer.data_multiplier)
             self.plot_bg.setData([], [])
             self.plot_sub.setData([], [])
@@ -1728,8 +1763,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.current_wavelength_unit = ""
             x_axis = np.arange(y_slice.start, y_slice.stop)
             self.plot_widget.setLabel('bottom', "Y Pixel")
-            unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-            self.plot_widget.setLabel('left', f"Intensity ({unit})")
+            self._set_intensity_label()
             self.plot_data.setData(x_axis, cut * self.image_viewer.data_multiplier)
             # `plot_bg` too: this branch cleared only the subtracted curve, so a background
             # measured for a depth plot stayed drawn over a cut it had no part in.

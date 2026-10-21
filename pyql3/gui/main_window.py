@@ -30,10 +30,10 @@ class MainWindow(QMainWindow):
     """
 
     #: Cached tool dialogs, kept as attributes so a second Plot -> Depth Plot reuses
-    #: the open one. Listed once here because two things walk them: the display-unit
-    #: refresh, and the teardown in `closeEvent`. A new tool must be added to this
-    #: tuple or it will neither follow a DN/s <-> Total DN change nor close with its
-    #: window.
+    #: the open one. Listed once here for `close_tool_dialogs()`, which `closeEvent` calls.
+    #: A new tool must be added to this tuple or it will be left on screen after its
+    #: window closes. A unit change does not walk the list: it reaches every tool through
+    #: the viewer's signals (`BaseToolDialog`).
     TOOL_DIALOG_ATTRS = (
         '_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog',
         '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog',
@@ -847,25 +847,21 @@ class MainWindow(QMainWindow):
         self.image_viewer.toggle_position_angle(checked)
         
     def set_display_unit(self, as_total_dn):
+        """Show the image, and every open tool, in Total DN or in DN/s.
+
+        The tools are not called from here. `refresh_display()` emits the viewer's
+        `plane_changed`, which every tool follows (`BaseToolDialog.on_plane_changed`), and each
+        tool's unit label is written by the recompute that follows it. Calling each tool's
+        `update_plot()` / `update_stats()` here as well did every tool's work twice per unit
+        change (`BUGS.md` R14). Of the dialogs in `TOOL_DIALOG_ATTRS` only the Arithmetic
+        tool is not a `BaseToolDialog`, and it shows nothing in either unit.
+        """
         if self.image_viewer.disp_as_dn != as_total_dn:
             self.image_viewer.disp_as_dn = as_total_dn
             self.image_viewer.update_colorbar_label()
-            
+
             if self.image_viewer.transposed_data is not None:
                 self.image_viewer.refresh_display()
-                
-            self.update_tools_for_unit()
-
-    def update_tools_for_unit(self):
-        """Update any open tool dialogs when the display unit changes."""
-        for attr in self.TOOL_DIALOG_ATTRS:
-            if hasattr(self, attr):
-                dialog = getattr(self, attr)
-                if dialog and dialog.isVisible():
-                    if hasattr(dialog, 'update_plot'):
-                        dialog.update_plot()
-                    if hasattr(dialog, 'update_stats'):
-                        dialog.update_stats()
 
     def edit_header(self):
         if self.fits_reader.get_header() is None:

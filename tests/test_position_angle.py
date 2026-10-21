@@ -225,3 +225,68 @@ def test_north_angle_readout_matches_the_drawn_compass(qapp, pa_viewer, flip, ro
             assert ("CW" if expected_offset < 0 else "CCW") in text, (text, expected_offset)
     finally:
         dialog.close()
+
+
+# ------------------------------------------------------------- the dialog follows reloads (R68)
+
+def test_rotate_dialog_follows_a_reload(qapp, pa_viewer):
+    """`set_data` unrotates the view; an open dialog must show that, not the old angle."""
+    dialog = RotateDialog(None, pa_viewer)
+    dialog.show()
+    try:
+        dialog.spin_view_rot.setValue(30.0)
+        assert pa_viewer.view_rotation == pytest.approx(30.0)
+        assert "30.0° CCW from up" in dialog.lbl_pa.text(), dialog.lbl_pa.text()
+
+        pa_viewer.set_data(pa_viewer.raw_data, pa_viewer.header)
+
+        assert pa_viewer.view_rotation == 0.0
+        assert dialog.spin_view_rot.value() == 0.0
+        base_n, _, _ = pa_viewer.get_north_angle_base()
+        drawn_n, _, _ = pa_viewer.north_east_display_angles()
+        assert_same_direction(drawn_n, base_n)
+        offset = ((drawn_n - 90.0 + 180.0) % 360.0) - 180.0
+        text = dialog.lbl_pa.text()
+        if abs(offset) < 0.05:
+            assert "North is Up" in text, text
+        else:
+            assert f"{abs(offset):.1f}°" in text, (text, offset)
+            assert ("CW" if offset < 0 else "CCW") in text, (text, offset)
+        assert "30.0" not in text
+    finally:
+        dialog.close()
+
+
+def test_rotate_dialog_own_rotation_is_not_undone(qapp, osiris_like_fits):
+    """The dialog's spin box and North Up also arrive back through `view_rotation_changed`,
+    and must not be undone or rounded there.
+
+    On the OSIRIS-like cube the sky is rotated 35° on the detector, so North Up has a target
+    far from 0° and from the spin box's previous value. On `pa_viewer` the target was about 0°,
+    which a viewer reset to 0° also reached.
+    """
+    reader = FitsReader(osiris_like_fits)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    dialog = RotateDialog(None, viewer)
+    dialog.show()
+    try:
+        dialog.spin_view_rot.setValue(12.5)
+        assert viewer.view_rotation == pytest.approx(12.5)
+        assert dialog.spin_view_rot.value() == pytest.approx(12.5)
+
+        north, _, is_wcs = viewer.north_east_display_angles(include_view_rotation=False)
+        assert is_wcs
+        target = ((90.0 - north + 180.0) % 360.0) - 180.0
+        assert abs(target) > 10.0 and abs(target - 12.5) > 10.0, \
+            f"North Up's target {target}° would not tell a reset or no-op from a rotation"
+
+        dialog.on_north_up_clicked()
+
+        assert viewer.view_rotation == pytest.approx(target, abs=1e-9)
+        assert dialog.spin_view_rot.value() == pytest.approx(target, abs=0.05)
+        on_screen, _, _ = viewer.north_east_display_angles()
+        assert_same_direction(on_screen, 90.0, f"North points to {on_screen}°, not up")
+        assert "North is Up" in dialog.lbl_pa.text(), dialog.lbl_pa.text()
+    finally:
+        dialog.close()

@@ -88,9 +88,10 @@ class CutPlotDialog(BaseToolDialog):
         self.roi = None
         self.setup_roi()
         self.update_plot()
-        
-        if self.image_viewer and self.image_viewer.imv:
-            self.image_viewer.imv.sigTimeChanged.connect(self.update_plot)
+
+    def on_plane_changed(self):
+        # The cut's band is not one of the tool ROIs `on_roi_changed` follows.
+        self.update_plot()
             
     def toggle_log_scale(self):
         self.plot_widget.setLogMode(x=self.chk_log_x.isChecked(), y=self.chk_log_y.isChecked())
@@ -294,13 +295,3 @@ class CutPlotDialog(BaseToolDialog):
                 
         unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
         self.plot_widget.setLabel('left', f'Intensity ({unit})')
-
-    def tear_down(self):
-        if self._torn_down:
-            return
-        if self.image_viewer and self.image_viewer.imv:
-            try:
-                self.image_viewer.imv.sigTimeChanged.disconnect(self.update_plot)
-            except (TypeError, RuntimeError):
-                pass
-        super().tear_down()
