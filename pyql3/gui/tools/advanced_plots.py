@@ -76,13 +76,15 @@ class SurfacePlotDialog(BaseToolDialog):
             self.gl_widget.setCameraPosition(distance=max(data.shape)*1.5, elevation=30, azimuth=45)
             self._camera_set = True
             
-    def closeEvent(self, event):
+    def tear_down(self):
+        if self._torn_down:
+            return
         if self.image_viewer and self.image_viewer.imv:
             try:
                 self.image_viewer.imv.sigTimeChanged.disconnect(self.update_plot)
             except (TypeError, RuntimeError):
                 pass
-        super().closeEvent(event)
+        super().tear_down()
 
 
 class ContourDialog(BaseToolDialog):
@@ -161,11 +163,13 @@ class ContourDialog(BaseToolDialog):
             iso.setParentItem(self.image_viewer.imv.getImageItem())
             self.iso_items.append(iso)
             
-    def closeEvent(self, event):
+    def tear_down(self):
+        if self._torn_down:
+            return
         self.clear_contours()
         if self.image_viewer and self.image_viewer.imv:
             try:
                 self.image_viewer.imv.sigTimeChanged.disconnect(self.update_plot)
             except (TypeError, RuntimeError):
                 pass
-        super().closeEvent(event)
+        super().tear_down()

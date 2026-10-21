@@ -56,6 +56,8 @@ class BaseToolDialog(QDialog):
         self.roi = None
         #: ROIs taken out of the scene but not yet released. See `remove_roi_from_viewer`.
         self._retired_rois = []
+        #: Set by `tear_down`, which runs twice on a Close and must do its work once.
+        self._torn_down = False
 
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(10, 10, 10, 10)
@@ -97,7 +99,10 @@ class BaseToolDialog(QDialog):
         return plane[slices] * self.image_viewer.data_multiplier, slices
 
     def add_roi_to_viewer(self, roi):
-        if self.roi is not None:
+        # `roi` may already be `self.roi`: Photometry and Strehl assign it before calling this.
+        # Removing it then retired the ROI being added, and `_drop_retired_rois` deleted it one
+        # event-loop pass after the tool opened, leaving the tool with a deleted ROI.
+        if self.roi is not None and self.roi is not roi:
             self.remove_roi_from_viewer()
             
         self.roi = roi
@@ -118,14 +123,6 @@ class BaseToolDialog(QDialog):
                     self.roi.sigRegionChanged.disconnect(self.on_roi_changed)
                 except Exception:
                     pass
-            try:
-                self.roi.setParentItem(None)
-            except Exception:
-                pass
-            try:
-                self.image_viewer.imv.getView().removeItem(self.roi)
-            except Exception:
-                pass
             # Retire, do not release. `self.roi = None` here dropped the last Python
             # reference to a QGraphicsItem, and every caller that removes an ROI does so in
             # order to build its replacement -- so the collector ran *inside*
@@ -133,9 +130,62 @@ class BaseToolDialog(QDialog):
             # mid-construction. Segfault, in `toggle_roi_shape`, reproducibly on the second
             # shape change. Same failure and same remedy as `BUGS.md` M18 in region_layer:
             # the event loop owns the release.
-            self._retired_rois.append(self.roi)
+            self.retire_roi(self.roi)
             self.roi = None
-            QTimer.singleShot(0, self._drop_retired_rois)
+
+    def retire_roi(self, roi):
+        """Take `roi` off the viewer and keep it until `_drop_retired_rois` deletes it.
+
+        For every ROI a tool discards, not only `self.roi`: dropping the last reference instead
+        leaves the ROI, its handles and its menu to the collector, which frees them in whatever
+        order their reference cycles are walked (`BUGS.md` M31). The caller still drops its
+        own attribute.
+        """
+        self._release_scene_references(roi)
+        try:
+            roi.setParentItem(None)
+        except Exception:
+            pass
+        if self.image_viewer is not None:
+            try:
+                self.image_viewer.imv.getView().removeItem(roi)
+            except Exception:
+                pass
+        self._retired_rois.append(roi)
+        QTimer.singleShot(0, self._drop_retired_rois)
+
+    def _release_scene_references(self, roi):
+        """Make the scene forget `roi` and its handles before the ROI is deleted.
+
+        pyqtgraph's `GraphicsScene` holds the item being dragged (`dragItem`) and the last hover
+        event, whose click and drag claims name the item under the cursor, which is often a
+        handle. A retired ROI is deleted in C++ by `_drop_retired_rois`, and the next click then
+        reached the deleted object through those references (`BUGS.md` M31).
+
+        `dragItem` is cleared only when it is this ROI or one of its handles. The last hover
+        event is dropped whole when any of its click or drag claims names one of them, which
+        also forgets the claims of other items under the cursor; with no hover event the scene
+        finds the item for the next press by position (`itemsNearEvent`), and the next mouse
+        move records a new one.
+        """
+        import shiboken6
+        if self.image_viewer is None or not shiboken6.isValid(roi):
+            return
+        scene = self.image_viewer.imv.getView().scene()
+        if scene is None:
+            return
+
+        def is_part_of_roi(item):
+            return item is roi or (item is not None and shiboken6.isValid(item)
+                                   and roi.isAncestorOf(item))
+
+        if is_part_of_roi(getattr(scene, 'dragItem', None)):
+            scene.dragItem = None
+        hover = getattr(scene, 'lastHoverEvent', None)
+        if hover is not None:
+            claimed = list(hover.clickItems().values()) + list(hover.dragItems().values())
+            if any(is_part_of_roi(item) for item in claimed):
+                scene.lastHoverEvent = None
 
     def _drop_retired_rois(self):
         """Release ROIs taken out of the scene, once the event loop is back.
@@ -159,10 +209,38 @@ class BaseToolDialog(QDialog):
         self._retired_rois = []
         gc.collect()
             
-    def closeEvent(self, event):
-        self.remove_roi_from_viewer()
+    def tear_down(self):
+        """Take everything this tool added off the viewer. Runs on Close and on Escape alike.
+
+        Escape reaches `reject()`, which hides a `QDialog` without sending a `closeEvent`, so
+        teardown kept in `closeEvent` left the ROI on the image and a checked Draw Region in
+        control of the view's drags (`BUGS.md` R15). A Close runs this twice -- from
+        `closeEvent`, then from the `reject()` that `QDialog.closeEvent` calls -- so the second
+        call does nothing.
+
+        A subclass that adds more to the viewer overrides this, returns at once when
+        `self._torn_down` is set, releases its own items, and then calls `super().tear_down()`.
+
+        Retired ROIs are released here rather than left to the event loop: a dialog deleted
+        before that timer fires would leave them to the collector, which is the order-dependent
+        crash `_drop_retired_rois` exists to avoid.
+        """
+        if self._torn_down:
+            return
+        self._torn_down = True
         self.disable_draw_mode()
+        self.remove_roi_from_viewer()
+        self._drop_retired_rois()
+
+    def closeEvent(self, event):
+        self.tear_down()
         super().closeEvent(event)
+
+    def reject(self):
+        # Not `self.close()`: `QDialog.closeEvent` calls `reject()` itself, and re-entering
+        # `close()` from there leaves the dialog on screen after both Close and Escape.
+        self.tear_down()
+        super().reject()
         
     def on_roi_changed(self):
         pass

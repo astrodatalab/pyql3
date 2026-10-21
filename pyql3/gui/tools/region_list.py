@@ -89,6 +89,17 @@ class RegionListDialog(BaseToolDialog):
             self.layer.regions_changed.connect(self.update_plot)
         self.update_plot()
 
+    def tear_down(self):
+        if self._torn_down:
+            return
+        # A hidden list left connected kept rebuilding its table on every drag frame.
+        if self.layer is not None:
+            try:
+                self.layer.regions_changed.disconnect(self.update_plot)
+            except (TypeError, RuntimeError):
+                pass
+        super().tear_down()
+
     # ------------------------------------------------------------------ plumbing
 
     @property

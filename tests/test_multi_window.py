@@ -17,7 +17,8 @@ whatever the offscreen platform decides to activate.
 import os
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtCore import QEvent
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from pyql3.gui import window_manager
 from pyql3.gui.main_window import MainWindow
@@ -187,6 +188,158 @@ def test_closing_a_window_releases_its_cube(manager, sample_3d_fits):
     assert win.image_viewer.transposed_data is None
     assert win.image_viewer.display_data is None
     assert cube() is None, "the cube is still in memory after its window closed"
+
+
+#: Every opener of a cached tool dialog, with the attribute it caches the dialog in.
+TOOL_OPENERS = {
+    "open_depth_plot": "_depth_plot_dialog",
+    "open_horizontal_cut": "_hcut_dialog",
+    "open_vertical_cut": "_vcut_dialog",
+    "open_diagonal_cut": "_dcut_dialog",
+    "open_surface_plot": "_surf_dialog",
+    "open_contour_plot": "_cont_dialog",
+    "open_plot_catalog": "_plot_catalog_dialog",
+    "open_rotate": "_rotate_dialog",
+    "open_statistics": "_stats_dialog",
+    "open_photometry": "_phot_dialog",
+    "open_gaussian_fit": "_gauss_dialog",
+    "open_strehl_tool": "_strehl_dialog",
+    "open_arithmetic_tool": "_arith_dialog",
+    "open_region_list": "_region_list_dialog",
+}
+
+
+def test_every_opener_is_covered_and_tracked():
+    """The two tests below are only as complete as this table."""
+    assert set(TOOL_OPENERS.values()) == set(MainWindow.TOOL_DIALOG_ATTRS)
+
+
+@pytest.mark.parametrize("opener", list(TOOL_OPENERS))
+def test_opening_a_tool_twice_reuses_it(manager, sample_3d_fits, opener):
+    """A second click raises the open dialog rather than building another (`BUGS.md` R16).
+
+    The cut, Surface and Contour openers built a new dialog on every click: the first stayed on
+    screen, out of `TOOL_DIALOG_ATTRS`, with its own ROI still drawn on the image. Everything
+    the tool draws is counted, not only `pg.ROI`s: the viewer has two ROIs of its own, the cuts
+    draw lines, and Photometry draws an aperture and two annulus rings.
+    """
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+    scene = win.image_viewer.imv.getView().scene()
+
+    first = getattr(win, opener)()
+    drawn = len(scene.items())
+    second = getattr(win, opener)()
+
+    assert first is not None
+    assert second is first, "a second dialog was built while the first was on screen"
+    assert getattr(win, TOOL_OPENERS[opener]) is first
+    assert len(scene.items()) == drawn, "the second click drew the tool's ROI a second time"
+
+
+def test_reopening_a_closed_tool_leaves_one_instance(manager, sample_3d_fits, qapp):
+    """A closed dialog is replaced on the next open, and the one it replaces is deleted."""
+    from pyql3.gui.tools.cuts import CutPlotDialog
+
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+    for _ in range(20):
+        win.open_horizontal_cut()
+        win._hcut_dialog.close()
+    # processEvents() alone does not run deleteLater() outside a running event loop.
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    assert len(win.findChildren(CutPlotDialog)) == 1
+
+
+def test_every_tool_dialog_closes_with_its_window(manager, sample_3d_fits):
+    """No tool dialog of a closed window is left on screen (`BUGS.md` R16).
+
+    Each tool is opened twice, because the second click is what used to orphan the first
+    dialog, and a region property dialog is opened as well: those are kept in
+    `_region_property_dialogs`, which `close_tool_dialogs` did not walk. So is Peak Fit's
+    Display Peak Fit window, a child window of a tool rather than of the main window.
+    """
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+    for opener in TOOL_OPENERS:
+        getattr(win, opener)()
+        getattr(win, opener)()
+    win.open_region_properties(win.region_layer.place("circle", 5.5, 5.5))
+    show_peak_fit_display(win)
+    assert [d for d in win.findChildren(QDialog) if d.isVisible()], "nothing was opened"
+
+    win.close()
+
+    left = sorted(d.windowTitle() for d in win.findChildren(QDialog) if d.isVisible())
+    assert left == [], f"still on screen after the window closed: {left}"
+
+
+def show_peak_fit_display(win):
+    """Open Peak Fit and show its Display Peak Fit window.
+
+    The fit result is set directly. Whether a fit converges on `sample_3d_fits` depends on its
+    random noise, and the fit is not what these tests are about.
+    """
+    import numpy as np
+
+    peak_fit = win.open_gaussian_fit()
+    peak_fit.last_raw_data = np.ones((5, 5))
+    peak_fit.last_fit_data = np.ones((5, 5))
+    peak_fit.display_peak_fit()
+    assert peak_fit.disp_dialog.isVisible()
+    return peak_fit.disp_dialog
+
+
+def test_closing_peak_fit_closes_its_display_window(manager, sample_3d_fits, qapp):
+    """Qt does not hide a child window with its parent, so Display Peak Fit stayed on screen.
+
+    Reopening Peak Fit then deleted the closed dialog, and the display window with it, while
+    the user was still looking at it.
+    """
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+    display = show_peak_fit_display(win)
+
+    win._gauss_dialog.close()
+    assert not display.isVisible(), "Display Peak Fit is still on screen after Peak Fit closed"
+
+    win.open_gaussian_fit()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    left = [d.windowTitle() for d in win.findChildren(QDialog)
+            if d.isVisible() and d.windowTitle() == "Display Peak Fit"]
+    assert left == []
+
+
+def test_a_surface_plot_opengl_failure_is_reported_not_raised(manager, sample_3d_fits,
+                                                             monkeypatch, capsys):
+    """The message pyqtgraph raises from `initializeGL` without OpenGL 2.1 is caught."""
+    from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
+
+    def no_opengl(self):
+        raise RuntimeError("pyqtgraph.opengl: Requires >= OpenGL 2.1; Found None")
+
+    monkeypatch.setattr(SurfacePlotDialog, "show", no_opengl)
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+
+    assert win.open_surface_plot() is None
+    assert "Surface Plot unavailable" in capsys.readouterr().out
+
+
+def test_a_surface_plot_bug_is_not_reported_as_missing_opengl(manager, sample_3d_fits,
+                                                              monkeypatch):
+    from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
+
+    def broken(self, *args, **kwargs):
+        raise ValueError("a bug in the dialog")
+
+    monkeypatch.setattr(SurfacePlotDialog, "__init__", broken)
+    win = MainWindow()
+    win.load_fits(sample_3d_fits)
+
+    with pytest.raises(ValueError, match="a bug in the dialog"):
+        win.open_surface_plot()
 
 
 def test_a_pending_auto_load_retry_does_not_revive_a_closed_window(manager, tmp_path,

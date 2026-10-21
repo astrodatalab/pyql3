@@ -1268,7 +1268,9 @@ class PlotCatalogDialog(BaseToolDialog):
         self._context_menu = menu
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
-    def closeEvent(self, event):
+    def tear_down(self):
+        if self._torn_down:
+            return
         if getattr(self, '_range_connected', False) and self.image_viewer is not None:
             try:
                 self.image_viewer.imv.getView().sigRangeChanged.disconnect(self._on_view_range_changed)
@@ -1283,5 +1285,8 @@ class PlotCatalogDialog(BaseToolDialog):
             setattr(self, attr, None)
 
         self._clear_text_items()
+        # Now, not on the timer `_retire_items` set: a dialog that `MainWindow._open_tool`
+        # replaces is deleted, and the timer may never fire (`BUGS.md` M31).
+        self._release_retired()
 
-        super().closeEvent(event)
+        super().tear_down()

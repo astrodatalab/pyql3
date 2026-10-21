@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix R1–R84 from the 2026-10-21 code review, and add the shared helpers, signals and fixtures whose absence caused most of them.
+**Goal:** Fix R1–R87 from the 2026-10-21 code review, and add the shared helpers, signals and fixtures whose absence caused most of them.
 
 **Architecture:** Five shared changes carry most of the fixes, and they come first: one integration-time and WCS helper module (`pyql3/core/header_info.py`); one whole-pixel box helper in `coords.py`; one redisplay path and two new viewer signals (`plane_changed`, `view_rotation_changed`) in `ImageViewer`; one tool lifecycle (`BaseToolDialog.tear_down()` and `MainWindow._open_tool()`); and frame-aware direction mapping on `CelestialMap`. Everything after Phase 4 is a local fix in one file or one area, built on those.
 
 **Tech Stack:** PySide6, pyqtgraph, astropy (WCS, SkyCoord), photutils, `regions` 0.12, pytest + pytest-xdist. Everything runs through `uv run`.
 
-**Spec:** `BUGS.md`, section "Code review — 2026-10-21" (R1–R84; R80 was added in the Phase 1 review, R81–R83 from a NIFS reference cube, R84 in the Phase 2 review). Each task names the entries it closes. The entry holds the reproduction, the measured numbers and the proposed regression test; read it before starting the task. Where a task below differs from an entry's "Fix (proposed)", the task wins and says why.
+**Spec:** `BUGS.md`, section "Code review — 2026-10-21" (R1–R87; R80 was added in the Phase 1 review, R81–R83 from a NIFS reference cube, R84 in the Phase 2 review, R85 in Task 9, R86 and R87 in the Phase 3 review). Each task names the entries it closes. The entry holds the reproduction, the measured numbers and the proposed regression test; read it before starting the task. Where a task below differs from an entry's "Fix (proposed)", the task wins and says why.
 
 ## Global Constraints
 
@@ -188,7 +188,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 ## Phase 3 — One tool lifecycle
 
-### Task 9: `tear_down()` for close and Escape alike (R15, M1)
+### Task 9: `tear_down()` for close and Escape alike (R15, M1, R85)
 
 **Files:**
 - Modify: `pyql3/gui/tools/base_tool.py:126-129`, `cuts.py:298`, `depth_plot.py:1052`, `photometry.py:72` and `:92` (both `closeEvent`s), `advanced_plots.py:79`, `:164`, `plot_catalog.py:1271`, `region_list.py` (disconnect `regions_changed`)
@@ -204,7 +204,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 2: Run them and see them fail** (Escape leaves the ROI).
 - [ ] **Step 3: Implement.** Move each `closeEvent` body into that class's `tear_down`. Photometry's two `closeEvent`s become one guarded `tear_down` (M1). `RegionListDialog.tear_down` disconnects `layer.regions_changed`.
 - [ ] **Step 4: Run the tests and the whole suite; they pass.**
-- [ ] **Step 5: Close-out** for R15 and M1 (M1 is a row in the B15 table: prefix its Issue cell with `✅ FIXED —`).
+- [ ] **Step 5: Close-out** for R15, M1 and R85 (R85, found while implementing this task: `add_roi_to_viewer` retired the ROI being added, so Photometry and Strehl lost their ROI one event-loop pass after opening; M1 is a row in the B15 table: prefix its Issue cell with `✅ FIXED —`).
 
 ### Task 10: `_open_tool()` for every opener (R16)
 
@@ -228,10 +228,10 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 
 ## Phase 4 — Everything that displays or measures follows the viewer
 
-### Task 11: Tools subscribe to the viewer (R14)
+### Task 11: Tools subscribe to the viewer (R14, R87)
 
 **Files:**
-- Modify: `pyql3/gui/tools/base_tool.py`, `statistics.py`, `photometry.py`, `fitting.py`, `strehl.py`, `cuts.py:92-93`, `:298-301`, `advanced_plots.py:29-30`, `:115-116`
+- Modify: `pyql3/gui/tools/base_tool.py`, `statistics.py`, `photometry.py`, `fitting.py`, `strehl.py`, `cuts.py:92-93`, `:298-301`, `advanced_plots.py:29-30`, `:115-116`, `:120-164` (Contour `clear_contours` and `update_plot`, R87)
 - Test: `tests/test_analysis_tools.py`, `tests/test_cuts.py`
 
 **Interfaces:**
@@ -240,11 +240,11 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - Reconcile `MainWindow.update_tools_for_unit()` (`main_window.py`, called by `set_display_unit` after `refresh_display()`). Today it calls each visible tool's `update_plot()` / `update_stats()` on a unit change. The unit change already emits `plane_changed` (then `display_changed`), so for every tool subscribed through `BaseToolDialog` that call is a second recompute: remove it for them. Keep it only for what still needs a unit-change notice that the signals do not give — a dialog in `TOOL_DIALOG_ATTRS` that is not a `BaseToolDialog` (check each entry when implementing and list them in the report), and any label that depends on `disp_as_dn` but not on the plane. If no such case remains, delete the loop and say so in the docstring of `set_display_unit`; update AGENTS.md's `TOOL_DIALOG_ATTRS` paragraph, which names `update_tools_for_unit()` as one of the two walkers of the list.
 - Cuts, Surface and Contour override `on_plane_changed()` to call `update_plot()`; their `imv.sigTimeChanged` connections are removed. Photometry and Strehl read `current_plane() * data_multiplier`, not `display_data[imv.currentIndex]`.
 
-- [ ] **Step 1: Write the failing tests.** `test_analysis_tools.py::test_tools_follow_the_displayed_plane` (R14). `test_cuts.py::test_cuts_follow_boxcar_and_range`. `test_analysis_tools.py::test_a_slider_step_does_not_recompute_overlay_tools` (Review Focus 1): spies on `PlotCatalogDialog.update_plot` and on `DepthPlotDialog.update_plot` in Depth mode record no call across ten slider steps. `test_analysis_tools.py::test_each_change_recomputes_a_tool_once`, parametrized over a flip, a unit change through `MainWindow.set_display_unit`, a `set_data`, and **Apply after editing a Z field**: with focus in Z Min, type a new value and click Apply — focus leaving the field fires `editingFinished` and then the button's `clicked`, so `plane_changed` arrives twice (P, P; measured in the Phase 2 review). Add the same case for the Boxcar field and its Apply button, which are wired the same way (`txt_boxcar.editingFinished` and `btn_apply_slice.clicked` both run `apply_z_slice`). A spy on each open measuring tool's recompute (Statistics `update_stats`, Photometry, Peak Fit, Strehl, a Horizontal Cut's `update_plot`) records exactly one call per change. The Apply case fails until `apply_z_range` is not run twice for one edit (connect only one of the two, or skip a re-run whose range equals the one on screen); fix it in this task.
+- [ ] **Step 1: Write the failing tests.** `test_analysis_tools.py::test_tools_follow_the_displayed_plane` (R14). `test_cuts.py::test_cuts_follow_boxcar_and_range`. `test_analysis_tools.py::test_a_slider_step_does_not_recompute_overlay_tools` (Review Focus 1): spies on `PlotCatalogDialog.update_plot` and on `DepthPlotDialog.update_plot` in Depth mode record no call across ten slider steps. `test_analysis_tools.py::test_each_change_recomputes_a_tool_once`, parametrized over a flip, a unit change through `MainWindow.set_display_unit`, a `set_data`, and **Apply after editing a Z field**: with focus in Z Min, type a new value and click Apply — focus leaving the field fires `editingFinished` and then the button's `clicked`, so `plane_changed` arrives twice (P, P; measured in the Phase 2 review). Add the same case for the Boxcar field and its Apply button, which are wired the same way (`txt_boxcar.editingFinished` and `btn_apply_slice.clicked` both run `apply_z_slice`). A spy on each open measuring tool's recompute (Statistics `update_stats`, Photometry, Peak Fit, Strehl, a Horizontal Cut's `update_plot`) records exactly one call per change. The Apply case fails until `apply_z_range` is not run twice for one edit (connect only one of the two, or skip a re-run whose range equals the one on screen); fix it in this task. `test_analysis_tools.py::test_contour_updates_retire_their_old_items` (R87): with contours shown, record the `IsocurveItem`s, trigger an update (a plane change), and check that the old items went to the dialog's retired list rather than being dropped, and that after the event loop runs (and after Escape) none of them is still valid (`shiboken6.isValid`).
 - [ ] **Step 2: Run them and see them fail.** The last test keeps failing after this task: the default `on_plane_changed` reaches `DepthPlotDialog.on_roi_changed`, which recomputes. Mark it `xfail(strict=True)` here; Task 12 removes the mark. (The catalog half already passes: its `on_roi_changed` is the base no-op.)
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run the tests; they pass.**
-- [ ] **Step 5: Close-out** for R14.
+- [ ] **Step 5: Close-out** for R14 and R87.
 
 ### Task 12: The Depth Plot follows the viewer (R7, R28)
 
@@ -262,21 +262,21 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 4: Run the tests; they pass.**
 - [ ] **Step 5: Close-out** for R7 and R28.
 
-### Task 13: Catalog positions resolved once per geometry, as arrays (R8, R31, R61)
+### Task 13: Catalog positions resolved once per geometry, as arrays (R8, R31, R61, R86)
 
 **Files:**
-- Modify: `pyql3/gui/tools/plot_catalog.py` (`update_plot` `:899-1000`, `_row_to_display` / world placement `:846-895`, `:957`)
+- Modify: `pyql3/gui/tools/plot_catalog.py` (`update_plot` `:899-1000`, `_row_to_display` / world placement `:846-895`, `:957`, `_clear_text_items` `:1030-1033` and `tear_down` `:1283-1285` for R86)
 - Test: `tests/test_plot_catalog.py`
 
 **Interfaces:**
 - Consumes: Task 11's hooks; `ImageViewer.display_axis_indices()`.
 - Produces: `PlotCatalogDialog._resolve_orig_positions() -> np.ndarray` — shape `(N, 2)`, orig coordinates of every row, NaN where a row cannot be placed; computed with whole-column arrays (one `SkyCoord`, one `world_to_pixel_values` through the `world_axis_physical_types` mapping for **every** `naxis`, then `orig_to_display` element-wise) and cached until the catalog, the coordinate columns, the coordinate type or the WCS changes. `replot_markers() -> None` redraws markers, labels and the highlight from that cache without moving the view. `on_plane_changed()` does nothing; `on_geometry_changed()` calls `replot_markers()`; `on_view_rotated(angle)` re-places the visible labels. On every `set_data`, `view_rotation_changed(0.0)` follows P and D (Task 7's signal order), so the labels are re-placed once more after `replot_markers()`; keep that re-place cheap (visible labels only) rather than redrawing markers.
 
-- [ ] **Step 1: Write the failing tests.** `::test_markers_follow_a_flip_and_a_new_image` (R8). `::test_markers_follow_a_view_rotation` (labels too). `::test_catalog_given_before_any_image_plots_when_one_arrives`. `::test_world_catalog_refresh_is_not_per_row` (R31; the 0.5 s bound for a marker-size change on 20,000 rows, positions equal to `wcs.world_to_pixel_values` for a sample). `::test_world_catalog_on_a_dec_first_2d_image` (R61).
+- [ ] **Step 1: Write the failing tests.** `::test_markers_follow_a_flip_and_a_new_image` (R8). `::test_markers_follow_a_view_rotation` (labels too). `::test_catalog_given_before_any_image_plots_when_one_arrives`. `::test_world_catalog_refresh_is_not_per_row` (R31; the 0.5 s bound for a marker-size change on 20,000 rows, positions equal to `wcs.world_to_pixel_values` for a sample). `::test_world_catalog_on_a_dec_first_2d_image` (R61). `test_plot_catalog.py::test_closing_the_catalog_retires_its_markers_and_labels` (R86): with markers and labels shown, record `scatter_item`, `highlight_item` and the label pool, press Escape, and check that each went through `_retired` and none is still valid (`shiboken6.isValid`).
 - [ ] **Step 2: Run them and see them fail.**
 - [ ] **Step 3: Implement.** Keep `_row_to_display` only for the single-row highlight, reading from the cache.
 - [ ] **Step 4: Run the tests and `tests/test_plot_catalog.py`; they pass.** M28–M30's timing tests must still pass.
-- [ ] **Step 5: Close-out** for R8, R31, R61.
+- [ ] **Step 5: Close-out** for R8, R31, R61 and R86.
 
 ### Task 14: Catalog selection recentres only when asked, in view coordinates (R29, R60)
 
@@ -765,4 +765,4 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 2: Run them and see them fail.**
 - [ ] **Step 3: Implement:** map the colorbar's ticks back through the inverse of the active scale (keep the label "Pixel Value (<unit>)"); set the 1:1 range from the ViewBox's screen size, centred on the current view centre; put a `QIntValidator` on Z Min, Z Max and Boxcar, or fall back to the full range with a message (R84).
 - [ ] **Step 4: Run them; they pass.**
-- [ ] **Step 5: Close-out** for R65, R66 and R84. **End of Phase 11: stop and report the staged diff.** All of R1–R84 should now be ticked in the checklist.
+- [ ] **Step 5: Close-out** for R65, R66 and R84. **End of Phase 11: stop and report the staged diff.** All of R1–R87 should now be ticked in the checklist.

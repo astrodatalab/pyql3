@@ -1003,3 +1003,26 @@ def test_the_label_pool_is_given_back_when_the_view_needs_far_fewer(viewer, tmp_
         assert len(dlg.text_items) < crowded, "the pool was never given back"
     finally:
         dlg.close()
+
+
+def test_closing_the_catalog_releases_its_retired_labels(viewer, tmp_path, monkeypatch):
+    """Labels trimmed from the pool wait for a timer; closing must not leave them to it.
+
+    A dialog replaced by `MainWindow._open_tool` is deleted, and its timer may never fire, so
+    the labels would be freed by the collector in whatever order it reaches them (`BUGS.md` M31).
+    """
+    from pyql3.gui.tools import plot_catalog as module
+
+    monkeypatch.setattr(module, "LABEL_POOL_MIN", 4)
+    dlg = PlotCatalogDialog(None, viewer)
+    dlg.load_catalog_file(_labelled_catalog(tmp_path, 60, spread=40.0))
+    dlg.chk_show_name.setChecked(True)
+    viewer.imv.getView().setRange(xRange=(0, 40), yRange=(0, 40), padding=0)
+    dlg.update_visible_text_labels()
+    viewer.imv.getView().setRange(xRange=(0, 1), yRange=(0, 1), padding=0)
+    dlg.update_visible_text_labels()
+    assert dlg._retired, "the pool trim retired nothing, so this checks nothing"
+
+    dlg.close()
+
+    assert dlg._retired == []

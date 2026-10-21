@@ -115,10 +115,17 @@ and two things walk the list: `update_tools_for_unit()` (calls each dialog's `up
 `update_stats()` when the display unit changes between DN/s and Total DN, so labels and graphs
 refresh instantly) and `close_tool_dialogs()` from `closeEvent`. **A new tool must be added to
 `TOOL_DIALOG_ATTRS`** or it will silently go stale on a unit change *and* be left on screen
-after its window closes. Being listed is not enough on its own: the opener must also reuse a
-visible dialog rather than overwrite the attribute. The cut, Surface, Contour and Region List
-openers currently build a new dialog on every call, and the previous one drops out of the list
-while still on screen (`BUGS.md` R16).
+after its window closes. Every opener goes through `MainWindow._open_tool()`, which raises a
+visible dialog and replaces (and deletes) a hidden one, so a window never holds two copies of a tool.
+
+**A tool releases what it put on the viewer in `tear_down()`, never in `closeEvent`.** Escape
+reaches `QDialog.reject()`, which hides the dialog without sending a close event, so cleanup in
+`closeEvent` left ROIs, markers and a live Draw Region behind (`BUGS.md` R15).
+`BaseToolDialog` calls `tear_down()` from both `closeEvent` and `reject()`; a Close therefore runs
+it twice, and it is guarded by `_torn_down`. A subclass override returns at once when that flag is
+set, releases its own items, then calls `super().tear_down()`. Do not make `reject()` call
+`close()` instead: `QDialog.closeEvent` calls `reject()` itself, and the re-entered close leaves
+the dialog on screen.
 
 ### Multiple windows (CRITICAL)
 
@@ -288,9 +295,17 @@ Four Qt traps here each cost real time. They are not hypothetical:
    came and went with unrelated allocations (one extra `QLabel` in a dialog was enough;
    `BUGS.md` M31). `region_layer._drop_retired` still releases by collection alone. That is a
    difference of history, not a decision: the region layer has not shown the crash, and the scene
-   references noted in M31 make an explicit delete there riskier, so it is left until it does. A
-   retired item that the scene still holds (`GraphicsScene.dragItem`, `lastHoverEvent`) is
-   invalid after the delete, so do not assume it is safe to touch.
+   references noted in M31 make an explicit delete there riskier, so it is left until it does.
+   **Tool dialogs release `_retired_rois` synchronously, at the end of
+   `BaseToolDialog.tear_down()`**, not from the timer. That is required: `MainWindow._open_tool()`
+   deletes a hidden dialog it replaces, and a timer that fires after the dialog is gone never runs,
+   which would leave the ROIs to the collector. It is not the pattern forbidden above, because
+   nothing is built during the release — `_open_tool()` builds the replacement after `tear_down()`
+   has returned. The region layer's rule is unchanged: `_retired` is released only from the timer.
+   `retire_roi()` also clears `GraphicsScene.dragItem` and `lastHoverEvent` when they name the ROI
+   or one of its handles, so a deleted tool ROI is not reachable from the scene. The region layer
+   does not clear them, so a retired region item may still be held there (`BUGS.md` M31); do not
+   assume such an item is safe to touch.
 4. **`GraphicsScene.addParentContextMenus` walks up to the ImageItem**, whose `getContextMenus()`
    returns `[None]`, and a right-click then raises. `RegionItemInteraction.raiseContextMenu`
    overrides that walk (`BUGS.md` M12). The same mixin must check for an inherited

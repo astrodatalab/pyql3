@@ -17,14 +17,11 @@
   neither `sigRegionChangeStarted` nor `sigRegionChangeFinished` fires and that drag pays
   full `AxisItem` regeneration on every step. Fixing it means touching `base_tool.py`, which
   five other tool dialogs share.
-- `DepthPlotDialog.remove_bg_roi()` sets `self.bg_roi = None` synchronously rather than
-  retiring the item through the deferred `_retired` list `base_tool.py` uses, and
-  `toggle_roi_shape()` immediately constructs a replacement calling `addScaleHandle()` --
-  the exact "collector ran inside `GraphicsObject.__init__`" pattern documented as a
-  reproducible segfault in `BUGS.md` M18. Not observed in the wild and the suite is clean,
-  but the shape matches; worth retiring `bg_roi` the same way the base class retires ROIs
-  before it is next touched.
 # DONE
+- `DepthPlotDialog.remove_bg_roi()` and `remove_annulus_rings()` retire the background box and
+  the annulus rings through `BaseToolDialog.retire_roi()` instead of dropping them, so
+  `_drop_retired_rois` deletes them before collecting (`BUGS.md` M31, R15; covered by
+  `tests/test_menu_actions.py::test_depth_plot_retires_its_background_rois`).
 - Background subtraction from a sky annulus in the Depth Plot, so each channel is an aperture
   photometry measurement. The Depth Plot now opens on a circular aperture with an explicit
   **Radius** box, combined with **Total**, and background subtraction defaults to an annulus whose

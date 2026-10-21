@@ -878,24 +878,16 @@ class DepthPlotDialog(BaseToolDialog):
         self.sync_annulus_rings()
 
     def remove_annulus_rings(self):
-        """Take the rings off the scene.
+        """Take the rings off the scene and retire them (`retire_roi`).
 
-        `removeItem` on the ViewBox, not `setParentItem(None)`: a parented item detached
-        that way stays painted (`BUGS.md` B7).
+        `retire_roi` removes them with `removeItem` on the ViewBox: `setParentItem(None)`
+        alone leaves a parented item painted (`BUGS.md` B7).
         """
         for name in ("ring_inner", "ring_outer"):
             ring = getattr(self, name, None)
             if ring is None:
                 continue
-            if self.image_viewer is not None:
-                try:
-                    self.image_viewer.imv.getView().removeItem(ring)
-                except Exception:
-                    pass
-                try:
-                    ring.setParentItem(None)
-                except Exception:
-                    pass
+            self.retire_roi(ring)
             setattr(self, name, None)
 
     def sync_annulus_rings(self):
@@ -996,14 +988,9 @@ class DepthPlotDialog(BaseToolDialog):
                     self.bg_roi.sigRegionChanged.disconnect(self.on_bg_roi_changed)
                 except Exception:
                     pass
-            try:
-                self.bg_roi.setParentItem(None)
-            except Exception:
-                pass
-            try:
-                self.image_viewer.imv.getView().removeItem(self.bg_roi)
-            except Exception:
-                pass
+            # Retired, not dropped: `toggle_roi_shape` builds the replacement straight away,
+            # and the collector running inside its `addScaleHandle` is `BUGS.md` M18's segfault.
+            self.retire_roi(self.bg_roi)
             self.bg_roi = None
 
     def toggle_background(self, state=None):
@@ -1082,12 +1069,14 @@ class DepthPlotDialog(BaseToolDialog):
         self.bg_roi.blockSignals(False)
         self.update_plot()
 
-    def closeEvent(self, event):
+    def tear_down(self):
+        if self._torn_down:
+            return
         self._thaw_y_after_drag()
         self.clear_line_overlays()
         self.remove_bg_roi()
         self.remove_annulus_rings()
-        super().closeEvent(event)
+        super().tear_down()
 
     def get_data_dir(self):
         import sys

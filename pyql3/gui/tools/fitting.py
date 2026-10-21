@@ -194,7 +194,16 @@ class GaussianFitDialog(BaseToolDialog):
         self.last_fit_data = None
         
         self.update_fit()
-        
+
+    def tear_down(self):
+        if self._torn_down:
+            return
+        # Qt does not hide a child window with its parent, so a Display Peak Fit window stayed
+        # on screen after Peak Fit closed, until the next Peak Fit deleted it with this dialog.
+        for display in self.findChildren(DisplayPeakFitDialog):
+            display.close()
+        super().tear_down()
+
     def set_center(self, center):
         center = as_center(center)
         if center is None or self.roi is None:

@@ -295,15 +295,12 @@ class CutPlotDialog(BaseToolDialog):
         unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
         self.plot_widget.setLabel('left', f'Intensity ({unit})')
 
-    def closeEvent(self, event):
+    def tear_down(self):
+        if self._torn_down:
+            return
         if self.image_viewer and self.image_viewer.imv:
             try:
                 self.image_viewer.imv.sigTimeChanged.disconnect(self.update_plot)
             except (TypeError, RuntimeError):
                 pass
-            if self.roi:
-                try:
-                    self.image_viewer.imv.getView().removeItem(self.roi)
-                except Exception:
-                    pass
-        super().closeEvent(event)
+        super().tear_down()

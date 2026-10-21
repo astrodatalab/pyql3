@@ -1947,7 +1947,7 @@ refresh.
 
 | # | File | Issue | Fix |
 |---|------|-------|-----|
-| M1 | `photometry.py:72` and `:92` | Two `closeEvent` definitions; the second silently overrides the guarded, `try/except`-wrapped first one. Currently latent (pyqtgraph's `removeItem` does remove the annuli), but the surviving version will raise if `roi_inner` was never created. | Delete the second; keep the guarded one and have it also `setParentItem(None)`. |
+| M1 | `photometry.py` (`tear_down`), covered by `test_tear_down_twice_is_harmless[photometry]`, `test_escape_tears_a_tool_down_like_close[photometry]` and `test_photometry_retires_its_sky_rings` (`tests/test_menu_actions.py`) | ✅ FIXED — the second `closeEvent` was already gone before the 2026-10-21 Task 9; Task 9 turned the surviving guarded one into a guarded `tear_down` that runs on Escape as well as Close; the Phase 3 review then had it retire both sky rings through `retire_roi` instead of only taking them off the scene, since the dialog that kept them is deleted by `_open_tool`. Originally: two `closeEvent` definitions; the second silently overrides the guarded, `try/except`-wrapped first one. Currently latent (pyqtgraph's `removeItem` does remove the annuli), but the surviving version will raise if `roi_inner` was never created. | Delete the second; keep the guarded one and have it also `setParentItem(None)`. |
 | M2 | `poller.py:34-45` | `self.watch_path = path` is assigned *before* the `os.path.exists` check, so a nonexistent directory is still persisted to `~/.pyql3/config.json` by `open_polling_config` (`main_window.py:585`). | Validate first, assign only on success. |
 | M3 | `poller.py:14`, `:23` | Watches `.fits`/`.fit` only, while the Open dialog accepts `.fits.gz`. | Add `.gz` handling (check the full suffix chain). |
 | M4 | `arithmetic.py:150-163` | The Active-Image operand is not cast to float, unlike the file operand (`:161`). ~~Not currently reachable for integer wraparound (the other operand is always float)~~ **Correction (2026-10-21): reachable.** Both operands offer "Active Image", so Active + Active on a uint16 frame adds in uint16: 40000 + 40000 gave 14464. See R23. | `return self.image_viewer.raw_data.astype(float), ...`. |
@@ -1958,7 +1958,7 @@ refresh.
 | M9 | `advanced_plots.py:134-138` | `ContourDialog.update_plot` returns early when *Show Contours* is unchecked, before `clear_contours()`, so contours from a previous slice can linger. | Clear first, then return. |
 | M11 | ✅ FIXED — `main_window.py` | `create_menus` kept its `QMenu` objects in locals only, so nothing held a Python reference. Harmless while unwrapped, but any code calling `action.menu()` becomes a transient Python owner and PySide6 deletes the C++ menu **and every QAction in it** when that wrapper is collected. Confirmed while writing the Phase 4 region-menu tests: a helper that walked `menuBar().actions()` and called `.menu()` got back an action that was already dead. | Done: every menu is now stored on `self` (`self.file_menu`, `self.display_menu`, `self.scaling_menu`, `self.colormap_menu`, `self.units_menu`, `self.plot_menu`, `self.analysis_menu`, `self.region_menu`, `self.help_menu`, joining `self.window_menu` and `self.recent_menu`). **Reach a menu through its attribute, never through `action.menu()`** — see `tests/test_region_ui.py::menu_action`. |
 | M27 | ✅ FIXED — `base_tool.py` (`remove_roi_from_viewer`, `_drop_retired_rois`) | `remove_roi_from_viewer` ended with `self.roi = None`, dropping the last Python reference to a `QGraphicsItem` — and every caller removes an ROI *in order to build its replacement*. The collector therefore ran inside `ROI.addScaleHandle` → `GraphicsObject.__init__` and freed the old item mid-construction: `Fatal Python error: Segmentation fault ... Garbage-collecting`, from `toggle_roi_shape`. Latent for as long as the shape combo has existed; a test that switches shape twice made it reproducible. Exactly `M18`'s failure in a second place. | Done: removed ROIs go to `_retired_rois` and are released from a `QTimer.singleShot(0, ...)` with an explicit `gc.collect()`, since these items are in reference cycles. Nine consecutive clean runs of the file and the full suite. |
-| M31 | ✅ FIXED — `base_tool.py` (`_drop_retired_rois`), covered by `tests/test_analysis_tools.py` running to the end | Follow-up to M27. After Region Statistics and Peak Fit moved to `roi_plane_pixels`, `tests/test_analysis_tools.py` died with `Fatal Python error: Segmentation fault` in `gc.collect()` (`_drop_retired_rois`, reached from the `destroy_leftover_windows` fixture) at the teardown of `test_gaussian_fit_tool` after `test_cuts_tool`; lldb showed `Shiboken::callCppDestructor<QGraphicsObject>` on a bad pointer. Reproduction: those two tests in that order with any extra object created in `GaussianFitDialog.__init__` (a parentless `QLabel` was enough); the code before the change survived `gc.set_threshold` from 20 to 500, so the order in which the collector frees the ROI, handle and menu cycle is what matters. **Residual exposure (found in review):** pyqtgraph's `GraphicsScene` keeps strong references (`dragItem`, `lastHoverEvent.clickItems()`), so a ROI removed while it is being dragged or hovered is deleted in C++ while the scene still points at it, and the next scene click can raise `RuntimeError: Internal C++ object already deleted` (a traceback, not a crash). Checked cheaply: after removing a ROI set as `scene.dragItem`, the scene still holds it and `shiboken6.isValid` is False; a stubbed drag-finish event did not raise, so the traceback itself was not reproduced. Not fixed. | Done: `_drop_retired_rois` calls `shiboken6.delete` on each still-valid retired ROI before `gc.collect()`, which invalidates the wrappers so the collector skips them. The file and the full suite pass. `region_layer._drop_retired` is unchanged. |
+| M31 | ✅ FIXED — `base_tool.py` (`_drop_retired_rois`; with R15, `retire_roi` and `_release_scene_references`), `depth_plot.py` (`remove_bg_roi`, `remove_annulus_rings`), covered by `tests/test_analysis_tools.py` running to the end, `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` and `test_depth_plot_retires_its_background_rois` (`tests/test_menu_actions.py`) | Follow-up to M27. After Region Statistics and Peak Fit moved to `roi_plane_pixels`, `tests/test_analysis_tools.py` died with `Fatal Python error: Segmentation fault` in `gc.collect()` (`_drop_retired_rois`, reached from the `destroy_leftover_windows` fixture) at the teardown of `test_gaussian_fit_tool` after `test_cuts_tool`; lldb showed `Shiboken::callCppDestructor<QGraphicsObject>` on a bad pointer. Reproduction: those two tests in that order with any extra object created in `GaussianFitDialog.__init__` (a parentless `QLabel` was enough); the code before the change survived `gc.set_threshold` from 20 to 500, so the order in which the collector frees the ROI, handle and menu cycle is what matters. **Residual exposure (found in review):** pyqtgraph's `GraphicsScene` keeps strong references (`dragItem`, `lastHoverEvent.clickItems()`), so a ROI removed while it is being dragged or hovered is deleted in C++ while the scene still points at it, and the next scene click can raise `RuntimeError: Internal C++ object already deleted` (a traceback, not a crash). Checked cheaply: after removing a ROI set as `scene.dragItem`, the scene still holds it and `shiboken6.isValid` is False; a stubbed drag-finish event did not raise, so the traceback itself was not reproduced. Fixed with R15: `remove_roi_from_viewer` clears `dragItem` and `lastHoverEvent` when they name the ROI or one of its handles (`_release_scene_references`), and `tear_down` releases retired ROIs at once rather than on a timer a deleted dialog may never reach, and the Depth Plot's background box and annulus rings are retired through `retire_roi` instead of being dropped; a click sent to a deleted `dragItem` does raise `RuntimeError` from `ROI.mouseClickEvent`, which `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` covers. | Done: `_drop_retired_rois` calls `shiboken6.delete` on each still-valid retired ROI before `gc.collect()`, which invalidates the wrappers so the collector skips them. The file and the full suite pass. `region_layer._drop_retired` is unchanged. |
 | M26 | ✅ FIXED — `tests/test_poller.py`, `poller.py` (`_check_pending`) | `test_burst_of_files_displays_only_the_newest` spaced its five files **one nanosecond** apart with `os.utime`. NTFS timestamps resolve to 100 ns, so on Windows all five were the same age, `max(candidates, key=_mtime)` returned the first maximal element, and the burst announced `burst0` instead of `burst4`. Failed the Windows release build; passed everywhere else because APFS and ext4 resolve to 1 ns. | Done: the test spaces them a second apart and *asserts the premise* — that `os.stat` really recorded five increasing ages — so a coarser filesystem says so rather than looking like a poller bug. Separately, `_check_pending` now breaks ties by name (`key=lambda p: (self._mtime(p), p)`), because timestamps genuinely collide in this poller's deployment: an NFS share can report whole seconds, and a DRP burst lands several frames in one tick. |
 | M23 | ✅ FIXED — `.github/workflows/release.yml`, `build_app.sh` | The packaged-asset check globbed `dist/**/regions/_geometry/*`, which the `__init__.py` and the `tests/` directory collected alongside the extensions already satisfy — so it passed on a build containing **no compiled `_geometry` extension at all**, which is the only thing `collect_all('regions')` is there for. Verified by running the step against a `dist/` tree holding just `_geometry/__init__.py`: it reported success. Found while auditing the Windows build (`M22`), where the extensions are `.pyd`. | Done: both copies now filter on `importlib.machinery.EXTENSION_SUFFIXES`, so only a real `.so`/`.pyd` counts. Re-verified against fake `dist/` trees with and without one. |
 | M24 | ✅ FIXED — `poller.py` (`_watch_key`) | The canonical watch key was `realpath(abspath(expanduser(path)))` with no `normcase`. On Windows `C:\Data\OSIRIS` and `c:\data\osiris` are one directory but two keys, so two windows could each start a `PollingObserver` over it — the double scan traffic and double load that `watcher_of` exists to prevent. | Done: `os.path.normcase` on the result, a no-op on POSIX. `tests/test_multi_window.py::test_watch_ownership_compares_canonical_paths` asserts the case fold where `normcase` actually folds. |
@@ -2253,7 +2253,8 @@ running code unless its Status says otherwise, and each carries its reproduction
 `R`-numbered to distinguish these from the `B`, `M` and `S` series, and ordered by severity:
 **R1–R10 high, R11–R47 medium, R48–R64 low**, and R65–R80 in the minor-items table at the end.
 R81–R83 (medium) were added afterwards from a NIFS reference cube; they sit just before the table.
-R84 (minor) was added in the Phase 2 review and is the last row of the table.
+R84 (minor) was added in the Phase 2 review, and R86 and R87 (minor) in the Phase 3 review; they
+are the last rows of the table. R85 (high) was found while fixing R15 and sits after R83.
 The implementation plan is `specs/2026-10-21-code-review-fixes-plan.md`.
 
 **Baseline.** `uv run pytest -q -n auto --dist loadfile`: 1081 passed, 6 skipped (the two
@@ -3247,7 +3248,7 @@ equals `current_plane()` at the ROI.
 
 ## R15. Escape hides a tool dialog without running its teardown, so its ROI, overlays and drag handling stay on the image
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/base_tool.py` (`tear_down`, called from `closeEvent` and `reject`; `_release_scene_references`), the overrides in `cuts.py`, `depth_plot.py`, `photometry.py`, `advanced_plots.py`, `plot_catalog.py` and `region_list.py` (which now disconnects `regions_changed`), `AGENTS.md`, covered by `test_escape_tears_a_tool_down_like_close`, `test_close_still_hides_every_tool`, `test_tear_down_twice_is_harmless`, `test_teardown_tests_cover_every_tool` and `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` (`tests/test_menu_actions.py`)
 - **Severity:** medium — Escape is the usual way to dismiss a dialog. What it leaves behind cannot be removed except by closing the window, and in draw mode the image can no longer be panned.
 - **Files:** `pyql3/gui/tools/base_tool.py:48-129`, `pyql3/gui/tools/cuts.py:298`, `pyql3/gui/tools/depth_plot.py:1052`, `pyql3/gui/tools/photometry.py:72`, `pyql3/gui/tools/advanced_plots.py:79`, `:164`, `pyql3/gui/tools/plot_catalog.py:1271`, `pyql3/gui/main_window.py:812-880`
 - **Related:** B7 and M27 made `closeEvent` remove items correctly. This is the path that skips `closeEvent` entirely. `pyql3/gui/dialogs/region_properties.py:237` already overrides `reject`.
@@ -3315,7 +3316,8 @@ are gone from the scene and `exclusive_drag_owner()` is None.
 
 ## R16. Several tool dialogs fall outside `TOOL_DIALOG_ATTRS`: they stay on screen after their window closes and keep running hidden
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/main_window.py` (`_open_tool`, every `open_*` tool opener, `close_tool_dialogs`), `pyql3/gui/tools/fitting.py` (`GaussianFitDialog.tear_down`), `pyql3/gui/tools/plot_catalog.py` (`tear_down`), covered by `tests/test_multi_window.py::test_opening_a_tool_twice_reuses_it`, `::test_reopening_a_closed_tool_leaves_one_instance`, `::test_every_tool_dialog_closes_with_its_window`, `::test_closing_peak_fit_closes_its_display_window`, `tests/test_plot_catalog.py::test_closing_the_catalog_releases_its_retired_labels` and `tests/test_region_ui.py::test_reopening_region_list_does_not_multiply_refreshes`
+- **Implementation note:** the fix differs from "Fix (proposed)" below. `_open_tool` replaces a hidden dialog (`tear_down()`, then `deleteLater()`) rather than showing it again, because a torn-down tool has no ROI left to show. Do not restore the proposal. Peak Fit's `tear_down` also closes its Display Peak Fit window, which Qt does not hide with its parent, and the Plot Catalog's `tear_down` releases its retired labels at once.
 - **Severity:** medium — leftover windows act on a closed window's released data, extra ROIs stay drawn, and region drags slow down every time the Region List is reopened
 - **Files:** `pyql3/gui/main_window.py:821-847`, `pyql3/gui/main_window.py:943-948`, `pyql3/gui/main_window.py:950-978`, `pyql3/gui/main_window.py:595-605`, `pyql3/gui/tools/region_list.py:88-89`
 - **Related:** the `TOOL_DIALOG_ATTRS` rule in `AGENTS.md`: each tool is reopened only if it is not already visible, and every tool must be listed.
@@ -6395,7 +6397,46 @@ none.
 `tests/test_menu_actions.py::test_total_dn_is_offered_only_for_a_count_rate`: an MJy/sr cube and a
 cube without `BUNIT` leave "As Total DN" disabled with a tooltip; the OSIRIS fixture enables it.
 
-## R65–R80, R84. Minor items
+## R85. Photometry and Strehl delete their own aperture ROI one event-loop pass after opening
+
+- **Status:** ✅ FIXED — `pyql3/gui/tools/base_tool.py` (`add_roi_to_viewer` removes the current ROI only when it is a different one), covered by `test_a_tool_keeps_the_roi_it_opened_with` (`tests/test_menu_actions.py`)
+- **Severity:** high — both tools lose the aperture they measure through: it disappears from the image, and every later measurement reads a deleted C++ object
+- **Files:** `pyql3/gui/tools/base_tool.py` (`add_roi_to_viewer`), `pyql3/gui/tools/photometry.py`, `pyql3/gui/tools/strehl.py`
+- **Related:** M31, whose fix made `_drop_retired_rois` call `shiboken6.delete` on each retired ROI. Before that change the retired ROI was only dropped from a list the dialog still held a reference to, so this sequence did no harm. Found while writing the R15 tests (2026-10-21).
+- **Introduced:** by 0934171 (Phase 1 of the fix plan), through M31's `shiboken6.delete` in `_drop_retired_rois`; still present in b101f38 (Phase 2); fixed in Phase 3. Never on `main` or in a tag: `git branch --contains 0934171` lists only `code-review-2026-10-21`, and `git tag --contains 0934171` lists nothing.
+
+### Symptom
+```
+StrehlDialog before events: valid True in scene True
+StrehlDialog after events:  valid False dialog.roi is r True
+PhotometryDialog before events: valid True in scene True
+PhotometryDialog after events:  valid False dialog.roi is r True
+```
+
+### Reproduction
+```python
+import numpy as np, shiboken6
+from PySide6.QtWidgets import QApplication
+app = QApplication([])
+from pyql3.gui.viewers.image_viewer import ImageViewer
+from pyql3.gui.tools.strehl import StrehlDialog
+v = ImageViewer(); v.show(); v.set_data(np.random.rand(40, 50))
+d = StrehlDialog(None, v); d.show(); r = d.roi
+app.processEvents()
+print("ROI valid:", shiboken6.isValid(r), "| still the tool's ROI:", d.roi is r)
+```
+
+### Root cause
+Photometry and Strehl assign `self.roi = pg.CircleROI(...)` and then call
+`self.add_roi_to_viewer(self.roi)`. `add_roi_to_viewer` began with `if self.roi is not None:
+self.remove_roi_from_viewer()`, which retired the ROI being added and queued
+`_drop_retired_rois`. The ROI was then put back on the image and kept as `self.roi`, and one
+event-loop pass later `_drop_retired_rois` deleted it in C++.
+
+### Fix
+`add_roi_to_viewer` removes the current ROI only when it is not the one being added.
+
+## R65–R80, R84, R86, R87. Minor items
 
 | # | File | Issue | Fix (proposed) |
 |---|------|-------|-----|
@@ -6416,6 +6457,8 @@ cube without `BUNIT` leave "As Total DN" disabled with a tooltip; the OSIRIS fix
 | R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
 | R80 | `pyql3/gui/tools/depth_plot.py:549-562` (`_circular_mask`), called from `_cut_region` `:524` and the background box `:1665` | With Shape set to Circle, a cut (Horizontal/Vertical Cut through the aperture) or a background box that hangs off the image builds its circular mask from the box *after* `coords.box_index_slices` has clipped it to the image. The mask is centred on the clipped box and its radius is half the clipped box's shorter side, so it measures a smaller circle shifted toward the image interior instead of the part of the drawn circle that is on the image. Pre-existing; found in the Phase 1 review (2026-10-21), and reachable more often since R19 made an off-edge box measure its on-image part. | Build the mask from the unclamped circle (the drawn box's centre and radius, in the clipped box's index frame) and intersect it with the image, so the pixels kept are the drawn circle's on-image pixels. |
 | R84 | `pyql3/gui/viewers/image_viewer.py` (`apply_z_range`, reached from `show_current_plane`) | An unparsable Z Min or Z Max ("abc") present during `set_data` or any redisplay in Z Range mode makes `apply_z_range` stop at "Collapsed: Invalid Range" after `_give_imageview_the_cube()` has already loaded the cube, so channel 0 stays painted with the previous image's levels and `display_data` is left as the full cube copy that `apply_axis_mapping` made, not the plane on screen. Measured: Sum over 4-8 of a cube whose channel k holds k + 100 (530.0, levels 530-531); Z Min set to "abc" and the cube reloaded ×10: the screen shows channel 0 (1000.0) at levels 530-531. No `plane_changed` is emitted, while `display_changed` is. Found in the Phase 2 review (2026-10-21). | Put a `QIntValidator` on Z Min, Z Max and the Boxcar field so an unparsable value cannot be entered, or fall back to the full range with a message in `lbl_slice_info`. |
+| R86 | `pyql3/gui/tools/plot_catalog.py:1030-1033` (`_clear_text_items`), `:1283-1285` (`tear_down`) | `_clear_text_items` takes every label off the scene and then empties `self.text_items`, and `tear_down` does the same to `scatter_item` and `highlight_item` (`setattr(self, attr, None)`), so the last Python reference to each `QGraphicsItem` is dropped rather than retired — `M18`'s pattern. `tear_down` then calls `_release_retired()`, whose `gc.collect()` frees them in whatever order their reference cycles are walked (`M31`). Both run only from `tear_down`; a catalog reload reuses the two scatter items and the label pool. Pre-existing; found in the Phase 3 review (2026-10-21). | Route the labels and both scatter items through `_retire_items` into `_retired`, which `tear_down` already releases with `_release_retired()`; as in `BaseToolDialog._drop_retired_rois`, `shiboken6.delete` each still-valid item before the `gc.collect()`. |
+| R87 | `pyql3/gui/tools/advanced_plots.py:136-164` (Contour `update_plot`), `:120-128` (`clear_contours`) | `update_plot` calls `clear_contours()`, which takes each `IsocurveItem` off the view and then drops them all (`self.iso_items = []`), and goes straight on to build the new ones — `M18`'s drop-then-build pattern, in which the collector can run inside the construction of a replacement item and free the old one. It runs on every `sigTimeChanged` while contours are shown, so stepping through a cube with contours on rebuilds them each frame. Pre-existing; found in the Phase 3 review (2026-10-21). | Retire the old items instead of dropping them: a `_retired` list released from `QTimer.singleShot(0, ...)` and in `tear_down`, with `shiboken6.delete` before the `gc.collect()` as in `BaseToolDialog._drop_retired_rois`. |
 
 ## Working checklist — code review 2026-10-21
 
@@ -6436,8 +6479,8 @@ Medium
 - [ ] R12 A failed load leaves `FitsReader` on a different file — plan Task 17
 - [ ] R13 An unparseable WCS fails the load and leaves the viewer half-updated — plan Task 18
 - [ ] R14 Statistics, Photometry, Peak Fit, Strehl never refresh; cuts miss Boxcar/Range — plan Task 11
-- [ ] R15 Escape hides a tool without its teardown — plan Task 9
-- [ ] R16 Tool dialogs fall outside `TOOL_DIALOG_ATTRS` — plan Task 10
+- [x] R15 Escape hides a tool without its teardown — plan Task 9
+- [x] R16 Tool dialogs fall outside `TOOL_DIALOG_ATTRS` — plan Task 10
 - [ ] R17 Arrow-only ds9 export declares `icrs` whatever the WCS frame — plan Task 35
 - [ ] R18 Photometry sky wrong at edges and with NaN; inverted annulus freezes — plan Task 24
 - [x] R19 Depth Plot rectangle clamping measures shifted or edge pixels — plan Task 4
@@ -6489,11 +6532,14 @@ Low
 - [ ] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
 - [ ] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
 
-Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review)
+Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review, R85 from Task 9, R86–R87 from the Phase 3 review)
 - [ ] R81 Non-OSIRIS cube without celestial axis types opens with wavelength on X — plan Task 20
 - [ ] R82 IRAF-style spectral axis (`LINEAR` + `WAT axtype=wave` / `DISPAXIS`) not recognised — plan Task 20
 - [ ] R83 Total DN offered whatever the data's unit; `EXPTIME` ignored — plan Task 44
 - [ ] R84 Unparsable Z field in range mode leaves channel 0 with old levels — plan Task 43
+- [x] R85 Photometry and Strehl delete their own ROI one event-loop pass after opening — plan Task 9
+- [ ] R86 Catalog markers and labels dropped without retiring — plan Task 13
+- [ ] R87 Contour items dropped then rebuilt each update — plan Task 11
 
 Minor items (table)
 - [ ] R65 Colorbar shows transformed values — plan Task 43

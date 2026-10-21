@@ -188,3 +188,284 @@ def test_tool_opener_survives_qaction_triggered(main_window, opener):
             if dialog is not None:
                 dialog.close()
         action.setParent(None)
+
+
+# --- R15: one teardown for Close and Escape --------------------------------------------------
+
+def _catalog_tool(viewer):
+    """A Plot Catalog with markers and labels on the image, so its teardown has work to do."""
+    from astropy.table import Table
+    from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
+
+    dialog = PlotCatalogDialog(None, viewer)
+    dialog.set_catalog_table(Table({
+        "name": ["a", "b", "c"],
+        "x": [5.0, 10.0, 15.0],
+        "y": [5.0, 10.0, 15.0],
+    }), "test")
+    dialog.chk_show_name.setChecked(True)
+    dialog.update_visible_text_labels()
+    return dialog
+
+
+def _tool_builders():
+    """Every `BaseToolDialog` subclass, as `{test id: (class, build(viewer))}`."""
+    from pyql3.gui.tools.advanced_plots import ContourDialog, SurfacePlotDialog
+    from pyql3.gui.tools.cuts import CutPlotDialog
+    from pyql3.gui.tools.depth_plot import DepthPlotDialog
+    from pyql3.gui.tools.fitting import GaussianFitDialog
+    from pyql3.gui.tools.photometry import PhotometryDialog
+    from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
+    from pyql3.gui.tools.region_list import RegionListDialog
+    from pyql3.gui.tools.rotate import RotateDialog
+    from pyql3.gui.tools.statistics import StatisticsDialog
+    from pyql3.gui.tools.strehl import StrehlDialog
+
+    return {
+        "depth_plot": (DepthPlotDialog, lambda v: DepthPlotDialog(None, v)),
+        "hcut": (CutPlotDialog, lambda v: CutPlotDialog('horizontal', None, v)),
+        "vcut": (CutPlotDialog, lambda v: CutPlotDialog('vertical', None, v)),
+        "dcut": (CutPlotDialog, lambda v: CutPlotDialog('diagonal', None, v)),
+        "surface": (SurfacePlotDialog, lambda v: SurfacePlotDialog(None, v)),
+        "contour": (ContourDialog, lambda v: ContourDialog(None, v)),
+        "plot_catalog": (PlotCatalogDialog, _catalog_tool),
+        "statistics": (StatisticsDialog, lambda v: StatisticsDialog(None, v)),
+        "photometry": (PhotometryDialog, lambda v: PhotometryDialog(None, v)),
+        "gaussian_fit": (GaussianFitDialog, lambda v: GaussianFitDialog(None, v)),
+        "strehl": (StrehlDialog, lambda v: StrehlDialog(None, v)),
+        "rotate": (RotateDialog, lambda v: RotateDialog(None, v)),
+        "region_list": (RegionListDialog, lambda v: RegionListDialog(None, v)),
+    }
+
+
+TOOL_IDS = list(_tool_builders())
+#: Tools that draw nothing on the image: the Surface plot draws in its own window.
+DRAW_NOTHING = {"surface", "rotate", "region_list"}
+
+
+def _show_tool(name, viewer, qapp):
+    """Show the viewer and the tool, and return (dialog, scene items that existed before it)."""
+    viewer.show()
+    scene = viewer.imv.getView().scene()
+    before = set(scene.items())
+    _, build = _tool_builders()[name]
+    dialog = build(viewer)
+    dialog.show()
+    qapp.processEvents()
+    if name not in DRAW_NOTHING:
+        assert _items_left_by(viewer, before), "the tool drew nothing, so this checks nothing"
+    return dialog, before
+
+
+def _items_left_by(viewer, before):
+    return [item for item in viewer.imv.getView().scene().items() if item not in before]
+
+
+def test_teardown_tests_cover_every_tool():
+    """The parametrization below has to name every tool dialog, or a new one goes unchecked."""
+    import importlib
+    import pkgutil
+
+    import pyql3.gui.tools as tools
+    from pyql3.gui.tools.base_tool import BaseToolDialog
+
+    for module in pkgutil.iter_modules(tools.__path__):
+        importlib.import_module(f"pyql3.gui.tools.{module.name}")
+
+    def subclasses(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from subclasses(sub)
+
+    tools_in_package = {cls for cls in subclasses(BaseToolDialog)
+                        if cls.__module__.startswith("pyql3.gui.tools.")}
+    assert tools_in_package == {cls for cls, _ in _tool_builders().values()}
+
+
+@pytest.mark.parametrize("name", TOOL_IDS)
+def test_escape_tears_a_tool_down_like_close(qapp, loaded_viewer, name):
+    """R15: Escape runs QDialog.reject(), which hides the dialog without a closeEvent, so the
+    tool's ROI, rings, markers or contours stayed on the image and a checked Draw Region kept
+    the view from panning."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    dialog, before = _show_tool(name, loaded_viewer, qapp)
+    if hasattr(dialog, 'btn_draw'):
+        dialog.btn_draw.click()
+        assert loaded_viewer.exclusive_drag_owner() is dialog
+
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    qapp.processEvents()
+
+    assert not dialog.isVisible()
+    assert _items_left_by(loaded_viewer, before) == []
+    assert loaded_viewer.exclusive_drag_owner() is None
+    assert loaded_viewer.imv.getView().state['mouseEnabled'] == [True, True]
+
+
+@pytest.mark.parametrize("name", TOOL_IDS)
+def test_close_still_hides_every_tool(qapp, loaded_viewer, name):
+    """Guards the obvious wrong fix for R15: a `reject()` that calls `self.close()` re-enters a
+    close already in progress, and the dialog then stays on screen after Close and Escape."""
+    dialog, before = _show_tool(name, loaded_viewer, qapp)
+
+    dialog.close()
+    qapp.processEvents()
+
+    assert not dialog.isVisible()
+    assert _items_left_by(loaded_viewer, before) == []
+
+
+@pytest.mark.parametrize("name", TOOL_IDS)
+def test_tear_down_twice_is_harmless(qapp, loaded_viewer, name):
+    """A Close runs the teardown twice (closeEvent, then QDialog.closeEvent's own reject()), so
+    the second call must neither raise nor warn, for example about a signal already disconnected."""
+    import warnings
+
+    dialog, before = _show_tool(name, loaded_viewer, qapp)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        dialog.tear_down()
+        dialog.tear_down()
+        dialog.close()
+    qapp.processEvents()
+
+    assert not dialog.isVisible()
+    assert _items_left_by(loaded_viewer, before) == []
+
+
+class _Press:
+    """The parts of a scene mouse press that pyqtgraph's MouseClickEvent reads."""
+
+    def __init__(self, scene_pos):
+        from PySide6.QtCore import QPointF, Qt
+        self._pos = QPointF(*scene_pos)
+        self._button = Qt.MouseButton.LeftButton
+        self._modifiers = Qt.KeyboardModifier.NoModifier
+
+    def scenePos(self):
+        return self._pos
+
+    def screenPos(self):
+        return self._pos
+
+    def button(self):
+        return self._button
+
+    def buttons(self):
+        return self._button
+
+    def modifiers(self):
+        return self._modifiers
+
+
+def test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi(qapp, loaded_viewer):
+    """M31's residual exposure: the scene keeps `dragItem` and the last hover event, which can
+    point at a tool's ROI or one of its handles. Once the ROI is deleted, the next click
+    reached a deleted C++ object."""
+    from PySide6.QtCore import Qt
+    from pyqtgraph.GraphicsScene.mouseEvents import HoverEvent, MouseClickEvent
+
+    dialog, _ = _show_tool("statistics", loaded_viewer, qapp)
+    scene = loaded_viewer.imv.getView().scene()
+    roi = dialog.roi
+    handle = roi.getHandles()[0]
+    hover = HoverEvent(None, True)
+    hover.currentItem = handle
+    hover.acceptClicks(Qt.MouseButton.LeftButton)
+    scene.lastHoverEvent = hover
+    scene.dragItem = roi
+
+    dialog.close()
+    qapp.processEvents()
+
+    assert scene.dragItem is None
+    assert scene.lastHoverEvent is None
+    scene.sendClickEvent(MouseClickEvent(_Press((10.0, 10.0))))
+
+
+@pytest.mark.parametrize("name", ["statistics", "photometry", "gaussian_fit", "strehl",
+                                  "depth_plot"])
+def test_a_tool_keeps_the_roi_it_opened_with(qapp, loaded_viewer, name):
+    """R85: Photometry and Strehl set `self.roi` and then passed it to `add_roi_to_viewer`,
+    which retired the ROI it was adding; one event-loop pass later `_drop_retired_rois`
+    deleted it, while the tool still measured through it."""
+    import shiboken6
+
+    dialog, _ = _show_tool(name, loaded_viewer, qapp)
+    qapp.processEvents()
+
+    assert shiboken6.isValid(dialog.roi)
+    assert dialog.roi.scene() is loaded_viewer.imv.getView().scene()
+    dialog.close()
+
+
+@pytest.mark.parametrize("mode", ["Annulus", "Region"])
+def test_depth_plot_retires_its_background_rois(qapp, loaded_viewer, mode):
+    """The Depth Plot's background box and annulus rings were dropped (`self.bg_roi = None`)
+    rather than retired, so the collector freed them in whatever order their reference cycles
+    were walked -- M31's crash pattern -- and `tear_down` now runs `gc.collect()` straight
+    after. Each one must go through `_retired_rois`, which deletes it before collecting."""
+    import gc
+
+    import shiboken6
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from pyql3.gui.tools.depth_plot import DepthPlotDialog
+
+    dialog, before = _show_tool("depth_plot", loaded_viewer, qapp)
+    dialog.chk_enable_bg.setChecked(True)
+    dialog.combo_bg_mode.setCurrentText(mode)
+    seen, background = [], []
+
+    def note(roi, into):
+        if roi is not None and all(roi is not other for other in seen):
+            seen.append(roi)
+            into.append(roi)
+
+    def note_rois():
+        note(dialog.roi, [])
+        for roi in (dialog.bg_roi, dialog.ring_inner, dialog.ring_outer):
+            note(roi, background)
+
+    note_rois()
+    for shape in ("Rectangle", "Circle", "Rectangle", "Circle"):
+        dialog.combo_shape.setCurrentText(shape)
+        qapp.processEvents()
+        note_rois()
+    # Annulus mode builds rings, gives way to a box over the rectangle, and builds rings again.
+    assert len(background) >= 3, "too few background ROIs were built for this to check much"
+
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert _items_left_by(loaded_viewer, before) == []
+
+    replacement = DepthPlotDialog(None, loaded_viewer)
+    replacement.show()
+    gc.collect()
+    qapp.processEvents()
+
+    assert [roi for roi in seen if shiboken6.isValid(roi)] == []
+    replacement.close()
+
+
+def test_photometry_retires_its_sky_rings(qapp, loaded_viewer):
+    """`tear_down` took the sky rings off the scene but only kept them as attributes, so once
+    `MainWindow._open_tool` deleted the dialog they went to the collector in whatever order
+    their reference cycles were walked -- M31's crash pattern. They must go through
+    `_retired_rois`, which deletes them before collecting."""
+    import shiboken6
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    dialog, before = _show_tool("photometry", loaded_viewer, qapp)
+    rings = [dialog.roi_inner, dialog.roi_outer]
+    assert all(shiboken6.isValid(ring) for ring in rings)
+
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    qapp.processEvents()
+
+    assert _items_left_by(loaded_viewer, before) == []
+    assert [ring for ring in rings if shiboken6.isValid(ring)] == []
+    assert dialog.roi_inner is None and dialog.roi_outer is None

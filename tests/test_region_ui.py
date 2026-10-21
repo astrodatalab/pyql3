@@ -17,6 +17,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from pyql3.core.regions_io import load_regions, save_regions, suggested_filename, with_sky_anchors
@@ -163,6 +164,30 @@ def test_the_region_list_opens_and_is_tracked_for_teardown(window):
     assert '_region_list_dialog' in MainWindow.TOOL_DIALOG_ATTRS
     window.close()
     assert not window._region_list_dialog.isVisible()
+
+
+def test_reopening_region_list_does_not_multiply_refreshes(window, qapp, monkeypatch):
+    """Each closed Region List stayed connected to `regions_changed` (`BUGS.md` R16).
+
+    Every drag frame emits `regions_changed`, so after five open/close cycles one drag frame
+    rebuilt six tables: 0.076 s per frame became 0.329 s at 450 regions. The closed lists are
+    also deleted, rather than kept alive and hidden.
+    """
+    for _ in range(5):
+        window.open_region_list()
+        window._region_list_dialog.close()
+    window.open_region_list()
+    # processEvents() alone does not run deleteLater() outside a running event loop.
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    calls = []
+    real = RegionListDialog.update_plot
+    monkeypatch.setattr(RegionListDialog, "update_plot",
+                        lambda self: (calls.append(self), real(self))[1])
+    window.region_layer.regions_changed.emit()
+
+    assert calls == [window._region_list_dialog]
+    assert len(window.findChildren(RegionListDialog)) == 1
 
 
 # ------------------------------------------------------------- save and load

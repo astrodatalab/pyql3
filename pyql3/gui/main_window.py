@@ -15,6 +15,7 @@ from pyql3.services.poller import DirectoryPoller, is_fits_path, watcher_of
 from pyql3.gui.dialogs.polling import PollingDialog
 from pyql3.services.config import get_config
 from PySide6.QtCore import QEvent, Qt, QTimer
+import shiboken6
 import pyql3
 from pyql3 import get_resource_path
 
@@ -602,9 +603,15 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def close_tool_dialogs(self):
-        """Close this window's tool dialogs, letting each drop its ROI from the viewer."""
-        for attr in self.TOOL_DIALOG_ATTRS:
-            dialog = getattr(self, attr, None)
+        """Close this window's tool dialogs, letting each drop its ROI from the viewer.
+
+        Region property dialogs are closed too. They are kept in `_region_property_dialogs`
+        rather than in `TOOL_DIALOG_ATTRS`, since a window has one per region.
+        """
+        dialogs = [getattr(self, attr, None) for attr in self.TOOL_DIALOG_ATTRS]
+        # A copy: closing one finishes it, and `finished` removes it from the dict.
+        dialogs += list(self._region_property_dialogs.values())
+        for dialog in dialogs:
             if dialog is None:
                 continue
             try:
@@ -612,6 +619,35 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 # Already destroyed by Qt; nothing left to tidy.
                 pass
+
+    def _open_tool(self, attr, factory):
+        """Show the tool dialog cached in `attr`, building it with `factory()` when needed.
+
+        Every tool opener goes through here. A visible dialog is raised and returned, so a
+        second click on a menu entry does not build a second dialog with a second ROI on the
+        image (`BUGS.md` R16). A hidden dialog has been torn down by its Close or Escape and
+        cannot be shown again, so it is replaced and deleted rather than kept alive.
+
+        `tear_down()` is called before the delete for a dialog hidden some other way; it does
+        nothing the second time. It also releases the retired ROIs at once, so none are left
+        to the collector after the dialog is deleted (`BUGS.md` M31). `ArithmeticDialog` is a
+        plain `QDialog` and has no `tear_down()`.
+        """
+        dialog = getattr(self, attr, None)
+        if dialog is not None and not shiboken6.isValid(dialog):
+            dialog = None       # destroyed by Qt; treat it as never opened
+        if dialog is not None and dialog.isVisible():
+            dialog.raise_()
+            return dialog
+        if dialog is not None:
+            if hasattr(dialog, 'tear_down'):
+                dialog.tear_down()
+            dialog.deleteLater()
+        dialog = factory()
+        setattr(self, attr, dialog)
+        dialog.show()
+        dialog.raise_()
+        return dialog
 
     def load_fits(self, filepath, ext=None, force=False, show_errors=True,
                   cancel_auto_load=True):
@@ -852,80 +888,71 @@ class MainWindow(QMainWindow):
             return
 
         from pyql3.gui.tools.depth_plot import DepthPlotDialog
-        if not hasattr(self, '_depth_plot_dialog') or not self._depth_plot_dialog.isVisible():
-            # The constructor already honours initial_center
-            self._depth_plot_dialog = DepthPlotDialog(self, self.image_viewer, initial_center=initial_center)
-        elif initial_center is not None:
-            # Re-target an already-open dialog
-            self._depth_plot_dialog.set_center(initial_center)
-        self._depth_plot_dialog.show()
-        self._depth_plot_dialog.raise_()
+        previous = getattr(self, '_depth_plot_dialog', None)
+        # A new dialog takes initial_center in its constructor.
+        dialog = self._open_tool('_depth_plot_dialog', lambda: DepthPlotDialog(
+            self, self.image_viewer, initial_center=initial_center))
+        if dialog is previous and initial_center is not None:
+            # Re-target the dialog that was already open.
+            dialog.set_center(initial_center)
+        return dialog
 
     def open_horizontal_cut(self):
         from pyql3.gui.tools.cuts import CutPlotDialog
-        self._hcut_dialog = CutPlotDialog('horizontal', self, self.image_viewer)
-        self._hcut_dialog.show()
-        
+        return self._open_tool('_hcut_dialog',
+                               lambda: CutPlotDialog('horizontal', self, self.image_viewer))
+
     def open_vertical_cut(self):
         from pyql3.gui.tools.cuts import CutPlotDialog
-        self._vcut_dialog = CutPlotDialog('vertical', self, self.image_viewer)
-        self._vcut_dialog.show()
-        
+        return self._open_tool('_vcut_dialog',
+                               lambda: CutPlotDialog('vertical', self, self.image_viewer))
+
     def open_diagonal_cut(self):
         from pyql3.gui.tools.cuts import CutPlotDialog
-        self._dcut_dialog = CutPlotDialog('diagonal', self, self.image_viewer)
-        self._dcut_dialog.show()
-        
+        return self._open_tool('_dcut_dialog',
+                               lambda: CutPlotDialog('diagonal', self, self.image_viewer))
+
     def open_surface_plot(self):
         from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
-        self._surf_dialog = SurfacePlotDialog(self, self.image_viewer)
         try:
-            self._surf_dialog.show()
-        except Exception as e:
+            return self._open_tool('_surf_dialog', lambda: SurfacePlotDialog(self, self.image_viewer))
+        except RuntimeError as e:
+            # pyqtgraph raises this from `initializeGL` when the context is older than
+            # OpenGL 2.1. Any other error is a bug and is not reported as missing OpenGL.
+            if "OpenGL" not in str(e):
+                raise
             print(f"Warning: 3D OpenGL Surface Plot unavailable in headless/virtualized GPU environment: {e}")
-        
+            return None
+
     def open_contour_plot(self):
         from pyql3.gui.tools.advanced_plots import ContourDialog
-        self._cont_dialog = ContourDialog(self, self.image_viewer)
-        self._cont_dialog.show()
-        
+        return self._open_tool('_cont_dialog', lambda: ContourDialog(self, self.image_viewer))
+
     def open_plot_catalog(self):
         from pyql3.gui.tools.plot_catalog import PlotCatalogDialog
-        if not hasattr(self, '_plot_catalog_dialog') or not self._plot_catalog_dialog.isVisible():
-            self._plot_catalog_dialog = PlotCatalogDialog(self, self.image_viewer)
-        self._plot_catalog_dialog.show()
-        self._plot_catalog_dialog.raise_()
-        
+        return self._open_tool('_plot_catalog_dialog',
+                               lambda: PlotCatalogDialog(self, self.image_viewer))
+
     def open_rotate(self):
         from pyql3.gui.tools.rotate import RotateDialog
-        if not hasattr(self, '_rotate_dialog') or not self._rotate_dialog.isVisible():
-            self._rotate_dialog = RotateDialog(self, self.image_viewer)
-        self._rotate_dialog.show()
-        self._rotate_dialog.raise_()
-        
+        return self._open_tool('_rotate_dialog', lambda: RotateDialog(self, self.image_viewer))
+
     def open_statistics(self):
         from pyql3.gui.tools.statistics import StatisticsDialog
-        if not hasattr(self, '_stats_dialog') or not self._stats_dialog.isVisible():
-            self._stats_dialog = StatisticsDialog(self, self.image_viewer)
-        self._stats_dialog.show()
-        self._stats_dialog.raise_()
+        return self._open_tool('_stats_dialog', lambda: StatisticsDialog(self, self.image_viewer))
 
     def open_photometry(self):
         from pyql3.gui.tools.photometry import PhotometryDialog
-        if not hasattr(self, '_phot_dialog') or not self._phot_dialog.isVisible():
-            self._phot_dialog = PhotometryDialog(self, self.image_viewer)
-        self._phot_dialog.show()
-        self._phot_dialog.raise_()
+        return self._open_tool('_phot_dialog', lambda: PhotometryDialog(self, self.image_viewer))
 
     def open_gaussian_fit(self, initial_center=None):
         initial_center = as_center(initial_center)
         from pyql3.gui.tools.fitting import GaussianFitDialog
-        if not hasattr(self, '_gauss_dialog') or not self._gauss_dialog.isVisible():
-            self._gauss_dialog = GaussianFitDialog(self, self.image_viewer, initial_center=initial_center)
-        self._gauss_dialog.show()
-        self._gauss_dialog.raise_()
-        if initial_center is not None and hasattr(self._gauss_dialog, 'set_center'):
-            self._gauss_dialog.set_center(initial_center)
+        dialog = self._open_tool('_gauss_dialog', lambda: GaussianFitDialog(
+            self, self.image_viewer, initial_center=initial_center))
+        if initial_center is not None and hasattr(dialog, 'set_center'):
+            dialog.set_center(initial_center)
+        return dialog
 
 
     # ----------------------------------------------------------------- regions
@@ -985,10 +1012,8 @@ class MainWindow(QMainWindow):
 
     def open_region_list(self):
         from pyql3.gui.tools.region_list import RegionListDialog
-        if not hasattr(self, '_region_list_dialog') or not self._region_list_dialog.isVisible():
-            self._region_list_dialog = RegionListDialog(self, self.image_viewer)
-        self._region_list_dialog.show()
-        self._region_list_dialog.raise_()
+        return self._open_tool('_region_list_dialog',
+                               lambda: RegionListDialog(self, self.image_viewer))
 
     def open_region_properties(self, region):
         """Open the ds9-style editor for one region, or raise the one already open for it.
@@ -1341,17 +1366,11 @@ class MainWindow(QMainWindow):
 
     def open_arithmetic_tool(self):
         from .tools.arithmetic import ArithmeticDialog
-        if not hasattr(self, '_arith_dialog') or not self._arith_dialog.isVisible():
-            self._arith_dialog = ArithmeticDialog(self, self.image_viewer)
-        self._arith_dialog.show()
-        self._arith_dialog.raise_()
+        return self._open_tool('_arith_dialog', lambda: ArithmeticDialog(self, self.image_viewer))
 
     def open_strehl_tool(self):
         from pyql3.gui.tools.strehl import StrehlDialog
-        if not hasattr(self, '_strehl_dialog') or not self._strehl_dialog.isVisible():
-            self._strehl_dialog = StrehlDialog(self, self.image_viewer)
-        self._strehl_dialog.show()
-        self._strehl_dialog.raise_()
+        return self._open_tool('_strehl_dialog', lambda: StrehlDialog(self, self.image_viewer))
 
     def confirm_watch_takeover(self, path):
         """Ask before moving another window's directory watch to this one.

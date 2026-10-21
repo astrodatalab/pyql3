@@ -72,18 +72,17 @@ class PhotometryDialog(BaseToolDialog):
         
         self.update_photometry()
 
-    def closeEvent(self, event):
-        if hasattr(self, 'roi_inner') and self.roi_inner is not None:
-            try: self.roi_inner.setParentItem(None)
-            except Exception: pass
-            try: self.image_viewer.imv.getView().removeItem(self.roi_inner)
-            except Exception: pass
-        if hasattr(self, 'roi_outer') and self.roi_outer is not None:
-            try: self.roi_outer.setParentItem(None)
-            except Exception: pass
-            try: self.image_viewer.imv.getView().removeItem(self.roi_outer)
-            except Exception: pass
-        super().closeEvent(event)
+    def tear_down(self):
+        if self._torn_down:
+            return
+        # Retired, not dropped: `super().tear_down()` deletes them before it collects
+        # (`BUGS.md` M31).
+        for ring in (getattr(self, 'roi_inner', None), getattr(self, 'roi_outer', None)):
+            if ring is not None:
+                self.retire_roi(ring)
+        self.roi_inner = None
+        self.roi_outer = None
+        super().tear_down()
         
     def on_roi_changed(self):
         r = self.roi.size().x() / 2.0
