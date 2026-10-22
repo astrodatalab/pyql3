@@ -5,12 +5,13 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
 from PySide6.QtCore import Qt, Signal, QEvent, QPointF
 from PySide6.QtGui import QTransform
 import numpy as np
-from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
 from pyql3.core import coords
-from pyql3.core.header_info import total_dn_multiplier
+from pyql3.core.header_info import (UNKNOWN_UNIT, build_wcs, data_keywords, data_unit,
+                                    default_axes, has_world_axes, in_microns, spectral_axis,
+                                    spectral_unit, total_dn_multiplier, world_axis_label)
 
 try:
     # Imported for its side effect: this registers the Crameri colormaps with
@@ -159,6 +160,8 @@ class ImageViewer(QWidget):
         self._original_tickStrings = self.top_axis.tickStrings
         self.top_axis.tickStrings = self._custom_tickStrings
         self.wcs_z_idx = None
+        self._wcs_z_unit = None
+        self._wcs_problem = ""
         
         self.imv.timeLine.setPen(pg.mkPen('y', width=3))
         self.imv.timeLine.setHoverPen(pg.mkPen('y', width=5))
@@ -170,7 +173,12 @@ class ImageViewer(QWidget):
         self.transposed_data = None
         self.display_data = None
         self.wcs = None
-        
+        # Set by set_data: the extension's header, the header the WCS came from, and the
+        # integration time and BUNIT, from either header (R25)
+        self.header = None
+        self.wcs_header = None
+        self.data_keywords = None
+
         # Info Bar directly below image
         self.setup_info_panel()
         
@@ -194,7 +202,10 @@ class ImageViewer(QWidget):
         self.view_rotation = 0.0
         self.flip = False
         self.pa_arrow = None
-        self._itime_coadds = 1.0
+        # Set by set_data from data_keywords: the unit the values are in, and the DN/s -> Total
+        # DN factor, None when the header states no integration time (R83)
+        self.data_unit = data_unit(None)
+        self._itime_coadds = None
         # Guards the slider <-> ImageView timeline sync (see on_imv_time_changed)
         self._syncing_slice = False
         # Exclusive drag handling; see begin_exclusive_drag
@@ -239,20 +250,40 @@ class ImageViewer(QWidget):
         from pyql3.gui.viewers.region_layer import RegionLayer
         self.region_layer = RegionLayer(self)
 
+    def wavelength_unit(self):
+        """The unit of the spectral Z axis as the file states it, or None when it states none.
+
+        None means "Unknown" and is never replaced by a guess: the axis is labelled
+        "Wavelength (Unknown)", shows the header's own numbers, and the line list is not
+        matched against it. This is the one place the viewer and the tools ask for the unit.
+        """
+        if getattr(self, 'wcs_z_idx', None) is None:
+            return None
+        return self._wcs_z_unit
+
     def get_wavelength_for_slice(self, z):
+        """The wavelength of channel `z`: in µm when `wavelength_unit()` is known, in the
+        header's own numbers when it is Unknown, and None when Z is not a spectral axis or its
+        unit is not a wavelength, frequency or energy."""
         if getattr(self, 'wcs', None) is None or getattr(self, 'wcs_z_idx', None) is None:
             return None
-        coords = [0] * self.wcs.naxis
-        coords[self.wcs_z_idx] = z
+        pixel = [0] * self.wcs.naxis
+        pixel[self.wcs_z_idx] = z
         try:
-            world = self.wcs.wcs_pix2world([coords], 0)[0]
-            wave = world[self.wcs_z_idx]
-            unit = self.wcs.wcs.cunit[self.wcs_z_idx]
-            if str(unit).strip().lower() == 'm':
-                wave *= 1e6
-            return wave
+            value = self.wcs.wcs_pix2world([pixel], 0)[0][self.wcs_z_idx]
         except Exception:
             return None
+        unit = self.wavelength_unit()
+        return value if unit is None else in_microns(value, unit)
+
+    def wavelength_text(self, first, last=None):
+        """`first` (or the range `first`-`last`) from `get_wavelength_for_slice`, labelled for
+        the slice readout: "Wavelength: 2.2005 µm", or "Wavelength (Unknown): 19968.7"."""
+        known = self.wavelength_unit() is not None
+        fmt = "{:.4f}" if known else "{:.6g}"
+        values = fmt.format(first) if last is None else f"{fmt.format(first)}-{fmt.format(last)}"
+        name = "Wavelength" if last is None else "Wavelengths"
+        return f"{name}: {values} µm" if known else f"{name} (Unknown): {values}"
 
     def clamp_z_range(self, zmin, zmax, write_back=False):
         """Clamp a channel range to the cube and return it in ascending order.
@@ -696,7 +727,7 @@ class ImageViewer(QWidget):
                 wave_min = self.get_wavelength_for_slice(zmin)
                 wave_max = self.get_wavelength_for_slice(zmax)
                 if wave_min is not None and wave_max is not None:
-                    text += f", Wavelengths: {wave_min:.4f}-{wave_max:.4f} µm"
+                    text += f", {self.wavelength_text(wave_min, wave_max)}"
 
                 self.lbl_slice_info.setText(text)
         else:
@@ -709,12 +740,12 @@ class ImageViewer(QWidget):
                     wave_min = self.get_wavelength_for_slice(zmin)
                     wave_max = self.get_wavelength_for_slice(zmax)
                     if wave_min is not None and wave_max is not None:
-                        text += f", Wavelengths: {wave_min:.4f}-{wave_max:.4f} µm"
+                        text += f", {self.wavelength_text(wave_min, wave_max)}"
                 else:
                     text = f"Slice: {z}"
                     wave = self.get_wavelength_for_slice(z)
                     if wave is not None:
-                        text += f", Wavelength: {wave:.4f} µm"
+                        text += f", {self.wavelength_text(wave)}"
                 
                 self.lbl_slice_info.setText(text)
             else:
@@ -732,22 +763,17 @@ class ImageViewer(QWidget):
         if self.wcs is None or self.wcs_z_idx is None:
             return self._original_tickStrings(values, scale, spacing)
             
+        known = self.wavelength_unit() is not None
         strings = []
         for val in values:
             if val < 0:
                 strings.append("")
                 continue
-            coords = [0] * self.wcs.naxis
-            coords[self.wcs_z_idx] = val
-            try:
-                world = self.wcs.wcs_pix2world([coords], 0)[0]
-                wave = world[self.wcs_z_idx]
-                unit = self.wcs.wcs.cunit[self.wcs_z_idx]
-                if str(unit).strip().lower() == 'm':
-                    wave *= 1e6
-                strings.append(f"{wave:.4f} µm")
-            except Exception:
+            wave = self.get_wavelength_for_slice(val)
+            if wave is None:
                 strings.append(str(val))
+            else:
+                strings.append(f"{wave:.4f} µm" if known else f"{wave:.6g}")
         return strings
 
     def setup_info_panel(self):
@@ -1290,6 +1316,8 @@ class ImageViewer(QWidget):
         self.transposed_data = None
         self.display_data = None
         self.header = None
+        self.wcs_header = None
+        self.data_keywords = None
         self.wcs = None
         try:
             self.imv.clear()
@@ -1297,32 +1325,66 @@ class ImageViewer(QWidget):
             # Qt is already tearing the widget down; there is nothing left to clear.
             pass
 
-    def set_data(self, data, header=None):
-        """Sets the FITS data into the viewer."""
+    def set_data(self, data, header=None, reference_header=None):
+        """Sets the FITS data into the viewer.
+
+        Everything that can fail runs before the first assignment, so a refused load leaves
+        the viewer exactly as it was. Raises ValueError for an array that is neither 2-D nor
+        3-D. A header astropy cannot read does not refuse the load: the data is shown with
+        no WCS and `lbl_wcs` says why (R13).
+
+        `reference_header` (`FitsReader.reference_header()`) stands in for what `header` lacks
+        (R25). Its WCS is used when `header`'s has no celestial or spectral axis, and only
+        when it has as many axes as the data: a NIFS primary header's WCS is the 2-D detector
+        frame's, not the cube's. `wcs_header` is whichever header the WCS came from. The
+        integration time and `BUNIT` come from `header` where it states them, else from
+        `reference_header` when that is the primary header and the data are not integers
+        (`header_info.data_keywords`), and are kept in `data_keywords`; `data_unit` is read
+        from them.
+        Total DN is switched off here, before anything is announced, when the new data do
+        not support it (`total_dn_available`), so listeners never see it applied to them.
+        """
+        if data is not None and data.ndim not in (2, 3):
+            raise ValueError(f"Cannot display {data.ndim}-D data; the viewer shows 2-D and 3-D "
+                             f"arrays")
+        wcs, problem = build_wcs(header)
+        wcs_header = header
+        if data is not None and reference_header is not None and not has_world_axes(wcs, header):
+            reference_wcs, _ = build_wcs(reference_header)
+            if (reference_wcs is not None and reference_wcs.naxis == data.ndim
+                    and has_world_axes(reference_wcs, reference_header)):
+                wcs, problem, wcs_header = reference_wcs, "", reference_header
+        keywords = data_keywords(header, reference_header,
+                                 data.dtype if data is not None else None)
+
         self.raw_data = data
         self.header = header
+        self.wcs_header = wcs_header
+        self.data_keywords = keywords
+        self.data_unit = data_unit(keywords)
+        self._itime_coadds = total_dn_multiplier(keywords)
+        if not self.total_dn_available:
+            self.disp_as_dn = False
+        self.update_colorbar_label()
         self._is_new_data = True
         # Unrotated before anything is redrawn, so the redraw does not put the old angle on the
         # new plane and a listener on display_changed or plane_changed sees the new state.
         # The apply_view_rotation(0.0) at the end announces it.
         self.view_rotation = 0.0
         self.imv.getImageItem().setTransform(QTransform())
+        self.wcs = wcs
+        self._wcs_problem = problem
+        self.lbl_wcs.setToolTip(problem.strip())
+        # Only apply_axis_mapping sets these, and only for a cube: a 2-D image, or no data,
+        # must not keep a previous cube's spectral axis (R52)
+        self.wcs_z_idx = None
+        self._wcs_z_unit = None
+        self.lbl_wcs.setText(self.wcs_label_when_unavailable())
         if data is None:
             self.imv.clear()
-            self.wcs = None
             self.apply_view_rotation(0.0)
             return
-            
-        if header:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                self.wcs = WCS(header)
-                
-            self._itime_coadds = total_dn_multiplier(header)
-        else:
-            self.wcs = None
-            self._itime_coadds = 1.0
-            
+
         if data.ndim == 2:
             self.transposed_data = data.T
             self.display_data = self.transposed_data
@@ -1348,43 +1410,34 @@ class ImageViewer(QWidget):
             if hasattr(self, 'group_y'): self.group_y.setEnabled(True)
             if hasattr(self, 'group_z'): self.group_z.setEnabled(True)
             
-            # Check CTYPE1 to determine default axes
-            # OSIRIS has WAVE as CTYPE1, but non-OSIRIS usually has RA---TAN
-            # Default to AXIS 1 if RA is first, else OSIRIS-default AXIS 3
-            is_non_osiris = False
-            if header and 'CTYPE1' in header:
-                if 'RA' in header['CTYPE1'].upper():
-                    is_non_osiris = True
-                    
-            default_x = "AXIS 1" if is_non_osiris else "AXIS 3"
-            
+            # Celestial axes, else a spectral axis, else the instrument decide (R81)
+            default_x, default_y, _ = default_axes(wcs, wcs_header)
+
             self.combo_x.blockSignals(True)
-            self.combo_x.setCurrentText(default_x)
+            self.combo_x.setCurrentText(f"AXIS {default_x + 1}")
             self.combo_x.blockSignals(False)
-            
+
             self.combo_y.blockSignals(True)
-            self.combo_y.setCurrentText("AXIS 2")
+            self.combo_y.setCurrentText(f"AXIS {default_y + 1}")
             self.combo_y.blockSignals(False)
 
             self.apply_axis_mapping()
-        else:
-            # Not a displayable image (a table's FITS_rec is 1-D, a 4-D cube is unsupported).
-            # This used to fall through both branches and return silently, leaving the
-            # previous extension's image on screen as if it were this one (B6).
-            self.transposed_data = None
-            self.display_data = None
-            self.wcs = None
-            self.imv.clear()
-            self.lbl_zsize.setText("ZSize: N/A")
-            self.lbl_slice_info.setText(f"Cannot display {data.ndim}-D data")
-            self.combo_ext.setEnabled(True)
-            self.combo_collapse.setEnabled(False)
-            if hasattr(self, 'group_x'): self.group_x.setEnabled(False)
-            if hasattr(self, 'group_y'): self.group_y.setEnabled(False)
-            if hasattr(self, 'group_z'): self.group_z.setEnabled(False)
 
         # After the new plane is shown, so a listener sees the plane it is told about
         self.apply_view_rotation(0.0)
+
+    def wcs_label_when_unavailable(self):
+        """Text for `lbl_wcs` when there is no sky position to show.
+
+        One line: wcslib's message begins with a line naming its own source file
+        (`ERROR 6 in wcs_units() at line ... of file .../wcs.c:`), so only the last non-empty
+        line, which says what is wrong, is shown. `set_data` puts the whole message in the
+        label's tooltip.
+        """
+        lines = [line.strip() for line in self._wcs_problem.splitlines() if line.strip()]
+        if lines:
+            return f"WCS: unreadable ({lines[-1]})"
+        return "WCS: N/A"
 
     def on_axis_changed(self):
         if self.raw_data is None or self.raw_data.ndim != 3:
@@ -1398,19 +1451,29 @@ class ImageViewer(QWidget):
         axes = ["AXIS 1", "AXIS 2", "AXIS 3"]
         x_axis = self.combo_x.currentText()
         y_axis = self.combo_y.currentText()
+
+        if x_axis == y_axis:
+            # The user picked the axis the other combo shows: that combo takes the axis the
+            # changed one had, so the two swap (R26). Without a previous choice to swap with,
+            # Y takes the first free axis.
+            previous_x = getattr(self, 'current_x_axis', None)
+            previous_y = getattr(self, 'current_y_axis', None)
+            if x_axis != previous_x and previous_x in axes:
+                y_axis, other = previous_x, self.combo_y
+            elif previous_y in axes and previous_y != y_axis:
+                x_axis, other = previous_y, self.combo_x
+            else:
+                y_axis, other = next(a for a in axes if a != x_axis), self.combo_y
+            # Update the UI without triggering the signal again
+            other.blockSignals(True)
+            other.setCurrentText(y_axis if other is self.combo_y else x_axis)
+            other.blockSignals(False)
+
+        z_axis = next(a for a in axes if a not in (x_axis, y_axis))
+        # Assigned once, after the duplicate is resolved: everything that asks which FITS axes
+        # are on screen reads these (display_axis_indices, the readout, the compass, regions)
         self.current_x_axis = x_axis
         self.current_y_axis = y_axis
-        
-        if x_axis == y_axis:
-            # Avoid duplicate axes by picking the first available one
-            available = [a for a in axes if a != x_axis]
-            y_axis = available[0]
-            # Update the UI without triggering the signal again
-            self.combo_y.blockSignals(True)
-            self.combo_y.setCurrentText(y_axis)
-            self.combo_y.blockSignals(False)
-            
-        z_axis = [a for a in axes if a not in (x_axis, y_axis)][0]
         self.current_z_axis = z_axis
         
         # FITS AXIS 1 -> py 2 (Nx)
@@ -1422,19 +1485,22 @@ class ImageViewer(QWidget):
         py_x = fits_to_py[x_axis]
         py_y = fits_to_py[y_axis]
         
-        # Check if Z axis is wavelength
-        wcs_z_idx = int(z_axis.split()[1]) - 1
-        is_wavelength = False
-        if self.wcs is not None and self.wcs.naxis > wcs_z_idx:
-            ctype = str(self.wcs.wcs.ctype[wcs_z_idx]).upper()
-            if 'WAVE' in ctype:
-                is_wavelength = True
-                
-        if is_wavelength:
-            self.wcs_z_idx = wcs_z_idx
-            self.imv.ui.roiPlot.showAxis('top')
+        # Z has wavelengths when it is the spectral axis, found through the WCS and the IRAF
+        # cards rather than by CTYPE string (R24, R82)
+        z_index = axes.index(z_axis)
+        header = getattr(self, 'wcs_header', None)
+        if self.wcs is not None and spectral_axis(self.wcs, header) == z_index:
+            self.wcs_z_idx = z_index
+            self._wcs_z_unit = spectral_unit(self.wcs, header, z_index)
+            # The timeline's top axis shows wavelengths. A spectral axis whose unit is not a
+            # wavelength (a velocity) has none to show; its ticks would repeat the channels.
+            if self._wcs_z_unit is None or in_microns(1.0, self._wcs_z_unit) is not None:
+                self.imv.ui.roiPlot.showAxis('top')
+            else:
+                self.imv.ui.roiPlot.hideAxis('top')
         else:
             self.wcs_z_idx = None
+            self._wcs_z_unit = None
             self.imv.ui.roiPlot.hideAxis('top')
         
         previous = self.transposed_data
@@ -1501,7 +1567,7 @@ class ImageViewer(QWidget):
         """
         cube = self.transposed_data
         if self.disp_as_dn:
-            cube = cube * self._itime_coadds
+            cube = cube * self.data_multiplier
         cube = self.apply_spatial_transforms(cube)
 
         prev_sync = self._syncing_slice
@@ -1533,9 +1599,23 @@ class ImageViewer(QWidget):
 
     @property
     def data_multiplier(self):
-        if self.disp_as_dn:
-            return getattr(self, '_itime_coadds', 1.0)
+        """The factor between the stored values and the ones shown: the DN/s -> Total DN
+        factor while Total DN is shown, else 1.0."""
+        if self.disp_as_dn and self._itime_coadds is not None:
+            return self._itime_coadds
         return 1.0
+
+    @property
+    def total_dn_available(self):
+        """True when the data are a count rate and the header states an integration time
+        (R83). When False, `data_unit.reason` says why."""
+        return self.data_unit.is_rate is True and self._itime_coadds is not None
+
+    def value_unit_label(self):
+        """The unit of the values on screen: "Total DN" while Total DN is shown, else the
+        file's own unit (`data_unit.label`, "Unknown" when the file does not state one).
+        Every unit label in the application is this string."""
+        return "Total DN" if self.disp_as_dn else self.data_unit.label
 
     def apply_transforms(self):
         """Applies DN scaling, rotation, and flips to display_data"""
@@ -1544,7 +1624,7 @@ class ImageViewer(QWidget):
 
         # 1. Total DN scaling
         if self.disp_as_dn:
-            self.display_data = self.display_data * self._itime_coadds
+            self.display_data = self.display_data * self.data_multiplier
 
         # 2. Rotation & Flip (shared with current_plane via apply_spatial_transforms)
         self.display_data = self.apply_spatial_transforms(self.display_data)
@@ -1587,22 +1667,19 @@ class ImageViewer(QWidget):
                             dec_axis = idx
 
                 if ra_axis >= 0 and dec_axis >= 0:
-                    if self.wcs.naxis == 2:
+                    # The axes on screen, by the data's dimensionality rather than the WCS's: a
+                    # 2-D image can carry a cube's third WCS axis (R52)
+                    x_axis_idx, y_axis_idx = self.display_axis_indices()
+                    if x_axis_idx >= self.wcs.naxis:
                         x_axis_idx = 0
+                    if y_axis_idx >= self.wcs.naxis:
                         y_axis_idx = 1
-                    else:
-                        x_axis_str = getattr(self, 'current_x_axis', 'AXIS 3')
-                        y_axis_str = getattr(self, 'current_y_axis', 'AXIS 2')
-                        x_axis_idx = int(x_axis_str.split()[-1]) - 1
-                        y_axis_idx = int(y_axis_str.split()[-1]) - 1
-                        if x_axis_idx >= self.wcs.naxis:
-                            x_axis_idx = 0
-                        if y_axis_idx >= self.wcs.naxis:
-                            y_axis_idx = 1
 
-                    trans_shape = self.transposed_data.shape
-                    raw_cx = (trans_shape[-1] - 1) / 2.0
-                    raw_cy = (trans_shape[-2] - 1) / 2.0
+                    # The plane centre in orig coordinates (R88: the X and Y lengths were
+                    # swapped, which put the point off-centre on a non-square plane)
+                    nx, ny = self.orig_spatial_dims()
+                    raw_cx = (nx - 1) / 2.0
+                    raw_cy = (ny - 1) / 2.0
 
                     center_pix = [0.0] * self.wcs.naxis
                     center_pix[x_axis_idx] = raw_cx
@@ -1649,7 +1726,8 @@ class ImageViewer(QWidget):
                 else:
                     north_pa = rotposn - instangl
 
-                theta_n_base = 90.0 + north_pa
+                # 90 - PA, as the WCS and QL2's osiris_calc_pa give it (R56)
+                theta_n_base = 90.0 - north_pa
                 theta_e_base = theta_n_base + 90.0
                 has_wcs_pa = True
 
@@ -1997,80 +2075,75 @@ class ImageViewer(QWidget):
                     val = self.display_data[z, x, y]
                 else:
                     val = self.display_data[x, y]
-                unit = "DN" if self.disp_as_dn else "DN/s"
+                unit = self.value_unit_label()
+                # In parentheses, a bare "Unknown" after the number would read as part of it
+                if unit == UNKNOWN_UNIT:
+                    unit = f"({unit})"
                 self.lbl_val.setText(f"Value: {val:.5g} {unit}")
                 
-                if self.wcs and self.wcs.naxis >= 2:
+                if self.wcs is not None:
                     try:
                         # Undo the display flip and rotation to get the coordinate along the
                         # FITS axes, which is what the WCS is indexed by.
-                        orig_x, orig_y = self.display_to_orig(x, y)
-
-                        # WCS pixel to world
-                        if self.wcs.naxis == 2:
-                            p1 = orig_x; p2 = orig_y
-                            world = self.wcs.pixel_to_world(p1, p2)
-                            if hasattr(world, 'ra') and hasattr(world, 'dec'):
-                                if not _finite(world.ra.deg, world.dec.deg):
-                                    self.lbl_wcs.setText("WCS: N/A")
-                                else:
-                                    self.lbl_wcs.setText(f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  {world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
-                            elif isinstance(world, (list, tuple)) and len(world) >= 2:
-                                if not _finite(world[0], world[1]):
-                                    self.lbl_wcs.setText("WCS: N/A")
-                                else:
-                                    self.lbl_wcs.setText(f"WCS: {world[0]:.5g}  {world[1]:.5g}")
-                            else:
-                                self.lbl_wcs.setText(f"WCS: {world}")
-                        elif self.wcs.naxis >= 3 and self.wcs_z_idx is not None:
-                            if hasattr(self, 'radio_range') and self.radio_range.isChecked():
-                                try:
-                                    z_min = max(0, int(self.txt_zmin.text() or 0))
-                                    z_max = max(0, int(self.txt_zmax.text() or 0))
-                                    z = (z_min + z_max) // 2
-                                except ValueError:
-                                    z = 0
-                            else:
-                                z = self.slider_slice.value()
-                            
-                            val_dict = {
-                                getattr(self, 'current_x_axis', 'AXIS 1'): orig_x,
-                                getattr(self, 'current_y_axis', 'AXIS 2'): orig_y,
-                                getattr(self, 'current_z_axis', 'AXIS 3'): z
-                            }
-                            p1 = val_dict.get('AXIS 1', 0)
-                            p2 = val_dict.get('AXIS 2', 0)
-                            p3 = val_dict.get('AXIS 3', 0)
-                            
-                            vals = self.wcs.pixel_to_world_values(p1, p2, p3)
-                            disp_axes = [getattr(self, 'current_x_axis', 'AXIS 1'), getattr(self, 'current_y_axis', 'AXIS 2')]
-                            wcs_parts = []
-                            for ax in disp_axes:
-                                ax_idx = int(ax.split()[-1]) - 1
-                                if ax_idx < len(vals):
-                                    val = vals[ax_idx]
-                                    if not _finite(val):
-                                        wcs_parts = []
-                                        break
-                                    phys = self.wcs.world_axis_physical_types[ax_idx]
-                                    if phys == 'pos.eq.ra':
-                                        coord = SkyCoord(ra=val*u.deg, dec=0*u.deg)
-                                        wcs_parts.append(f"RA: {coord.ra.to_string(unit=u.hour, sep='hms', precision=3)}")
-                                    elif phys == 'pos.eq.dec':
-                                        coord = SkyCoord(ra=0*u.deg, dec=val*u.deg)
-                                        wcs_parts.append(f"DEC: {coord.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
-                                    else:
-                                        unit = self.wcs.world_axis_units[ax_idx]
-                                        wcs_parts.append(f"{phys}: {val:.5g} {unit}")
-                            wcs_text = "  |  ".join(wcs_parts)
-
-                            self.lbl_wcs.setText(f"WCS: {wcs_text}" if wcs_text else "WCS: N/A")
+                        self.lbl_wcs.setText(self._wcs_readout(*self.display_to_orig(x, y)))
                     except Exception:
                         self.lbl_wcs.setText("WCS: N/A")
                 else:
-                    self.lbl_wcs.setText("WCS: N/A")
+                    self.lbl_wcs.setText(self.wcs_label_when_unavailable())
             else:
                 self.lbl_val.setText("Value: Out of Bounds")
+
+    def _wcs_readout(self, orig_x, orig_y):
+        """The `lbl_wcs` text for the plane pixel at orig `(orig_x, orig_y)`.
+
+        The pixel axes are the ones on screen, `display_axis_indices()`, whatever the WCS's
+        dimensionality and whether or not Z is spectral: a 2-D image can carry a cube's third
+        WCS axis (R52), and a cube can show any two of its axes (R24). The Z axis is evaluated
+        at the current channel and any other WCS axis at 0. Every path that produces no
+        coordinate returns "WCS: N/A", so the label never keeps an earlier position.
+        """
+        naxis = self.wcs.naxis
+        x_idx, y_idx = self.display_axis_indices()
+        if max(x_idx, y_idx) >= naxis:
+            return "WCS: N/A"
+        pixel = [0.0] * naxis
+        pixel[x_idx] = orig_x
+        pixel[y_idx] = orig_y
+        if self.raw_data.ndim == 3:
+            z_idx = 3 - x_idx - y_idx
+            if z_idx < naxis:
+                pixel[z_idx] = self.current_z()
+
+        if naxis == 2:
+            world = self.wcs.pixel_to_world(*pixel)
+            if hasattr(world, 'ra') and hasattr(world, 'dec'):
+                if not _finite(world.ra.deg, world.dec.deg):
+                    return "WCS: N/A"
+                return (f"WCS: {world.ra.to_string(unit=u.hour, sep='hms', precision=3)}  "
+                        f"{world.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
+            if isinstance(world, (list, tuple)) and len(world) >= 2:
+                if not _finite(world[0], world[1]):
+                    return "WCS: N/A"
+                return f"WCS: {world[0]:.5g}  {world[1]:.5g}"
+            return f"WCS: {world}"
+
+        vals = self.wcs.pixel_to_world_values(*pixel)
+        parts = []
+        for ax_idx in (x_idx, y_idx):
+            val = vals[ax_idx]
+            if not _finite(val):
+                return "WCS: N/A"
+            phys = self.wcs.world_axis_physical_types[ax_idx]
+            if phys == 'pos.eq.ra':
+                coord = SkyCoord(ra=val*u.deg, dec=0*u.deg)
+                parts.append(f"RA: {coord.ra.to_string(unit=u.hour, sep='hms', precision=3)}")
+            elif phys == 'pos.eq.dec':
+                coord = SkyCoord(ra=0*u.deg, dec=val*u.deg)
+                parts.append(f"DEC: {coord.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
+            else:
+                name, unit = world_axis_label(self.wcs, getattr(self, 'wcs_header', None), ax_idx)
+                parts.append(f"{name}: {val:.5g} {unit}".rstrip())
+        return f"WCS: {'  |  '.join(parts)}"
 
     def set_colormap(self, cmap_name=None, invert=None):
         if cmap_name is not None:
@@ -2140,6 +2213,13 @@ class ImageViewer(QWidget):
             self.imv.ui.histogram.hide()
 
     def update_colorbar_label(self):
-        if self.imv.ui.histogram.isVisible():
-            unit = "Total DN" if getattr(self, 'disp_as_dn', False) else "DN/s"
-            self.imv.ui.histogram.axis.setLabel("Pixel Value", units=unit)
+        """Name the colorbar's unit. The unit is part of the label text rather than pyqtgraph's
+        `units`, which puts an SI prefix in front of it ("kUnknown", "kMJy/sr").
+
+        Written whether or not the colorbar is visible: `isVisible()` is also False for a
+        colorbar that is turned on in a window not on screen, and a load would then leave the
+        previous file's unit on it. With no data there is no unit to name."""
+        if self.raw_data is None:
+            self.imv.ui.histogram.axis.setLabel("Pixel Value")
+        else:
+            self.imv.ui.histogram.axis.setLabel(f"Pixel Value ({self.value_unit_label()})")

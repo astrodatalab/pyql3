@@ -89,8 +89,8 @@ def test_a_circle_drawn_on_a_pixel_measures_that_pixel(qapp):
     centre at the item coordinate (12.5, 9.5). The Total of an r = 1 circle there is the
     whole of that pixel, not the 78.54 an aperture half a pixel away gives.
     """
-    data = np.zeros((31, 21, 4))
-    data[12, 9, :] = 100.0
+    data = np.zeros((4, 21, 31))      # numpy (z, y, x), no header
+    data[:, 9, 12] = 100.0
     viewer = ImageViewer()
     viewer.set_data(data, None)
     dialog = DepthPlotDialog(image_viewer=viewer)
@@ -989,7 +989,7 @@ def test_disabling_the_background_mid_drag_does_not_leave_the_y_axis_frozen(load
 @pytest.fixture
 def x_cube_dialog(qapp):
     """A rectangular-aperture Depth Plot over a cube whose value is the display x column."""
-    data = np.broadcast_to(np.arange(30.0)[:, None, None], (30, 20, 3)).copy()
+    data = np.broadcast_to(np.arange(30.0)[None, None, :], (3, 20, 30)).copy()
     viewer = ImageViewer()
     viewer.set_data(data, None)
     dialog = DepthPlotDialog(image_viewer=viewer)
@@ -1093,9 +1093,9 @@ def test_a_circular_aperture_with_a_background_box_off_the_image_says_so(loaded_
 # The Depth Plot follows the viewer (BUGS.md R7, R28)
 # ---------------------------------------------------------------------------
 
-def _channel_cube(base, shape=(30, 20, 5)):
-    """A cube whose channel z holds `base + z` everywhere."""
-    return np.broadcast_to(base + np.arange(float(shape[2])), shape).copy()
+def _channel_cube(base, shape=(5, 20, 30)):
+    """A cube, numpy (z, y, x) with no header, whose channel z holds `base + z` everywhere."""
+    return np.broadcast_to((base + np.arange(float(shape[0])))[:, None, None], shape).copy()
 
 
 def _plotted(dialog):
@@ -1126,7 +1126,7 @@ def test_a_new_cube_replaces_the_plotted_spectrum(qapp):
 
 def test_a_flip_replaces_the_plotted_spectrum(qapp):
     """A flip moves the aperture over different pixels, so the spectrum changes (R7)."""
-    x_ramp = np.broadcast_to(np.arange(30.0)[:, None, None], (30, 20, 5)).copy()
+    x_ramp = np.broadcast_to(np.arange(30.0)[None, None, :], (5, 20, 30)).copy()
     viewer = ImageViewer()
     viewer.set_data(x_ramp, None)
     dialog = DepthPlotDialog(image_viewer=viewer)
@@ -1191,10 +1191,11 @@ def test_cut_modes_follow_the_slider(qapp):
 
 
 def test_the_intensity_label_follows_the_display_unit(qapp):
-    """The left label names the unit the plotted values are in, in every mode (R28)."""
+    """The left label names the unit the plotted values are in, in every mode (R28, R83)."""
     from astropy.io import fits
     header = fits.Header()
     header['ITIME'] = 10.0
+    header['BUNIT'] = 'DN/s'
     viewer = ImageViewer()
     viewer.set_data(np.ones((30, 20, 5)), header)
     dialog = DepthPlotDialog(image_viewer=viewer)
@@ -1214,7 +1215,7 @@ def test_the_intensity_label_follows_the_display_unit(qapp):
 
             viewer.disp_as_dn = True                    # MainWindow.set_display_unit(True)
             viewer.refresh_display()
-            assert left_label() == "Intensity (DN)", mode
+            assert left_label() == "Intensity (Total DN)", mode
             assert _plotted(dialog)[0] == pytest.approx(value * 10.0), mode
     finally:
         dialog.close()
@@ -1271,5 +1272,67 @@ def test_a_2d_load_leaves_no_line_overlay_or_wavelength_readout(loaded_viewer):
         centre = dialog.plot_widget.plotItem.vb.sceneBoundingRect().center()
         dialog.mouse_moved([centre])
         assert "Wavelength" not in dialog.lbl_cursor.text()
+    finally:
+        dialog.close()
+
+
+def test_the_line_list_needs_a_known_wavelength_unit(qapp, nifs_like_header):
+    """R82: a NIFS cube states no wavelength unit. Its axis is shown in the header's own
+    numbers and labelled Unknown, and the line list (in µm) is not matched against it."""
+    cube = np.ones((1000, 12, 10), dtype=np.float32)
+    viewer = ImageViewer()
+    viewer.set_data(cube, nifs_like_header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.update_plot()
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_line_overlays()
+
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (Unknown)"
+        assert dialog.plot_data.getData()[0][0] == pytest.approx(19968.66)
+        assert "needs a known wavelength unit" in dialog.lbl_line_info.text()
+        assert not dialog.line_items
+    finally:
+        dialog.close()
+
+    # Stated in the WAT card, the unit is used: 1000 channels from 1.997 µm reach Brγ
+    nifs_like_header['WAT3_001'] = 'wtype=linear axtype=wave units=angstroms'
+    viewer.set_data(cube, nifs_like_header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.update_plot()
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_line_overlays()
+
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (µm)"
+        assert dialog.plot_data.getData()[0][0] == pytest.approx(1.99687, abs=1e-5)
+        assert dialog.line_items, dialog.lbl_line_info.text()
+    finally:
+        dialog.close()
+
+
+def test_a_velocity_axis_is_not_a_wavelength(qapp):
+    """A `VELO` axis is spectral, but its unit (m/s) is not a wavelength: the line list says
+    so rather than "WCS conversion failed.", and the timeline has no wavelength axis whose
+    ticks would only repeat the channel numbers below it."""
+    from astropy.io import fits
+    header = fits.Header({'NAXIS': 3, 'CTYPE1': 'RA---TAN', 'CTYPE2': 'DEC--TAN',
+                          'CTYPE3': 'VELO', 'CUNIT1': 'deg', 'CUNIT2': 'deg', 'CUNIT3': 'm/s',
+                          'CRVAL1': 266.4, 'CRVAL2': -29.0, 'CRVAL3': 0.0,
+                          'CDELT1': -1e-5, 'CDELT2': 1e-5, 'CDELT3': 1000.0,
+                          'CRPIX1': 5.0, 'CRPIX2': 5.0, 'CRPIX3': 1.0})
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((20, 12, 10), dtype=np.float32), header)
+    assert viewer.wcs_z_idx == 2
+    assert not viewer.top_axis.isVisible()
+
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.update_plot()
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_line_overlays()
+
+        assert dialog.lbl_line_info.text() == "Z-axis is not a wavelength (speed/velocity)."
+        assert not dialog.line_items
     finally:
         dialog.close()

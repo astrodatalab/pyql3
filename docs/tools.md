@@ -4,6 +4,16 @@ QuickLook 3 provides a suite of analytical tools tailored for Integral Field Uni
 
 ---
 
+## Data Units
+
+Every unit label — the colorbar, the hover readout, the Depth Plot and the cut plots — names the unit the file's `BUNIT` keyword states: `DN/s` for OSIRIS (`'ADU per second per coadd'`), `MJy/sr` for a JWST cube. A unit written in a form astropy cannot read (`ELECTRONS/S`, `counts/s`) is shown in the file's own words. A file that states no unit, such as a Gemini NIFS cube, is labelled **Unknown**; the unit is never guessed from the values.
+
+An extension whose header states no `BUNIT` takes the primary header's unit and integration time, as the OSIRIS noise extension (in DN/s) needs, unless its values are integers: those are flags, such as the OSIRIS quality extension or a JWST `DQ`, and have no unit. It never takes another extension's: a JWST `DQ`, `WMAP` or `VAR_*` extension is not in the `SCI` extension's MJy/sr, so it reads **Unknown** unless it states a unit of its own.
+
+**Display ➔ Data Units** has two choices. **As Stored** shows the values as the file holds them, with the file's unit in parentheses: `As Stored (DN/s)`, `As Stored (MJy/sr)`, `As Stored (unit not stated)`. **As Total DN** multiplies a count rate by the integration time: `TRUITIME` (else `ITIME`) times `COADDS`, or `EXPTIME` when the header has neither. It is offered only when the data are a count per second (`DN/s`, `electron/s`, ...) and the header states an integration time; otherwise it is disabled and its tooltip gives the reason ("data are in MJy/sr", "no unit is stated for these data", "the file's unit 'counts/s' is not recognised", "no integration time in the header"). Loading such a file while Total DN is shown switches back, with the status bar message "Total DN is not available for this file (*reason*); showing the values as stored."
+
+---
+
 ## 1. Depth Plot & Spectral Line Lists
 
 The **Depth Plot** tool extracts 1D spectra along the wavelength ($Z$) axis of a 3D data cube.
@@ -113,7 +123,7 @@ Astronomers can export the extracted 1D spectra and plot graphics by clicking th
 1. **Exporting Wavelength & Intensity Data to CSV**:
    - In the Export dialog, select **CSV Exporter** under **Item to export**.
    - Select the target curve (`PlotItem`, `Source`, `Background`, or `Subtracted`).
-   - Click **Export** to save a `.csv` data table. When WCS is present, the first column contains physical wavelengths ($\mu\text{m}$) and subsequent columns contain corresponding flux/intensity values ($DN$ or $DN/s$).
+   - Click **Export** to save a `.csv` data table. When the cube's Z axis is spectral, the first column holds what the plot's bottom axis shows: wavelengths in $\mu\text{m}$ when the file states the axis's unit, or, when the axis reads "Wavelength (Unknown)" (a NIFS cube, for example), the header's own numbers, whose unit the file does not state. Otherwise, as for a velocity axis, it holds the slice index. The subsequent columns contain the corresponding flux/intensity values, in the unit the plot's left axis names (see [Data Units](#data-units)).
 
 2. **Exporting High-Resolution Images (PNG, JPG)**:
    - Select **Image Exporter** in the Export dialog.

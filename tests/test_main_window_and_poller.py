@@ -1,5 +1,5 @@
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 from pyql3.gui.main_window import MainWindow
 from pyql3.services.poller import DirectoryPoller
 
@@ -124,9 +124,12 @@ def test_extension_combo_excludes_table_hdus(qapp, tmp_path):
     win.close()
 
 
-def test_selecting_a_table_extension_clears_the_view(qapp, tmp_path):
+def test_selecting_a_table_extension_clears_the_view(qapp, tmp_path, monkeypatch):
     """B6: set_data fell through both the 2-D and 3-D branches and returned silently, so
-    the previous extension's image stayed on screen as if it were the table."""
+    the previous extension's image stayed on screen as if it were the table.
+
+    Since R12 a table is refused before the reader switches to it, so the image on screen
+    and the reader both stay on extension 0, and the user is told why."""
     import numpy as np
     from astropy.io import fits
 
@@ -136,18 +139,20 @@ def test_selecting_a_table_extension_clears_the_view(qapp, tmp_path):
         fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)),
         fits.BinTableHDU.from_columns(cols, name="WAVETAB"),
     ]).writeto(path, overwrite=True)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warnings.append(a)))
 
     win = MainWindow()
     win.load_fits(path)
     assert win.image_viewer.transposed_data is not None
 
-    win.load_fits(path, ext=1)          # force-select the table, as the old combo could
+    # force-select the table, as the old combo could
+    assert win.load_fits(path, ext=1) is False
 
-    v = win.image_viewer
-    assert v.transposed_data is None, "stale image left on screen for a table extension"
-    assert v.display_data is None
-    assert v.imv.getImageItem().image is None
-    assert "Cannot display" in v.lbl_slice_info.text()
+    assert len(warnings) == 1 and "No valid data" in warnings[0][2]
+    assert win.fits_reader.current_ext == 0
+    assert win.image_viewer.raw_data is win.fits_reader.get_data()
     win.close()
 
 
@@ -191,6 +196,7 @@ def test_data_less_file_warns_and_leaves_the_current_image_alone(qapp, tmp_path,
     win.load_fits(sample_3d_fits)
     good_shape = win.image_viewer.raw_data.shape
     good_title = win.windowTitle()
+    good_hdul = win.fits_reader.hdul
 
     warnings = []
     monkeypatch.setattr(
@@ -204,11 +210,144 @@ def test_data_less_file_warns_and_leaves_the_current_image_alone(qapp, tmp_path,
     assert len(warnings) == 1, "the user must be told there is no image data"
     assert "No valid data" in warnings[0][2]
 
-    # The previously displayed cube is untouched.
+    # The previously displayed cube is untouched, and so is the reader underneath it (R12):
+    # the window keeps showing, and editing the header of, the file it displays.
     assert win.image_viewer.raw_data.shape == good_shape
     assert win.windowTitle() == good_title
+    assert win.fits_reader.filepath == sample_3d_fits
+    assert win.fits_reader.hdul is good_hdul
     win.close()
 
+
+def test_failed_load_leaves_the_reader_on_the_displayed_file(qapp, tmp_path, monkeypatch):
+    """After a failed auto-load of a frame still arriving, the reader pointed at that
+    frame while the window still showed the cube: Edit Header said "load a file first",
+    Save As said "No data to save", and choosing extension 1 opened the partial file and
+    raised (R12)."""
+    import io
+    import numpy as np
+    from astropy.io import fits
+    from astropy.utils.exceptions import AstropyUserWarning
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+
+    good = str(tmp_path / "good_cube.fits")
+    fits.HDUList([fits.PrimaryHDU(np.full((6, 5, 5), 3.0, dtype="f4")),
+                  fits.ImageHDU(np.full((6, 5, 5), 4.0, dtype="f4"), name="SCI")]
+                 ).writeto(good)
+    buf = io.BytesIO()
+    fits.PrimaryHDU(np.ones((6, 5, 5), dtype="f4")).writeto(buf)
+    partial = str(tmp_path / "arriving.fits")
+    with open(partial, "wb") as f:
+        f.write(buf.getvalue()[:2944])          # the header and part of the data
+
+    messages = []
+    record = staticmethod(lambda *a, **k: messages.append(a[2]))
+    monkeypatch.setattr(QMessageBox, "warning", record)
+    monkeypatch.setattr(QMessageBox, "critical", record)
+    opened = []
+    monkeypatch.setattr(HeaderEditorDialog, "exec", lambda self: opened.append(self) or 0)
+
+    win = MainWindow()
+    assert win.load_fits(good)
+    with pytest.warns(AstropyUserWarning, match="truncated"):
+        assert win.load_fits(partial, show_errors=False) is False   # one auto-load attempt
+
+    assert win.windowTitle() == "QuickLook 3 - good_cube.fits"
+    assert win.fits_reader.filepath == good
+    assert win.fits_reader.get_data() is not None
+
+    win.edit_header()
+    assert len(opened) == 1, f"Edit FITS Header refused: {messages}"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: ("", "")))   # the user cancels
+    win.save_file_as()
+    assert messages == [], "Save FITS As refused before asking for a file name"
+
+    win.image_viewer.combo_ext.setCurrentIndex(1)           # "1: SCI" of the cube on screen
+    assert messages == []
+    assert win.fits_reader.current_ext == 1
+    assert float(win.image_viewer.raw_data.mean()) == 4.0
+    win.close()
+
+
+
+def test_a_4d_file_leaves_the_reader_and_title_on_the_displayed_file(qapp, tmp_path,
+                                                                     sample_3d_fits,
+                                                                     monkeypatch):
+    """A file whose only image is 4-D has nothing the viewer can show. It must be refused
+    before the reader commits, or the reader and the window disagree (R12)."""
+    import numpy as np
+    from astropy.io import fits
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warnings.append(a)))
+
+    win = MainWindow()
+    assert win.load_fits(sample_3d_fits)
+    good_title = win.windowTitle()
+    four = str(tmp_path / "four.fits")
+    fits.PrimaryHDU(np.ones((1, 6, 5, 5), dtype="f4")).writeto(four)
+
+    assert win.load_fits(four) is False
+    assert len(warnings) == 1 and "No valid data" in warnings[0][2]
+    assert win.fits_reader.filepath == sample_3d_fits
+    assert win.windowTitle() == good_title
+    assert win.image_viewer.raw_data.ndim == 3
+    win.close()
+
+
+def test_a_4d_extension_is_not_offered(qapp, tmp_path):
+    """The Extension combo offers only what the viewer can show (B6): a 4-D extension is
+    not listed, so it cannot be chosen and refused."""
+    import numpy as np
+    from astropy.io import fits
+
+    path = str(tmp_path / "with_4d.fits")
+    fits.HDUList([fits.PrimaryHDU(np.zeros((6, 5, 5), dtype="f4")),
+                  fits.ImageHDU(np.ones((1, 6, 5, 5), dtype="f4"), name="FOURD"),
+                  fits.ImageHDU(np.ones((6, 5, 5), dtype="f4"), name="SCI")]).writeto(path)
+
+    win = MainWindow()
+    assert win.load_fits(path)
+    combo = win.image_viewer.combo_ext
+    assert [combo.itemText(i) for i in range(combo.count())] == ["0: PRIMARY", "2: SCI"]
+    win.close()
+
+
+def test_a_refused_extension_puts_the_combo_back(qapp, tmp_path, monkeypatch):
+    """Choosing an extension whose data cannot be read (here cut short, as a file still being
+    copied is) is refused and the reader stays where it was, so the Extension combo must go
+    back to the extension on screen rather than name the refused one (R12)."""
+    import io
+    import warnings as warnings_module
+    import numpy as np
+    from astropy.io import fits
+
+    buffer = io.BytesIO()
+    fits.HDUList([fits.PrimaryHDU(np.zeros((6, 5, 5), dtype="f4")),
+                  fits.ImageHDU(np.ones((60, 50, 50), dtype="f4"), name="SCI")]
+                 ).writeto(buffer)
+    path = str(tmp_path / "cut_short.fits")
+    with open(path, "wb") as f:
+        f.write(buffer.getvalue()[:-200000])       # the SCI header whole, its data cut short
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical",
+                        staticmethod(lambda *a, **k: errors.append(a)))
+
+    win = MainWindow()
+    with warnings_module.catch_warnings():
+        warnings_module.simplefilter("ignore")     # astropy warns about the truncation
+        assert win.load_fits(path, ext=0)
+        combo = win.image_viewer.combo_ext
+        assert [combo.itemText(i) for i in range(combo.count())] == ["0: PRIMARY", "1: SCI"]
+
+        combo.setCurrentIndex(1)
+
+    assert len(errors) == 1 and "Failed to open" in errors[0][2]
+    assert win.fits_reader.current_ext == 0
+    assert combo.currentData() == 0
+    win.close()
 
 # ------------------------------------------------- the header editor and auto-load (R4)
 
@@ -410,3 +549,170 @@ def test_save_as_refuses_after_the_file_changed_under_its_dialog(header_edit_win
 
     assert len(win.warnings) == 1, "the user must be told why nothing was saved"
     assert not out.exists(), "frame 2 was written under the name chosen for frame 1"
+
+
+def test_saving_the_header_in_a_watched_directory_keeps_the_view(qapp, tmp_path,
+                                                                 monkeypatch):
+    """R70: Save Header replaces the displayed file with `os.replace`, so the poller sees
+    a changed file and announces it. Reloading the window's own save reset a 5 x 5 px
+    zoom to the full frame."""
+    import numpy as np
+    from astropy.io import fits
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+    from pyql3.services.poller import SETTLE_CHECKS
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(
+        lambda *a, **k: pytest.fail(f"error dialog: {a[2]}")))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(
+        lambda *a, **k: pytest.fail(f"warning dialog: {a[2]}")))
+
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    frame = str(watched / "s251021_a001001.fits")
+    header = fits.Header()
+    header["OBJECT"] = "GC_field_A"
+    fits.PrimaryHDU(np.ones((8, 30, 30), dtype="f4"), header=header).writeto(frame)
+
+    win = MainWindow()
+    assert win.poller.start_polling(str(watched))
+    assert win.load_fits(frame)
+    view = win.image_viewer.imv.getView()
+    view.setRange(xRange=(10, 15), yRange=(10, 15), padding=0)
+    zoomed = view.viewRange()
+
+    def run_dialog(dialog):
+        _edit_value(dialog, "OBJECT", "GC_field_A_rev")
+        dialog.save_header()                       # answers Yes: saved in place
+        return 0
+
+    monkeypatch.setattr(HeaderEditorDialog, "exec", run_dialog)
+    win.edit_header()
+    assert fits.getheader(frame)["OBJECT"] == "GC_field_A_rev"
+
+    announced = []
+    win.poller.file_detected.connect(announced.append)
+    win.poller._add_candidate(frame)               # the scan that sees the replaced file
+    for _ in range(SETTLE_CHECKS + 1):
+        win.poller._check_pending()
+
+    assert announced == [frame], "the premise: the poller announces the saved file"
+    assert view.viewRange() == zoomed, "the window reloaded its own save and reset the view"
+    win.close()
+
+
+def _layout(viewer):
+    """The axes on screen and the plane's shape."""
+    return (viewer.current_x_axis, viewer.current_y_axis, viewer.current_z_axis,
+            viewer.current_plane().shape)
+
+
+def test_error_extension_keeps_the_science_axis_layout(qapp, s3d_like_fits):
+    """R25: a JWST ERR or DQ extension has no WCS cards. It used to open with wavelength across
+    the screen and no sky readout, where SCI shows RA by Dec with wavelength on Z."""
+    win = MainWindow()
+    viewer = win.image_viewer
+    assert win.load_fits(s3d_like_fits, ext=1)
+    science = _layout(viewer)
+    assert science == ("AXIS 1", "AXIS 2", "AXIS 3", (7, 9))
+
+    for ext in (2, 3):
+        assert win.load_fits(s3d_like_fits, ext=ext)
+        assert _layout(viewer) == science, f"ext {ext}"
+        assert viewer.wcs is not None and viewer.wcs.has_celestial, f"ext {ext}"
+        assert viewer.wcs_z_idx == 2, f"ext {ext}: no wavelengths on the slice axis"
+    win.close()
+
+
+def test_noise_extension_uses_the_primary_integration_time(qapp, osiris_like_fits_with_noise):
+    """R25: OSIRIS noise and quality extensions have empty headers. The noise extension used to
+    multiply by 1.0 for Total DN; both used to open with wavelength across the screen (Task 20's
+    default for a header that names no instrument), where the primary shows RA by Dec. The
+    noise is float data in the primary's unit, so it borrows the primary's `BUNIT` and time."""
+    win = MainWindow()
+    viewer = win.image_viewer
+    viewer.disp_as_dn = True
+    assert win.load_fits(osiris_like_fits_with_noise, ext=0)
+    science = (_layout(viewer), viewer.data_multiplier)
+    assert science == (("AXIS 3", "AXIS 2", "AXIS 1", (7, 9)), pytest.approx(899.92 * 2))
+
+    assert win.load_fits(osiris_like_fits_with_noise, ext=1)
+    assert (_layout(viewer), viewer.data_multiplier) == science
+    assert viewer.data_keywords['BUNIT'] == 'ADU per second per coadd'
+    assert viewer.data_unit.label == "DN/s"
+    assert viewer.wcs_z_idx == 0, "no wavelengths on the slice axis"
+    win.close()
+
+
+def test_a_quality_extension_borrows_no_unit(qapp, osiris_like_fits_with_noise):
+    """The OSIRIS quality extension is uint8 flags. It borrowed the primary's `BUNIT` and time,
+    so it read "DN/s" and under Total DN each flag was multiplied by 899.92. It keeps the
+    primary's axes and WCS, but its unit is Unknown and Total DN is not offered."""
+    win = MainWindow()
+    viewer = win.image_viewer
+    assert win.load_fits(osiris_like_fits_with_noise, ext=0)
+    win.set_display_unit(True)
+    assert viewer.disp_as_dn
+
+    assert win.load_fits(osiris_like_fits_with_noise, ext=2)
+
+    assert _layout(viewer) == ("AXIS 3", "AXIS 2", "AXIS 1", (7, 9))
+    assert viewer.wcs_z_idx == 0
+    assert viewer.data_unit.label == "Unknown"
+    assert not viewer.total_dn_available and not viewer.disp_as_dn
+    assert viewer.data_multiplier == 1.0
+    assert not win.action_tot_dn.isEnabled()
+    win.close()
+
+
+def test_jwst_extensions_do_not_borrow_the_science_unit(qapp, s3d_like_fits):
+    """JWST's SCI states `BUNIT = 'MJy/sr'`; the ERR, DQ, WMAP and VAR_* extensions beside it
+    are not all in that unit (DQ is flags, VAR_* squared). They read "MJy/sr" because SCI was
+    their reference header. Only the primary header lends a unit, so an extension that states
+    none reads Unknown. The WCS is still SCI's."""
+    win = MainWindow()
+    viewer = win.image_viewer
+    assert win.load_fits(s3d_like_fits, ext=1)
+    assert viewer.data_unit.label == "MJy/sr"
+
+    for ext in (2, 3):                             # ERR (float), DQ (uint8); neither has BUNIT
+        assert win.load_fits(s3d_like_fits, ext=ext)
+        assert viewer.data_unit.label == "Unknown", f"ext {ext}"
+        assert 'BUNIT' not in viewer.data_keywords, f"ext {ext}"
+        assert viewer.wcs is not None and viewer.wcs.has_celestial, f"ext {ext}"
+    win.close()
+
+
+def test_a_primary_wcs_with_fewer_axes_is_not_borrowed(qapp, tmp_path, nifs_like_header):
+    """R25, R81: a NIFS primary header carries a 2-axis RA/Dec WCS of the raw detector frame
+    and the exposure keywords; the 3-D SCI cube has only IRAF `LINEAR` axes. The primary's
+    `EXPTIME` and `COADDS` are borrowed; its WCS is not."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    import numpy as np
+
+    detector = WCS(naxis=2)
+    detector.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+    detector.wcs.cdelt = [-1e-5, 1e-5]
+    primary = detector.to_header()
+    primary['EXPTIME'] = 600.0
+    primary['COADDS'] = 1
+    primary['INSTRUME'] = 'NIFS'
+    path = str(tmp_path / "nifs_like.fits")
+    fits.HDUList([fits.PrimaryHDU(header=primary),
+                  fits.ImageHDU(np.ones((40, 12, 10), dtype=np.float32), nifs_like_header,
+                                name='SCI')]).writeto(path)
+
+    win = MainWindow()
+    viewer = win.image_viewer
+    assert win.load_fits(path)
+    assert win.fits_reader.current_ext == 1
+
+    assert viewer.wcs is not None and not viewer.wcs.has_celestial, "the detector WCS was used"
+    assert _layout(viewer) == ("AXIS 1", "AXIS 2", "AXIS 3", (10, 12))
+    assert viewer.wcs_z_idx == 2
+    assert viewer.data_keywords['EXPTIME'] == 600.0
+    assert viewer.data_keywords['COADDS'] == 1
+    win.close()

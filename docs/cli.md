@@ -179,7 +179,9 @@ Three consequences worth knowing:
   NFS. Raise the scan interval for a directory holding a whole run, and prefer watching a
   per-night directory over an accumulating archive.
 
-The interval defaults to 2 seconds and is configurable in **File ➔ Polling...**.
+The interval defaults to 2 seconds and is configurable in **File ➔ Polling...**. A new
+interval takes effect when you press Return, leave the box, or close the dialog, and changing
+it does not lose a file that was still settling.
 
 ### Enabling Directory Polling
 

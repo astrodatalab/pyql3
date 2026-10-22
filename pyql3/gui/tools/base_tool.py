@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 
 from pyql3.core import coords
+from pyql3.gui.scene_items import delete_items, release_scene_references
 
 
 def keep_on_screen(window):
@@ -210,37 +211,11 @@ class BaseToolDialog(QDialog):
         QTimer.singleShot(0, self._drop_retired_rois)
 
     def _release_scene_references(self, roi):
-        """Make the scene forget `roi` and its handles before the ROI is deleted.
-
-        pyqtgraph's `GraphicsScene` holds the item being dragged (`dragItem`) and the last hover
-        event, whose click and drag claims name the item under the cursor, which is often a
-        handle. A retired ROI is deleted in C++ by `_drop_retired_rois`, and the next click then
-        reached the deleted object through those references (`BUGS.md` M31).
-
-        `dragItem` is cleared only when it is this ROI or one of its handles. The last hover
-        event is dropped whole when any of its click or drag claims names one of them, which
-        also forgets the claims of other items under the cursor; with no hover event the scene
-        finds the item for the next press by position (`itemsNearEvent`), and the next mouse
-        move records a new one.
-        """
-        import shiboken6
-        if self.image_viewer is None or not shiboken6.isValid(roi):
+        """Make the scene forget `roi` and its handles before `_drop_retired_rois` deletes it
+        (`scene_items.release_scene_references`, `BUGS.md` M31)."""
+        if self.image_viewer is None:
             return
-        scene = self.image_viewer.imv.getView().scene()
-        if scene is None:
-            return
-
-        def is_part_of_roi(item):
-            return item is roi or (item is not None and shiboken6.isValid(item)
-                                   and roi.isAncestorOf(item))
-
-        if is_part_of_roi(getattr(scene, 'dragItem', None)):
-            scene.dragItem = None
-        hover = getattr(scene, 'lastHoverEvent', None)
-        if hover is not None:
-            claimed = list(hover.clickItems().values()) + list(hover.dragItems().values())
-            if any(is_part_of_roi(item) for item in claimed):
-                scene.lastHoverEvent = None
+        release_scene_references(self.image_viewer.imv.getView().scene(), roi)
 
     def _drop_retired_rois(self):
         """Release ROIs taken out of the scene, once the event loop is back.
@@ -248,19 +223,15 @@ class BaseToolDialog(QDialog):
         The explicit `gc.collect()` is deliberate: these items sit in reference cycles, so
         dropping the list frees nothing on its own.
 
-        Each valid ROI is also destroyed explicitly first. Left to the collector, a ROI, its
-        handles and its context menu are freed in whatever order the cycle happens to be
-        walked, and in one such order `callCppDestructor` ran on a handle whose C++ object was
-        already gone: a segfault in `gc.collect()` that appeared and disappeared with
-        unrelated allocations (adding one label to a dialog was enough). Destroying the ROI
-        outright invalidates its wrappers, which the collector then skips.
+        Each valid ROI is also destroyed explicitly first. Left to the collector, retired ROIs
+        crashed `gc.collect()` in `callCppDestructor` on a bad pointer, a segfault that appeared
+        or not depending on unrelated allocations (adding one label to a dialog was enough;
+        `BUGS.md` M31). The mechanism is not established. Deleting first means the collector
+        never destroys a C++ object itself.
         """
         if not self._retired_rois:
             return
-        import shiboken6
-        for roi in self._retired_rois:
-            if shiboken6.isValid(roi):
-                shiboken6.delete(roi)
+        delete_items(self._retired_rois)
         self._retired_rois = []
         gc.collect()
             

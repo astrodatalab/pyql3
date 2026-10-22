@@ -1,5 +1,7 @@
+import io
 import os
 import stat
+import warnings
 import pytest
 import numpy as np
 from astropy.io import fits
@@ -426,6 +428,132 @@ def test_table_only_file_reports_no_image_data(tmp_path):
         reader.close()
 
 
+# --- R12: a failed load changes nothing --------------------------------------------
+
+def _two_extension_cube(path):
+    fits.HDUList([
+        fits.PrimaryHDU(np.full((6, 5, 5), 3.0, dtype=np.float32)),
+        fits.ImageHDU(np.full((6, 5, 5), 4.0, dtype=np.float32), name="SCI"),
+    ]).writeto(path)
+
+
+def _write_unreadable(path, kind):
+    """A file whose load fails: in the data read ("truncated", a frame still being
+    copied) or in `fits.open` itself ("corrupt", a header cut short)."""
+    buf = io.BytesIO()
+    fits.PrimaryHDU(np.ones((6, 5, 5), dtype=np.float32)).writeto(buf)
+    size = {"truncated": 2944, "corrupt": 1000}[kind]
+    with open(path, "wb") as f:
+        f.write(buf.getvalue()[:size])
+
+
+@pytest.mark.parametrize("kind", ["truncated", "corrupt"])
+def test_a_failed_load_leaves_the_reader_unchanged(tmp_path, kind):
+    """load() closed the current HDUList and assigned `filepath` before the data read,
+    which is where a partial file fails, so the reader ended up on a file it could not
+    read while the window still showed the old one (R12)."""
+    cube = str(tmp_path / "good_cube.fits")
+    _two_extension_cube(cube)
+    bad = str(tmp_path / "arriving.fits")
+    _write_unreadable(bad, kind)
+
+    reader = FitsReader(cube)
+    reader.load(cube, ext=1)
+    hdul = reader.hdul
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")      # astropy warns about the truncation
+            with pytest.raises(Exception):
+                reader.load(bad)
+
+        assert reader.filepath == cube
+        assert reader.current_ext == 1
+        assert reader.get_data() is not None and float(reader.get_data().mean()) == 4.0
+        assert reader.hdul is hdul
+        # Still open: extension 0 has not been read yet, and reading it needs the handle.
+        assert float(reader.hdul[0].data.mean()) == 3.0
+    finally:
+        reader.close()
+
+
+def test_require_data_refuses_a_table_only_file(tmp_path):
+    """With require_data=True a file with no displayable image raises NoImageData
+    before anything is replaced, so the window keeps the file it displays."""
+    from pyql3.core.fits_reader import NoImageData
+
+    cube = str(tmp_path / "good_cube.fits")
+    _two_extension_cube(cube)
+    table_only = str(tmp_path / "table_only.fits")
+    cols = [fits.Column(name="WAVE", format="E", array=np.arange(4, dtype=np.float32))]
+    fits.HDUList([fits.PrimaryHDU(),
+                  fits.BinTableHDU.from_columns(cols, name="WAVETAB")]).writeto(table_only)
+
+    reader = FitsReader(cube)
+    hdul = reader.hdul
+    try:
+        with pytest.raises(NoImageData):
+            reader.load(table_only, require_data=True)
+        assert issubclass(NoImageData, ValueError)
+
+        assert reader.filepath == cube
+        assert reader.hdul is hdul
+        assert float(reader.get_data().mean()) == 3.0
+        assert reader.get_image_extensions() == [(0, "PRIMARY"), (1, "SCI")]
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("primary,science", [((1, 6, 5, 5), (6, 5, 5)), ((6,), (5, 5))],
+                         ids=["4-D primary, 3-D SCI", "1-D primary, 2-D SCI"])
+def test_a_primary_that_is_not_2d_or_3d_opens_the_science_extension(tmp_path, primary,
+                                                                     science):
+    """A primary the viewer cannot show is not displayable (B6), so the default pick passes
+    over it to the SCI extension. Phase 5 refused such a file whole, though SCI opened before."""
+    from pyql3.core.fits_reader import NoImageData
+
+    path = str(tmp_path / "odd_primary.fits")
+    fits.HDUList([fits.PrimaryHDU(np.zeros(primary, dtype=np.float32)),
+                  fits.ImageHDU(np.full(science, 4.0, dtype=np.float32), name="SCI")]
+                 ).writeto(path)
+
+    reader = FitsReader()
+    try:
+        reader.load(path, require_data=True)
+        assert reader.current_ext == 1
+        assert reader.get_data().shape == science
+        assert reader.get_image_extensions() == [(1, "SCI")]
+        with pytest.raises(NoImageData):
+            reader.load(path, ext=0, require_data=True)     # asked for by number: refused
+        assert reader.current_ext == 1
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("shape", [(1, 6, 5, 5), (6,)], ids=["4-D", "1-D"])
+def test_require_data_refuses_an_image_that_is_not_2d_or_3d(tmp_path, shape):
+    """The viewer shows only 2-D and 3-D arrays. A file whose only image is 4-D or 1-D has
+    nothing to show, and must be refused before the reader commits, or it would fail in the
+    viewer and split the two again (R12)."""
+    from pyql3.core.fits_reader import NoImageData
+
+    cube = str(tmp_path / "good_cube.fits")
+    _two_extension_cube(cube)
+    other = str(tmp_path / "other_ndim.fits")
+    fits.PrimaryHDU(np.ones(shape, dtype=np.float32)).writeto(other)
+
+    reader = FitsReader(cube)
+    hdul = reader.hdul
+    try:
+        with pytest.raises(NoImageData):
+            reader.load(other, require_data=True)
+
+        assert reader.filepath == cube
+        assert reader.hdul is hdul
+        assert float(reader.get_data().mean()) == 3.0
+    finally:
+        reader.close()
+
+
 # --------------------------------------------------------- save: permissions
 
 
@@ -464,6 +592,48 @@ def test_save_as_to_a_new_path_uses_the_umask_default(tmp_path):
     current_umask = os.umask(0)
     os.umask(current_umask)
     assert stat.S_IMODE(os.stat(target).st_mode) == 0o666 & ~current_umask
+
+
+def test_holds_current_copy_after_its_own_save_only(tmp_path):
+    """R70: the window uses this to skip the poller's announcement of its own save."""
+    path = str(tmp_path / "frame.fits")
+    other = str(tmp_path / "other.fits")
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(path)
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(other)
+
+    reader = FitsReader(path)
+    try:
+        assert reader.holds_current_copy(path)
+        assert not reader.holds_current_copy(other)
+
+        reader.update_header_card("OBJECT", "GC")
+        reader.save()                               # replaced through os.replace
+        assert reader.holds_current_copy(path)
+
+        fits.PrimaryHDU(np.ones((4, 4), dtype=np.float32)).writeto(path, overwrite=True)
+        assert not reader.holds_current_copy(path), "a file rewritten by someone else"
+    finally:
+        reader.close()
+
+
+def test_holds_current_copy_under_another_spelling_of_the_path(tmp_path, monkeypatch):
+    """The poller names a file by its watch directory, which need not be spelled the way
+    the file was opened: a relative path, or a symlinked directory."""
+    real = tmp_path / "real"
+    real.mkdir()
+    path = str(real / "frame.fits")
+    fits.PrimaryHDU(np.zeros((4, 4), dtype=np.float32)).writeto(path)
+
+    reader = FitsReader(path)
+    try:
+        monkeypatch.chdir(tmp_path)
+        assert reader.holds_current_copy(os.path.join("real", "frame.fits"))
+        if os.name != "nt":                         # symlinks need privileges on Windows
+            link = tmp_path / "link"
+            link.symlink_to(real, target_is_directory=True)
+            assert reader.holds_current_copy(str(link / "frame.fits"))
+    finally:
+        reader.close()
 
 
 # ------------------------------------------------ structural keyword guarding
@@ -531,5 +701,45 @@ def test_header_editor_only_reports_structural_keywords_the_user_changed(qapp, t
                 dialog.table.item(row, 1).setText("False")
         dialog.apply_table_edits(ext=0)
         assert dialog._skipped_keywords == ["SIMPLE"]
+    finally:
+        reader.close()
+
+
+def test_reference_header_for_an_error_extension(s3d_like_fits, osiris_like_fits_with_noise,
+                                                 tmp_path):
+    """R25: an extension without a WCS of its own is given the header of the extension of the
+    same shape that has one; an extension that lacks only an integration time is given the
+    primary header; one that has both is given none."""
+    reader = FitsReader(s3d_like_fits)
+    try:
+        reader.load(s3d_like_fits, ext=2)                      # ERR: no WCS cards
+        assert reader.reference_header()['EXTNAME'] == 'SCI'
+        reader.load(s3d_like_fits, ext=3)                      # DQ: no WCS cards
+        assert reader.reference_header()['EXTNAME'] == 'SCI'
+        reader.load(s3d_like_fits, ext=1)                      # SCI: a WCS but no ITIME
+        assert reader.reference_header() is reader.hdul[0].header
+    finally:
+        reader.close()
+
+    reader = FitsReader(osiris_like_fits_with_noise)
+    try:
+        assert reader.current_ext == 0
+        assert reader.reference_header() is None, "the primary has a WCS and an ITIME"
+        reader.load(osiris_like_fits_with_noise, ext=1)        # noise: an empty header
+        assert reader.reference_header() is reader.hdul[0].header
+    finally:
+        reader.close()
+
+    # An extension of another shape is not a reference, however good its WCS
+    path = str(tmp_path / "other_shape.fits")
+    with fits.open(s3d_like_fits) as hdul:
+        data, header = hdul[1].data.copy(), hdul[1].header.copy()
+    fits.HDUList([fits.PrimaryHDU(),
+                  fits.ImageHDU(data[:, :, :5], header, name='SCI'),
+                  fits.ImageHDU(data, name='ERR')]).writeto(path)
+    reader = FitsReader(path)
+    try:
+        reader.load(path, ext=2)
+        assert reader.reference_header() is reader.hdul[0].header
     finally:
         reader.close()

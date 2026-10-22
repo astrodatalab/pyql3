@@ -23,6 +23,7 @@ pyql3/
 │   ├── window_manager.py     # The open windows, and where a new file opens
 │   ├── region_toolbar.py     # Optional vertical shape toolbar (icons painted, not files)
 │   ├── file_open.py          # Finder open-document events
+│   ├── scene_items.py        # Deleting graphics items taken off the image
 │   ├── viewers/
 │   │   ├── image_viewer.py   # 2D/3D image display, WCS, scaling, & colormaps
 │   │   └── region_layer.py   # Drawing, hit-testing and rendering of regions
@@ -97,7 +98,7 @@ that ordering into C-contiguous NumPy order, so `data.shape` is `(RA, DEC, WAVE)
 wavelength is FITS axis 1 but the **last** NumPy axis.
 
 ### Instrument-Agnostic WCS Rule
-Do **not** hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Always dynamically parse the `CTYPE` string using target axis indices (e.g., `wcs.wcs.ctype[z_idx]`).
+Do **not** hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Find axes through the WCS with the helpers in `pyql3/core/header_info.py` (`spectral_axis`, `spectral_unit`, `default_axes`), not by matching a `CTYPE` string: `AWAV` and IRAF-style `LINEAR` axes do not contain `WAVE`.
 
 ### Reloading a File (live observing)
 
@@ -108,6 +109,12 @@ picked up, while a byte-identical reload reuses the handle. That reuse is load-b
 switching extensions goes through `load()`, and reopening every time would silently discard
 Header Editor edits that have not been saved yet. Pass `force=True` for a guaranteed re-read
 (**Display → Redisplay image** does).
+
+A load is all or nothing. If opening the file or reading the chosen extension raises, or
+`require_data=True` finds no 2-D or 3-D image (`NoImageData`), the reader still holds the file
+it held before, open. `MainWindow.load_fits()` passes `require_data=True`, so after a failed
+auto-load of a frame still arriving the window goes on acting on the file it displays (R12 in
+`BUGS.md`).
 
 !!! warning "`memmap=False` is deliberate"
     Files are opened with `memmap=False`. Reading through a mapping of a file the DRP is
@@ -135,9 +142,10 @@ Header Editor edits that have not been saved yet. Pass `force=True` for a guaran
     This asymmetry is only tested on Windows CI, so a change here can pass locally on macOS
     or Linux and fail the release build. See **B18** and **B19** in `BUGS.md`.
 
-`_is_displayable(hdu)` (`is_image` **and** `NAXIS > 0`) is the single definition of an
+`_is_displayable(hdu)` (`is_image` **and** `NAXIS` of 2 or 3) is the single definition of an
 extension the viewer can show, used both by `load()` and by `get_image_extensions()`, which
-populates the Extension combo. `get_all_extensions()` is a different question and still lists
+populates the Extension combo. A 1-D or 4-D image is therefore neither offered nor opened by
+default: a file whose primary is 4-D opens its 3-D `SCI` extension. `get_all_extensions()` is a different question and still lists
 tables. A `BINTABLE` has `data is not None`, so that is never the right test.
 
 ### Internal Data State vs. Display Data State (CRITICAL)
@@ -244,7 +252,7 @@ Every test touches Qt, so on a headless machine prefix with `QT_QPA_PLATFORM=off
 
 ### Test Organization (`tests/`)
 - `tests/test_fits_reader.py`: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.
-- `tests/test_header_info.py`: The Qt-free integration-time rules in `pyql3/core/header_info.py` behind the Total DN multiplier — `TRUITIME` over a millisecond `ITIME`, zero and missing keywords, and `COADDS`.
+- `tests/test_header_info.py`: The Qt-free integration-time rules in `pyql3/core/header_info.py` behind the Total DN multiplier — `TRUITIME` over a millisecond `ITIME`, `EXPTIME` as the last fallback, zero and missing keywords, and `COADDS` — and `data_unit()`, which reads `BUNIT` to decide the unit label and whether Total DN applies.
 - `tests/test_image_viewer.py`: `raw_data` / `transposed_data` / `display_data` separation, view rotations, display scaling, colormaps, and z-slice plane accessors.
 - `tests/test_depth_plot.py`: Spectrum extraction, background subtraction (both the sky annulus and the independent region), line list parsing, LaTeX label formatting, and Y-auto scaling.
 - `tests/test_spectral_photometry.py`: The Qt-free per-channel aperture photometry behind the Depth Plot's circular extraction — flux recovery over a known sky, the `(x, y)` vs `(y, x)` axis convention, NaN and edge handling, and agreement with the Aperture Photometry tool plane by plane.

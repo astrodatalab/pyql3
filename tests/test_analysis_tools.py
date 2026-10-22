@@ -289,12 +289,12 @@ CHANNEL_SCALE = np.array([10., 50., 3., 80., 1., 90., 7., 20., 60., 5.])
 
 
 def _scaled_star_cube(shape=(40, 30)):
-    """numpy (x, y, z) with no header, so z is the last axis: channel k is
-    `CHANNEL_SCALE[k] * (1 + a star at the centre of the image)`."""
+    """numpy (z, y, x) with no header, which is read as FITS axes x, y, z: channel k is
+    `CHANNEL_SCALE[k] * (1 + a star at the centre of the image)`. `shape` is (x, y)."""
     xx, yy = np.mgrid[0:shape[0], 0:shape[1]]
     star = 1.0 + 100.0 * np.exp(-((xx - shape[0] / 2) ** 2 + (yy - shape[1] / 2) ** 2)
                                 / (2 * 1.5 ** 2))
-    return star[:, :, None] * CHANNEL_SCALE[None, None, :]
+    return CHANNEL_SCALE[:, None, None] * star.T[None, :, :]
 
 
 def _readings(stats, phot, fit, cut, strehl_planes):
@@ -465,8 +465,10 @@ def test_each_change_recomputes_a_tool_once(qapp, monkeypatch, setup, change):
             return _original(self, *args, **kwargs)
         monkeypatch.setattr(cls, name, spy)
 
+    from astropy.io import fits
     win = MainWindow()
-    win.image_viewer.set_data(_scaled_star_cube())
+    # A declared count rate with an integration time, or Total DN is refused (R83)
+    win.image_viewer.set_data(_scaled_star_cube(), fits.Header({'BUNIT': 'DN/s', 'ITIME': 4.0}))
     win.show()
     for open_tool in (win.open_statistics, win.open_photometry, win.open_gaussian_fit,
                       win.open_strehl_tool, win.open_horizontal_cut):
@@ -635,3 +637,17 @@ def test_current_plane_is_not_served_from_an_old_collapse(qapp):
 
     viewer.txt_zmax.setText("3")                 # typed, not applied: the fields still rule
     assert np.allclose(viewer.current_plane(), first * 2 * (83 / 13.5))
+
+
+def test_strehl_profile_has_no_data_unit(qapp, loaded_viewer):
+    """Both radial profiles are divided by their peak, and the axis was labelled
+    "Intensity (DN/s)" — and only after a computation that succeeded (R83)."""
+    loaded_viewer.disp_as_dn = True
+    loaded_viewer.refresh_display()
+    dialog = StrehlDialog(None, loaded_viewer)
+    try:
+        assert dialog.plot_widget.getAxis('left').labelText == "Intensity / Peak"
+        dialog.update_strehl()
+        assert dialog.plot_widget.getAxis('left').labelText == "Intensity / Peak"
+    finally:
+        dialog.close()

@@ -515,6 +515,17 @@ Both changes applied:
    `Cannot display N-D data` in the slice label. Reachable now only by an explicit
    `load_fits(path, ext=<table>)`, but it means a future mismatch is loud instead of leaving
    the previous extension on screen.
+   (Superseded by R13: `set_data` now raises `ValueError` for any array that is not 2-D or
+   3-D, before it changes anything, so this branch was removed. `FitsReader.load(require_data=True)`
+   refuses such data first.)
+
+3. (Phase 5 review, 2026-10-21.) `_is_displayable` now requires `NAXIS` of 2 or 3, not just
+   above 0. With `NAXIS > 0` a 1-D or 4-D image was offered in the combo and picked by default,
+   and once R12's `require_data` refused such data, a file with a 4-D primary and a 3-D `SCI`,
+   or a 1-D primary and a 2-D `SCI`, was refused whole, though its `SCI` had opened before. Now
+   the default pick passes over the primary to `SCI` and the combo does not list it; covered by
+   `tests/test_fits_reader.py::test_a_primary_that_is_not_2d_or_3d_opens_the_science_extension`
+   and `tests/test_main_window_and_poller.py::test_a_4d_extension_is_not_offered`.
 
 Verified unchanged on the real OSIRIS file — before and after both report
 `[(0, 'PRIMARY'), (1, 'EXT 1'), (2, 'EXT 2')]`, so no real extension was dropped.
@@ -1958,7 +1969,7 @@ refresh.
 | M9 | `advanced_plots.py:134-138` | `ContourDialog.update_plot` returns early when *Show Contours* is unchecked, before `clear_contours()`, so contours from a previous slice can linger. | Clear first, then return. |
 | M11 | ✅ FIXED — `main_window.py` | `create_menus` kept its `QMenu` objects in locals only, so nothing held a Python reference. Harmless while unwrapped, but any code calling `action.menu()` becomes a transient Python owner and PySide6 deletes the C++ menu **and every QAction in it** when that wrapper is collected. Confirmed while writing the Phase 4 region-menu tests: a helper that walked `menuBar().actions()` and called `.menu()` got back an action that was already dead. | Done: every menu is now stored on `self` (`self.file_menu`, `self.display_menu`, `self.scaling_menu`, `self.colormap_menu`, `self.units_menu`, `self.plot_menu`, `self.analysis_menu`, `self.region_menu`, `self.help_menu`, joining `self.window_menu` and `self.recent_menu`). **Reach a menu through its attribute, never through `action.menu()`** — see `tests/test_region_ui.py::menu_action`. |
 | M27 | ✅ FIXED — `base_tool.py` (`remove_roi_from_viewer`, `_drop_retired_rois`) | `remove_roi_from_viewer` ended with `self.roi = None`, dropping the last Python reference to a `QGraphicsItem` — and every caller removes an ROI *in order to build its replacement*. The collector therefore ran inside `ROI.addScaleHandle` → `GraphicsObject.__init__` and freed the old item mid-construction: `Fatal Python error: Segmentation fault ... Garbage-collecting`, from `toggle_roi_shape`. Latent for as long as the shape combo has existed; a test that switches shape twice made it reproducible. Exactly `M18`'s failure in a second place. | Done: removed ROIs go to `_retired_rois` and are released from a `QTimer.singleShot(0, ...)` with an explicit `gc.collect()`, since these items are in reference cycles. Nine consecutive clean runs of the file and the full suite. |
-| M31 | ✅ FIXED — `base_tool.py` (`_drop_retired_rois`; with R15, `retire_roi` and `_release_scene_references`), `depth_plot.py` (`remove_bg_roi`, `remove_annulus_rings`), covered by `tests/test_analysis_tools.py` running to the end, `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` and `test_depth_plot_retires_its_background_rois` (`tests/test_menu_actions.py`) | Follow-up to M27. After Region Statistics and Peak Fit moved to `roi_plane_pixels`, `tests/test_analysis_tools.py` died with `Fatal Python error: Segmentation fault` in `gc.collect()` (`_drop_retired_rois`, reached from the `destroy_leftover_windows` fixture) at the teardown of `test_gaussian_fit_tool` after `test_cuts_tool`; lldb showed `Shiboken::callCppDestructor<QGraphicsObject>` on a bad pointer. Reproduction: those two tests in that order with any extra object created in `GaussianFitDialog.__init__` (a parentless `QLabel` was enough); the code before the change survived `gc.set_threshold` from 20 to 500, so the order in which the collector frees the ROI, handle and menu cycle is what matters. **Residual exposure (found in review):** pyqtgraph's `GraphicsScene` keeps strong references (`dragItem`, `lastHoverEvent.clickItems()`), so a ROI removed while it is being dragged or hovered is deleted in C++ while the scene still points at it, and the next scene click can raise `RuntimeError: Internal C++ object already deleted` (a traceback, not a crash). Checked cheaply: after removing a ROI set as `scene.dragItem`, the scene still holds it and `shiboken6.isValid` is False; a stubbed drag-finish event did not raise, so the traceback itself was not reproduced. Fixed with R15: `remove_roi_from_viewer` clears `dragItem` and `lastHoverEvent` when they name the ROI or one of its handles (`_release_scene_references`), and `tear_down` releases retired ROIs at once rather than on a timer a deleted dialog may never reach, and the Depth Plot's background box and annulus rings are retired through `retire_roi` instead of being dropped; a click sent to a deleted `dragItem` does raise `RuntimeError` from `ROI.mouseClickEvent`, which `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` covers. | Done: `_drop_retired_rois` calls `shiboken6.delete` on each still-valid retired ROI before `gc.collect()`, which invalidates the wrappers so the collector skips them. The file and the full suite pass. `region_layer._drop_retired` is unchanged. |
+| M31 | ✅ FIXED — `base_tool.py` (`_drop_retired_rois`; with R15, `retire_roi` and `_release_scene_references`), `depth_plot.py` (`remove_bg_roi`, `remove_annulus_rings`), covered by `tests/test_analysis_tools.py` running to the end, `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` and `test_depth_plot_retires_its_background_rois` (`tests/test_menu_actions.py`) | Follow-up to M27. After Region Statistics and Peak Fit moved to `roi_plane_pixels`, `tests/test_analysis_tools.py` died with `Fatal Python error: Segmentation fault` in `gc.collect()` (`_drop_retired_rois`, reached from the `destroy_leftover_windows` fixture) at the teardown of `test_gaussian_fit_tool` after `test_cuts_tool`; lldb showed `Shiboken::callCppDestructor<QGraphicsObject>` on a bad pointer. Reproduction: those two tests in that order with any extra object created in `GaussianFitDialog.__init__` (a parentless `QLabel` was enough); the code before the change survived `gc.set_threshold` from 20 to 500, so the order in which the collector frees the ROI, handle and menu cycle is what matters. **Residual exposure (found in review):** pyqtgraph's `GraphicsScene` keeps strong references (`dragItem`, `lastHoverEvent.clickItems()`), so a ROI removed while it is being dragged or hovered is deleted in C++ while the scene still points at it, and the next scene click can raise `RuntimeError: Internal C++ object already deleted` (a traceback, not a crash). Checked cheaply: after removing a ROI set as `scene.dragItem`, the scene still holds it and `shiboken6.isValid` is False; a stubbed drag-finish event did not raise, so the traceback itself was not reproduced. Fixed with R15: `remove_roi_from_viewer` clears `dragItem` and `lastHoverEvent` when they name the ROI or one of its handles (`_release_scene_references`), and `tear_down` releases retired ROIs at once rather than on a timer a deleted dialog may never reach, and the Depth Plot's background box and annulus rings are retired through `retire_roi` instead of being dropped; a click sent to a deleted `dragItem` does raise `RuntimeError` from `ROI.mouseClickEvent`, which `test_closing_a_tool_mid_drag_leaves_the_scene_no_deleted_roi` covers. | Done: `_drop_retired_rois` calls `shiboken6.delete` on each still-valid retired ROI before `gc.collect()`, so the collector never destroys a C++ object itself; why the collection crashed without it is not established (R89). The file and the full suite pass. `region_layer._drop_retired` is unchanged (it was changed the same way later, R89). |
 | M26 | ✅ FIXED — `tests/test_poller.py`, `poller.py` (`_check_pending`) | `test_burst_of_files_displays_only_the_newest` spaced its five files **one nanosecond** apart with `os.utime`. NTFS timestamps resolve to 100 ns, so on Windows all five were the same age, `max(candidates, key=_mtime)` returned the first maximal element, and the burst announced `burst0` instead of `burst4`. Failed the Windows release build; passed everywhere else because APFS and ext4 resolve to 1 ns. | Done: the test spaces them a second apart and *asserts the premise* — that `os.stat` really recorded five increasing ages — so a coarser filesystem says so rather than looking like a poller bug. Separately, `_check_pending` now breaks ties by name (`key=lambda p: (self._mtime(p), p)`), because timestamps genuinely collide in this poller's deployment: an NFS share can report whole seconds, and a DRP burst lands several frames in one tick. |
 | M23 | ✅ FIXED — `.github/workflows/release.yml`, `build_app.sh` | The packaged-asset check globbed `dist/**/regions/_geometry/*`, which the `__init__.py` and the `tests/` directory collected alongside the extensions already satisfy — so it passed on a build containing **no compiled `_geometry` extension at all**, which is the only thing `collect_all('regions')` is there for. Verified by running the step against a `dist/` tree holding just `_geometry/__init__.py`: it reported success. Found while auditing the Windows build (`M22`), where the extensions are `.pyd`. | Done: both copies now filter on `importlib.machinery.EXTENSION_SUFFIXES`, so only a real `.so`/`.pyd` counts. Re-verified against fake `dist/` trees with and without one. |
 | M24 | ✅ FIXED — `poller.py` (`_watch_key`) | The canonical watch key was `realpath(abspath(expanduser(path)))` with no `normcase`. On Windows `C:\Data\OSIRIS` and `c:\data\osiris` are one directory but two keys, so two windows could each start a `PollingObserver` over it — the double scan traffic and double load that `watcher_of` exists to prevent. | Done: `os.path.normcase` on the result, a no-op on POSIX. `tests/test_multi_window.py::test_watch_ownership_compares_canonical_paths` asserts the case fold where `normcase` actually folds. |
@@ -2199,6 +2210,7 @@ written to do. All three consumers already handled `None` correctly, which is wh
 deletion rather than a rewrite. The primary header is still published, so a file worth
 inspecting but not displaying can still be opened in the Header Editor. Loading a data-less
 file now also leaves the currently displayed cube untouched.
+Superseded in part by R12: a data-less file no longer replaces the window's reader.
 
 ## S8. Developer paths disclosed in a public repository
 
@@ -2253,8 +2265,9 @@ running code unless its Status says otherwise, and each carries its reproduction
 `R`-numbered to distinguish these from the `B`, `M` and `S` series, and ordered by severity:
 **R1–R10 high, R11–R47 medium, R48–R64 low**, and R65–R80 in the minor-items table at the end.
 R81–R83 (medium) were added afterwards from a NIFS reference cube; they sit just before the table.
-R84 (minor) was added in the Phase 2 review, and R86 and R87 (minor) in the Phase 3 review; they
-are the last rows of the table. R85 (high) was found while fixing R15 and sits after R83.
+R84 (minor) was added in the Phase 2 review, R86 and R87 (minor) in the Phase 3 review, and R88
+(minor) in the Task 20 review; they are the last rows of the table. R85 (high) was found while fixing R15 and sits after R83.
+R89 (high) was found in Task 21 and sits after R85.
 The implementation plan is `specs/2026-10-21-code-review-fixes-plan.md`.
 
 **Baseline.** `uv run pytest -q -n auto --dist loadfile`: 1081 passed, 6 skipped (the two
@@ -3065,7 +3078,7 @@ Keep a counter `self._auto_load_generation`. Increment it in `on_file_detected`,
 
 ## R12. A failed load leaves `FitsReader` pointing at a different file from the one displayed
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/fits_reader.py` (`load` is all or nothing; `NoImageData` for no 2-D or 3-D image), `pyql3/gui/main_window.py` (`load_fits` passes `require_data=True`, and `on_extension_changed` puts the combo back when a load is refused; the exhausted-retry warning now says File → Open, since Redisplay reloads the displayed file), covered by `tests/test_fits_reader.py::test_a_failed_load_leaves_the_reader_unchanged`, `::test_require_data_refuses_a_table_only_file`, `::test_require_data_refuses_an_image_that_is_not_2d_or_3d`, `::test_a_primary_that_is_not_2d_or_3d_opens_the_science_extension`, `tests/test_main_window_and_poller.py::test_failed_load_leaves_the_reader_on_the_displayed_file`, `::test_data_less_file_warns_and_leaves_the_current_image_alone`, `::test_a_4d_file_leaves_the_reader_and_title_on_the_displayed_file`, `::test_a_refused_extension_puts_the_combo_back` (an extension whose data are cut short; a 4-D extension is no longer offered, `::test_a_4d_extension_is_not_offered`), `::test_selecting_a_table_extension_clears_the_view` and `tests/test_poller.py::test_the_failure_warning_quotes_this_files_error`
 - **Severity:** medium — Save As, Edit Header and the Extension combo then act on the wrong file or refuse to act, and auto-load failures make this happen without any user action
 - **Files:** `pyql3/core/fits_reader.py:62-86`, `pyql3/gui/main_window.py:607-650`, `pyql3/gui/main_window.py:742-754`, `pyql3/gui/main_window.py:794-800`, `pyql3/gui/main_window.py:1234`
 - **Related:** S7. Its fix states that a data-less load leaves the displayed cube untouched. That is true of the viewer, but the reader underneath has already switched.
@@ -3122,7 +3135,7 @@ In `load_fits`, load a different path into a new `FitsReader`. Replace `self.fit
 
 ## R13. A header that astropy's `WCS` cannot parse fails the whole load and leaves the viewer half-updated
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/header_info.py` (`build_wcs`), `pyql3/gui/viewers/image_viewer.py` (`set_data`, `wcs_label_when_unavailable`), covered by `tests/test_header_info.py::test_build_wcs_accepts_micron`, `::test_build_wcs_reports_an_unreadable_unit`, `tests/test_image_viewer.py::test_micron_cunit_loads_with_a_wavelength_axis`, `::test_unparseable_wcs_leaves_data_displayed_without_wcs`, `::test_a_refused_array_leaves_the_viewer_unchanged`; the label shows the last line of wcslib's message and the tooltip all of it, since its first line names wcslib's own source file and tripled the label's height (Phase 5 review), covered by `::test_an_unreadable_wcs_note_is_one_line` and `::test_the_unreadable_wcs_note_survives_a_hover_off_the_image`
 - **Severity:** medium — a cube that ds9 and astropy's FITS reader both open cannot be displayed at all, and the failed attempt leaves the analysis array out of step with the screen
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1066-1080`, `pyql3/gui/main_window.py:646-650`
 - **Related:** R12 (a failed load also leaves `FitsReader` on the new file). Together they mean the reader, `raw_data` and the screen can describe three different states.
@@ -3807,7 +3820,7 @@ Active / 2: float64 20000.0 | result header BITPIX 16 BZERO 32768
 
 ## R24. An AWAV spectral axis is not recognised, and the WCS readout keeps an old position whenever Z is not a wavelength axis
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/header_info.py` (`spectral_axis`), `pyql3/gui/viewers/image_viewer.py` (`apply_axis_mapping`, `_wcs_readout`), `pyql3/gui/tools/depth_plot.py` (line list and axis label), covered by `tests/test_header_info.py::test_spectral_axis`, `tests/test_image_viewer.py::test_awav_is_a_spectral_axis` and `::test_wcs_readout_never_shows_a_previous_position`
 - **Severity:** medium — an air-wavelength cube gets no wavelength labels and no sky readout at all, and in other cases the label silently shows a previous position
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1186-1199`, `pyql3/gui/viewers/image_viewer.py:1674`, `pyql3/gui/tools/depth_plot.py:1264`, `pyql3/gui/tools/depth_plot.py:1289`, `pyql3/gui/tools/depth_plot.py:1489`
 - **Related:** M23, which made a non-finite coordinate read "WCS: N/A". Here the label is never written at all.
@@ -3875,7 +3888,7 @@ assert that the label changed or reads "WCS: N/A".
 
 ## R25. A non-science extension is set up from its own header only: wrong default axes, no WCS, and a Total DN multiplier of 1
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/fits_reader.py` (`reference_header`), `pyql3/core/header_info.py` (`has_world_axes`, `states_integration_time`, `data_keywords`), `pyql3/gui/viewers/image_viewer.py` (`set_data(reference_header=...)`, `wcs_header`, `data_keywords`), `pyql3/gui/main_window.py` (`load_fits`), covered by `tests/test_fits_reader.py::test_reference_header_for_an_error_extension`, `tests/test_main_window_and_poller.py::test_error_extension_keeps_the_science_axis_layout`, `::test_noise_extension_uses_the_primary_integration_time`, `::test_a_quality_extension_borrows_no_unit`, `::test_jwst_extensions_do_not_borrow_the_science_unit`, `::test_a_primary_wcs_with_fewer_axes_is_not_borrowed` and `tests/test_header_info.py::test_has_world_axes`, `::test_states_integration_time`, `::test_data_keywords`, `::test_data_keywords_are_borrowed_only_from_the_primary`, `::test_integer_data_borrow_no_unit`
 - **Severity:** medium — switching to an error or noise extension rearranges the axes or silently changes units
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1077-1089`, `pyql3/gui/viewers/image_viewer.py:1117-1122`, `pyql3/gui/main_window.py:619-620`, `pyql3/core/fits_reader.py:79`
 - **Related:** B6. That entry stopped table extensions from reaching the viewer. This one concerns image extensions whose header lacks the keywords the viewer depends on.
@@ -3940,11 +3953,24 @@ three-HDU file above, asserting that ext 2 shows the same plane shape as ext 1. 
 `::test_noise_extension_uses_the_primary_integration_time`, asserting that `data_multiplier` is the
 same for ext 0 and ext 1.
 
+### Fix
+`FitsReader.reference_header()` names the header to borrow from, and `set_data` uses its WCS when
+the extension's own has no celestial or spectral axis and the reference's has as many axes as the
+data. `header_info.data_keywords()` takes `BUNIT` and the integration time from the reference only
+when the reference is the **primary** header and the data are **not integers**; otherwise an
+extension that states no `BUNIT` reads Unknown. The first version borrowed from any reference, and
+the Phase 5 review measured the result on the example files: JWST DQ and WMAP and NIRCam `VAR_*`
+read "MJy/sr" from SCI (`VAR_*` is really (MJy/sr)², DQ is flags), and the OSIRIS quality extension
+(uint8 flags) read "DN/s" and was multiplied by 899.92 under Total DN. Now the OSIRIS noise
+extension (float, primary reference) keeps DN/s and Total DN ×899.92, the OSIRIS quality extension
+and JWST DQ, WMAP and `VAR_*` read Unknown with no Total DN, and JWST ERR keeps the `MJy/sr` it
+states itself. The WCS is borrowed as before in every case.
+
 ---
 
 ## R26. Choosing the axis the other combo box already shows leaves `current_y_axis` wrong
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`apply_axis_mapping` swaps the two combos and assigns `current_x/y/z_axis` once, after), covered by `tests/test_image_viewer.py::test_duplicate_axis_choice_swaps_the_axes`
 - **Severity:** medium — the sky readout, the region sky frame and the compass all read the wrong FITS axes after one ordinary combo box change
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1160-1175`, `pyql3/gui/viewers/image_viewer.py:356-377`, `pyql3/gui/viewers/image_viewer.py:1685-1695`
 
@@ -4999,7 +5025,7 @@ leaves the header unchanged.
 
 ## R43. Restarting a directory watch loses files that were seen but not yet announced
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/services/poller.py` (`start_polling` keeps `_pending` and the held file on a restart of the same directory without emitting `polling_stopped`, and moves them to the new owner on a takeover), `pyql3/gui/dialogs/polling.py` (the interval is applied on `editingFinished` and when the dialog closes), covered by `tests/test_poller.py::test_restarting_a_watch_keeps_unsettled_files`, `tests/test_poller.py::test_changing_the_interval_keeps_a_pending_retry`, `tests/test_poller.py::test_the_polling_dialog_applies_the_interval_when_editing_finishes`, `tests/test_poller.py::test_closing_the_polling_dialog_unedited_keeps_the_interval`
 - **Severity:** medium — a frame that finished arriving just before the restart is never displayed, and nothing reports it
 - **Files:** `pyql3/services/poller.py:160-165`, `pyql3/services/poller.py:172-197`, `pyql3/services/poller.py:199-215`, `pyql3/gui/dialogs/polling.py:121-125`
 - **Related:** S0 (the polling rewrite that introduced settle-and-hold).
@@ -5533,7 +5559,7 @@ A companion test asserts a text region stays visible, or keeps a marker, with la
 
 ## R52. A 2-D image whose header carries a third WCS axis gets no sky readout, or a stale one, and a wrong compass
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`set_data` resets `wcs_z_idx`; `_wcs_readout` and `get_north_angle_base` take the pixel axes from `display_axis_indices()`), covered by `tests/test_image_viewer.py::test_2d_image_with_a_third_wcs_axis_reads_sky` and `tests/test_position_angle.py::test_2d_image_with_a_third_wcs_axis_has_the_right_compass`
 - **Severity:** low — needs a 2-D image with leftover cube WCS cards, but then both the readout and the compass are wrong
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1283-1294`, `pyql3/gui/viewers/image_viewer.py:1659`, `pyql3/gui/viewers/image_viewer.py:1674`, `pyql3/gui/viewers/image_viewer.py:1091-1105`
 
@@ -5792,7 +5818,7 @@ from `on_roi_changed()`, `on_radius_changed()` and `toggle_roi_shape()`.
 
 ## R56. The ROTPOSN fallback compass uses 90 + PA where the WCS and QL2 both give 90 - PA
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`get_north_angle_base`: `theta_n_base = 90 - north_pa`), covered by `tests/test_position_angle.py::test_rotposn_fallback_matches_the_wcs`
 - **Severity:** low — reached only when the header has no celestial WCS, but then North and East point the wrong way
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1329-1347`
 - **Related:** B20, which fixed the order in which the display transforms are applied to the compass. This entry concerns the base angle that goes into that composition, in the fallback path.
@@ -6269,7 +6295,7 @@ and an IRAF-style spectral axis, which none of the review's test files had.
 
 ## R81. A cube that is not from OSIRIS and has no celestial axis types opens with wavelength across the screen
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/header_info.py` (`default_axes`), `pyql3/gui/viewers/image_viewer.py` (`set_data`), covered by `tests/test_header_info.py::test_default_axes` and `tests/test_image_viewer.py::test_a_nifs_cube_opens_with_wavelength_on_z`
 - **Severity:** medium — the default view of every such cube (Gemini NIFS among them) shows wavelength against one spatial axis, and pages through the other spatial axis as if it were wavelength
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1117-1122` (default X axis in `set_data`)
 - **Related:** R25 (the same default chooses the axes of a non-science JWST extension)
@@ -6323,7 +6349,7 @@ gives a (10, 12) plane and Z = AXIS 3.
 
 ## R82. A spectral axis written the IRAF way (`CTYPE = 'LINEAR'` with `WAT… axtype=wave` or `DISPAXIS`) is not recognised
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/header_info.py` (`spectral_axis`, `spectral_unit`, `in_microns`), `pyql3/gui/viewers/image_viewer.py` (`wavelength_unit`, "Wavelength (Unknown)"), `pyql3/gui/tools/depth_plot.py` (the line list needs a known unit), covered by `tests/test_header_info.py::test_spectral_axis_from_iraf_cards`, `::test_a_missing_spectral_unit_is_unknown` and `::test_a_unit_wcslib_fills_in_is_not_a_stated_unit`, `tests/test_image_viewer.py::test_an_iraf_spectral_axis_has_wavelengths`, `tests/test_depth_plot.py::test_the_line_list_needs_a_known_wavelength_unit`; the hover readout names a `LINEAR` axis by its `WAT` `axtype` (`xi`, `eta`), else its `CTYPE`, and leaves out a unit the file does not state, where it read `WCS: None: 1.687   |  None: 1.55 ` on the NIFS example (Phase 5 review; `header_info.world_axis_label`), covered by `tests/test_header_info.py::test_world_axis_label` and `tests/test_image_viewer.py::test_an_iraf_axis_is_read_out_by_its_iraf_name`
 - **Severity:** medium — NIFS cubes get no wavelength axis, no wavelength in the slice label and no line list
 - **Files:** `pyql3/gui/viewers/image_viewer.py:1186-1199` (`'WAVE' in ctype`), `pyql3/gui/tools/depth_plot.py:1264`
 - **Related:** R24 (`AWAV` missed by the same string test). R24's proposed fix, `wcs.wcs.spec`, does not cover this case: astropy reports no spectral axis (`spec == -1`) for `LINEAR` axes.
@@ -6363,7 +6389,7 @@ the R81 header gives a spectral Z axis whose slice 0 value is 19968.66 and whose
 
 ## R83. "As Total DN" is offered whatever the data's unit is, and ignores `EXPTIME`
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/header_info.py` (`DataUnit`, `data_unit`, the `EXPTIME` fallback and no multiplier without a time in `total_dn_multiplier`), `pyql3/gui/viewers/image_viewer.py` (`data_unit`, `total_dn_available`, `value_unit_label`, Total DN cleared in `set_data`), `pyql3/gui/main_window.py` (`sync_unit_menu`, `set_display_unit`), `pyql3/gui/tools/cuts.py`, `pyql3/gui/tools/depth_plot.py`, `pyql3/gui/tools/strehl.py`; covered by `test_data_unit`, `test_data_unit_without_a_header`, `test_exptime_is_the_last_fallback` (`tests/test_header_info.py`), `test_total_dn_is_offered_only_for_a_count_rate`, `test_loading_a_non_rate_cube_leaves_total_dn` (`tests/test_menu_actions.py`), `test_labels_use_the_declared_unit` (`tests/test_image_viewer.py`), `test_strehl_profile_has_no_data_unit` (`tests/test_analysis_tools.py`)
 - **Severity:** medium — for JWST and NIFS cubes the Total DN view shows the native numbers relabelled as Total DN, which reads as a conversion that never happened
 - **Files:** `pyql3/gui/viewers/image_viewer.py` (`data_multiplier`, `update_colorbar_label`), `pyql3/gui/main_window.py` (Units menu, `set_display_unit`), `pyql3/core/header_info.py`
 - **Related:** R1 (the OSIRIS integration time), R25 (exposure keywords in another HDU)
@@ -6444,7 +6470,56 @@ event-loop pass later `_drop_retired_rois` deleted it in C++.
 ### Fix
 `add_roi_to_viewer` removes the current ROI only when it is not the one being added.
 
-## R65–R80, R84, R86, R87. Minor items
+## R89. Releasing retired region items can segfault inside `gc.collect()`
+
+- **Status:** ✅ FIXED — `pyql3/gui/scene_items.py` (`release_scene_references`, `delete_items`, shared with `pyql3/gui/tools/base_tool.py`), `pyql3/gui/viewers/region_layer.py` (`_remove_from_scene`, `_drop_retired`), covered by `tests/test_region_layer.py::test_retired_items_are_deleted_before_they_are_collected` and `::test_removing_a_region_mid_drag_leaves_the_scene_no_deleted_item`
+- **Severity:** high — a crash, on the path every region removal, `clear()` and region-file load takes
+- **Files:** `pyql3/gui/viewers/region_layer.py` (`_drop_retired`)
+- **Related:** M18 (the retire-then-release design), M31 (the same crash in the tool dialogs, fixed there by deleting each retired ROI before the collection). `AGENTS.md` recorded that `region_layer._drop_retired` still released by collection alone and that this was "left until it does" show the crash. Found in Task 21 (2026-10-21).
+
+### Symptom
+```
+tests/test_region_layer.py::test_the_lookup_index_survives_clear_and_reload PASSED
+Fatal Python error: Segmentation fault
+  File ".../pyql3/gui/viewers/region_layer.py", line 1014 in _drop_retired
+  File ".../tests/conftest.py", line 63 in destroy_leftover_windows
+```
+lldb: `Shiboken::callCppDestructor<QGraphicsObject>` on a bad pointer, reached from
+`dict_tp_clear` inside `gc_collect_main`.
+
+### Reproduction
+With Task 21's `ImageViewer.data_keywords` (an `astropy.io.fits.Header` held by the viewer) in
+place, and the region layer as it was:
+```bash
+QT_QPA_PLATFORM=offscreen uv run pytest -q \
+  tests/test_region_layer.py::test_the_lookup_index_is_emptied_by_removals \
+  tests/test_region_layer.py::test_the_lookup_index_survives_clear_and_reload
+```
+crashes every run. Holding a `dict` with the same keywords instead, or an empty `Header`, does
+not. Without the R25 change the old code did not crash at any `gc` threshold from 10 to 5000
+(checked in review). Why the `Header` triggers it is a guess: it may change when the collector
+runs and in what order it reaches these items.
+
+### Root cause
+Not established. What was observed: the crash is inside the `gc.collect()` that `_drop_retired`
+runs after emptying `_retired`, in `callCppDestructor<QGraphicsObject>`; with `gc.DEBUG_SAVEALL`
+the only `QGraphicsItem`s in that collection's garbage are the retired `RegionCircleROI`s and
+their `Handle`s. After `ViewBox.removeItem`, `shiboken6.ownedByPython(handle)` returns True,
+while `shiboken6.dump(handle)` shows `hasOwnership 0` with the ROI as `parent`, and the ROI's dump
+lists the handle among its children. So it is not known which wrapper destroys an already-deleted C++ object, or why.
+
+### Fix
+`_drop_retired` deletes each still-valid retired item with `shiboken6.delete` before the
+collection, as `BaseToolDialog._drop_retired_rois` does since M31. Afterwards every retired ROI
+and every one of its handles reports `shiboken6.isValid` False
+(`test_retired_items_are_deleted_before_they_are_collected` asserts it), so the collector never
+destroys a C++ object itself. Because a deleted item may
+still be named by the scene's `dragItem` or last hover event (a right-click Remove is made while
+hovering the region), `_remove_from_scene` first makes the scene forget it, as `retire_roi`
+does. Both steps are now one implementation in `pyql3/gui/scene_items.py`, used by the tool
+dialogs and the region layer.
+
+## R65–R80, R84, R86–R88. Minor items
 
 | # | File | Issue | Fix (proposed) |
 |---|------|-------|-----|
@@ -6453,7 +6528,7 @@ event-loop pass later `_drop_retired_rois` deleted it in C++.
 | R67 | `pyql3/gui/viewers/image_viewer.py:1389-1391` | ✅ FIXED — `pyql3/gui/viewers/image_viewer.py` (`_set_view_transform`), covered by `tests/test_image_viewer.py::test_view_rotation_pivots_on_the_plane_centre`. `apply_view_rotation` rotates about `((shape[-1]-1)/2, (shape[-2]-1)/2)`, which swaps x and y and drops the half-pixel offset of the ImageItem. On a 51×66 plane a 180° view rotation moves the image centre from (25.5, 33.0) to (39.5, 17.0). | Pivot on `(shape[-2] / 2, shape[-1] / 2)`, the centre of the ImageItem's bounding rect. |
 | R68 | ✅ FIXED — `pyql3/gui/tools/rotate.py` (`on_view_rotated`, `on_geometry_changed`), covered by `test_rotate_dialog_follows_a_reload`, `test_rotate_dialog_own_rotation_is_not_undone`. By plan decision North Up is not kept across frames: each load shows the new frame unrotated and the dialog says so (keeping it would be a feature, not a fix). `pyql3/gui/viewers/image_viewer.py:1071`, `pyql3/gui/tools/rotate.py:95-116` | `set_data` resets `view_rotation` to 0 on every load, including each poller auto-load, but an open Rotate dialog is not told. After a 30.0° view rotation and a reload, the view is unrotated while the dialog shows 30.0 and "30.0° CCW from up". The Main Window review measured that after North Up, the next frame draws North at 55.0° with rotation 0 while the dialog still shows 35.0 and "North is Up". | Either keep the view rotation across a reload of the same field, or emit a signal from `set_data` that the Rotate dialog uses to reset its spin box and call `update_pa_info()`. |
 | R69 | `pyql3/gui/main_window.py:723` | `load_from_memory` applies `os.path.basename` to the Arithmetic expression, so any division keeps only the text after the `/`: `(ActiveImage / 2.0)` is titled `QuickLook 3 -  2.0)`, and `(a001.fits / a002.fits)` is titled ` a002.fits)`, which reads as if the window held `a002.fits`. | Use the title as given for in-memory data, and apply `basename` only to real file paths. |
-| R70 | `pyql3/services/poller.py:110-120`, `pyql3/core/fits_reader.py:259` | Saving the displayed file's header in place, inside a watched directory, replaces the file with `os.replace`. The poller re-announces it about one scan later, and the reload resets the view: a 5 x 5 px zoom on a 30 x 30 px frame came back as the full frame (a 31.5 x 32.4 px view). | In `MainWindow`, skip an auto-load whose path and `(st_size, st_mtime_ns, st_ino)` match what `fits_reader` itself just wrote. |
+| R70 | `pyql3/services/poller.py:110-120`, `pyql3/core/fits_reader.py:259` | ✅ FIXED — `pyql3/core/fits_reader.py` (`holds_current_copy`), `pyql3/gui/main_window.py` (`on_file_detected` and `_attempt_auto_load` skip it), covered by `tests/test_main_window_and_poller.py::test_saving_the_header_in_a_watched_directory_keeps_the_view`, `tests/test_poller.py::test_the_windows_own_save_does_not_cancel_a_pending_retry`, `tests/test_fits_reader.py::test_holds_current_copy_after_its_own_save_only`, `tests/test_fits_reader.py::test_holds_current_copy_under_another_spelling_of_the_path`. Saving the displayed file's header in place, inside a watched directory, replaces the file with `os.replace`. The poller re-announces it about one scan later, and the reload resets the view: a 5 x 5 px zoom on a 30 x 30 px frame came back as the full frame (a 31.5 x 32.4 px view). | In `MainWindow`, skip an auto-load whose path and `(st_size, st_mtime_ns, st_ino)` match what `fits_reader` itself just wrote. |
 | R71 | `pyql3/core/fits_reader.py:67`, `:232-233`, `:256` | A header-only save (Header Editor → Save Header → Yes) re-encodes scaled integer data. A BITPIX 16 file with BSCALE 0.5, BZERO 100 and BLANK was rewritten as BITPIX −32 with all three keywords removed. Values are preserved, but the data type on disk changes. | Open with `fits.open(..., memmap=False, scale_back=True)` so `writeto` restores the original BITPIX and scaling. |
 | R72 | `pyql3/gui/tools/fitting.py:12-15` vs `:22-23`, `:32-33` | The Gaussian model's cross term has the opposite sign to the Lorentzian and Moffat rotations. For one source with its major axis 30° CCW from +X, the fits report −120.0° (Gaussian), +120.1° (Lorentzian) and −60.0° (Moffat). The Gaussian angle is mirrored (−120 ≡ 60 mod 180, the others ≡ 120), so "Angle (deg)" depends on the model chosen. | Flip the sign of `b` in `gaussian_2d` so all three models share the CCW convention, and document which width "FWHM X" refers to. |
 | R73 | `pyql3/services/cli_install.py:206-210`, `:238-239`, `:256-259` | When a `quicklook3` not written by QuickLook 3 already exists, `plan()` records `existing='foreign'` without raising, despite its docstring. The confirmation then says "Create: <path>" and "To undo it: rm <path>", which would delete someone else's file. Only after the user clicks OK does `install()` refuse ("already exists and was not created by QuickLook 3"). | Raise `CliInstallError` from `plan()` for a foreign file (or fall through to the next candidate directory), so nothing is offered that will be refused. |
@@ -6467,6 +6542,7 @@ event-loop pass later `_drop_retired_rois` deleted it in C++.
 | R84 | `pyql3/gui/viewers/image_viewer.py` (`apply_z_range`, reached from `show_current_plane`) | An unparsable Z Min or Z Max ("abc") present during `set_data` or any redisplay in Z Range mode makes `apply_z_range` stop at "Collapsed: Invalid Range" after `_give_imageview_the_cube()` has already loaded the cube, so channel 0 stays painted with the previous image's levels and `display_data` is left as the full cube copy that `apply_axis_mapping` made, not the plane on screen. Measured: Sum over 4-8 of a cube whose channel k holds k + 100 (530.0, levels 530-531); Z Min set to "abc" and the cube reloaded ×10: the screen shows channel 0 (1000.0) at levels 530-531. No `plane_changed` is emitted, while `display_changed` is. Found in the Phase 2 review (2026-10-21). | Put a `QIntValidator` on Z Min, Z Max and the Boxcar field so an unparsable value cannot be entered, or fall back to the full range with a message in `lbl_slice_info`. |
 | R86 | `pyql3/gui/tools/plot_catalog.py:1030-1033` (`_clear_text_items`), `:1283-1285` (`tear_down`) | ✅ FIXED — `_clear_text_items` takes every label off the scene and then empties `self.text_items`, and `tear_down` does the same to `scatter_item` and `highlight_item` (`setattr(self, attr, None)`), so the last Python reference to each `QGraphicsItem` is dropped rather than retired — `M18`'s pattern. `tear_down` then calls `_release_retired()`, whose `gc.collect()` frees them in whatever order their reference cycles are walked (`M31`). Both run only from `tear_down`; a catalog reload reuses the two scatter items and the label pool. Pre-existing; found in the Phase 3 review (2026-10-21). | Route the labels and both scatter items through `_retire_items` into `_retired`, which `tear_down` already releases with `_release_retired()`; as in `BaseToolDialog._drop_retired_rois`, `shiboken6.delete` each still-valid item before the `gc.collect()`. |
 | R87 | `pyql3/gui/tools/advanced_plots.py:136-164` (Contour `update_plot`), `:120-128` (`clear_contours`) | ✅ FIXED — `update_plot` calls `clear_contours()`, which takes each `IsocurveItem` off the view and then drops them all (`self.iso_items = []`), and goes straight on to build the new ones — `M18`'s drop-then-build pattern, in which the collector can run inside the construction of a replacement item and free the old one. It runs on every `sigTimeChanged` while contours are shown, so stepping through a cube with contours on rebuilds them each frame. Pre-existing; found in the Phase 3 review (2026-10-21). | Retire the old items instead of dropping them: a `_retired` list released from `QTimer.singleShot(0, ...)` and in `tear_down`, with `shiboken6.delete` before the `gc.collect()` as in `BaseToolDialog._drop_retired_rois`. |
+| R88 | `pyql3/gui/viewers/image_viewer.py` (`get_north_angle_base`) | ✅ FIXED — the compass angle is evaluated at a point off the plane centre on non-square planes (axes swapped): the centre was `((shape[-1] - 1) / 2, (shape[-2] - 1) / 2)` of `transposed_data`, which is `(z, x, y)`, so X got the Y length's centre. On `osiris_like_fits` (66 × 51) the point was off by (-7.5, +7.5) px; the angle error is about 1e-5°. Now taken from `orig_spatial_dims()`, covered by `tests/test_position_angle.py::test_the_compass_is_evaluated_at_the_plane_centre`. Found in Task 20 (2026-10-21). | `raw_cx, raw_cy` from `orig_spatial_dims()`. |
 
 ## Working checklist — code review 2026-10-21
 
@@ -6484,8 +6560,8 @@ High
 
 Medium
 - [x] R11 Auto-load retries never cancelled — plan Task 5
-- [ ] R12 A failed load leaves `FitsReader` on a different file — plan Task 17
-- [ ] R13 An unparseable WCS fails the load and leaves the viewer half-updated — plan Task 18
+- [x] R12 A failed load leaves `FitsReader` on a different file — plan Task 17
+- [x] R13 An unparseable WCS fails the load and leaves the viewer half-updated — plan Task 18
 - [x] R14 Statistics, Photometry, Peak Fit, Strehl never refresh; cuts miss Boxcar/Range — plan Task 11
 - [x] R15 Escape hides a tool without its teardown — plan Task 9
 - [x] R16 Tool dialogs fall outside `TOOL_DIALOG_ATTRS` — plan Task 10
@@ -6496,9 +6572,9 @@ Medium
 - [ ] R21 Total is 0.0, not NaN, for a channel with no finite aperture pixel — plan Task 22
 - [ ] R22 A sky annulus inside the aperture is accepted silently — plan Task 22
 - [ ] R23 Arithmetic: 2-decimal Number, integer wrap, inconsistent header — plan Task 25
-- [ ] R24 `AWAV` not recognised; stale WCS readout — plan Task 20
-- [ ] R25 Non-science extension set up from its own header only — plan Task 21
-- [ ] R26 Duplicate axis choice leaves `current_y_axis` wrong — plan Task 20
+- [x] R24 `AWAV` not recognised; stale WCS readout — plan Task 20
+- [x] R25 Non-science extension set up from its own header only — plan Task 21
+- [x] R26 Duplicate axis choice leaves `current_y_axis` wrong — plan Task 20
 - [x] R27 Arrow keys / Home / End show a raw channel in collapse mode — plan Task 6
 - [x] R28 Depth Plot Y label not updated for Total DN — plan Task 12
 - [x] R29 Catalog recentre wrong under view rotation — plan Task 14
@@ -6515,7 +6591,7 @@ Medium
 - [ ] R40 Per-region `frame: image` ignored on load, overwritten on save — plan Task 37
 - [ ] R41 A stale sky anchor is kept and undoes later moves — plan Task 37
 - [ ] R42 Header Editor writes rows back by keyword name — plan Task 26
-- [ ] R43 Restarting a watch loses seen-but-unannounced files — plan Task 19
+- [x] R43 Restarting a watch loses seen-but-unannounced files — plan Task 19
 - [ ] R44 A shape's caption stays behind when the shape is dragged — plan Task 33
 - [x] R45 View rotation ignored by Zoom To and label culling — plan Task 15
 - [ ] R46 Region drawing mode cannot be cancelled — plan Task 34
@@ -6526,11 +6602,11 @@ Low
 - [ ] R49 File → Exit closes only the current window — plan Task 40
 - [x] R50 Catalog labels return with Show All off — plan Task 13
 - [ ] R51 Show Region Labels off: new labels shown, text regions vanish — plan Task 33
-- [ ] R52 2-D image with a 3-axis WCS: readout and compass wrong — plan Task 20
+- [x] R52 2-D image with a 3-axis WCS: readout and compass wrong — plan Task 20
 - [ ] R53 Depth Plot Log X removes the line list and breaks the readout — plan Task 23
 - [ ] R54 Line lists keyed by file name; empty parse leaves old status — plan Task 23
 - [ ] R55 Depth Plot hidden rectangle spins go stale — plan Task 23
-- [ ] R56 ROTPOSN fallback compass uses 90 + PA — plan Task 20
+- [x] R56 ROTPOSN fallback compass uses 90 + PA — plan Task 20
 - [x] R57 Display → Scaling menu drops timeline and manual levels — plan Task 6
 - [ ] R58 Recent Files stale across windows and processes — plan Task 40
 - [ ] R59 Finder multi-select into one window; `--poll-dir` misses `.fits.gz` — plan Task 41
@@ -6540,14 +6616,16 @@ Low
 - [x] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
 - [ ] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
 
-Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review, R85 from Task 9, R86–R87 from the Phase 3 review)
-- [ ] R81 Non-OSIRIS cube without celestial axis types opens with wavelength on X — plan Task 20
-- [ ] R82 IRAF-style spectral axis (`LINEAR` + `WAT axtype=wave` / `DISPAXIS`) not recognised — plan Task 20
-- [ ] R83 Total DN offered whatever the data's unit; `EXPTIME` ignored — plan Task 44
+Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review, R85 from Task 9, R86–R87 from the Phase 3 review, R88 from Task 20, R89 from Task 21)
+- [x] R81 Non-OSIRIS cube without celestial axis types opens with wavelength on X — plan Task 20
+- [x] R82 IRAF-style spectral axis (`LINEAR` + `WAT axtype=wave` / `DISPAXIS`) not recognised — plan Task 20
+- [x] R83 Total DN offered whatever the data's unit; `EXPTIME` ignored — plan Task 44
 - [ ] R84 Unparsable Z field in range mode leaves channel 0 with old levels — plan Task 43
 - [x] R85 Photometry and Strehl delete their own ROI one event-loop pass after opening — plan Task 9
 - [x] R86 Catalog markers and labels dropped without retiring — plan Task 13
 - [x] R87 Contour items dropped then rebuilt each update — plan Task 11
+- [x] R88 Compass evaluated off-centre on non-square planes — plan Task 20
+- [x] R89 Releasing retired region items segfaults in `gc.collect()` — found in Task 21
 
 Minor items (table)
 - [ ] R65 Colorbar shows transformed values — plan Task 43
@@ -6555,7 +6633,7 @@ Minor items (table)
 - [x] R67 View-rotation pivot off-centre — plan Task 7
 - [x] R68 Rotate dialog stale after a reload; North Up dropped per frame — plan Task 16
 - [ ] R69 Arithmetic result window title — plan Task 25
-- [ ] R70 In-place header save in a watched directory re-announces the file — plan Task 19
+- [x] R70 In-place header save in a watched directory re-announces the file — plan Task 19
 - [ ] R71 Header-only save re-encodes scaled integer data — plan Task 26
 - [ ] R72 Gaussian fit angle sign differs from Lorentzian/Moffat — plan Task 27
 - [ ] R73 `cli_install` confirms a path it then refuses — plan Task 42

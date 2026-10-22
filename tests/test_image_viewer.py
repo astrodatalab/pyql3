@@ -399,8 +399,8 @@ def test_dead_channel_is_flagged_only_while_displayed(qapp):
     """The marker has to track slice changes: paging onto a dead channel does not
     redisplay the image, it only moves the ImageView index."""
     np.random.seed(0)
-    cube = np.random.rand(10, 12, 14).astype(np.float32)
-    cube[:, :, 5] = np.nan          # wavelength channel 5 is dead
+    cube = np.random.rand(14, 12, 10).astype(np.float32)   # numpy (z, y, x), no header
+    cube[5] = np.nan                # wavelength channel 5 is dead
 
     viewer = ImageViewer()
     viewer.set_data(cube)
@@ -834,12 +834,13 @@ def test_a_collapse_keeps_the_timeline_of_the_new_cube(channel_cube, qapp, mode)
         v.txt_boxcar.setText("5")
         v.slider_slice.setValue(10)
     nra, ndec, _ = v.raw_data.shape
+    header = v.header       # the 2-D load below replaces v.header
     cube = np.zeros((nra, ndec, 30), dtype=np.float32)
     for k in range(30):
         cube[:, :, k] = (5 * k) % 13      # non-monotonic, so no single channel equals a collapse
 
     v.set_data(np.ones((nra, ndec), dtype=np.float32))
-    v.set_data(cube, v.header)
+    v.set_data(cube, header)
     qapp.processEvents()
 
     assert v.imv.ui.roiPlot.isVisible(), "no timeline after the 2-D image"
@@ -851,10 +852,10 @@ def test_a_collapse_keeps_the_timeline_of_the_new_cube(channel_cube, qapp, mode)
 def test_osiris_default_axis_selection_on_real_data(qapp, real_osiris_fits):
     """ImageViewer must default an OSIRIS cube to RA/Dec on screen, wavelength on Z.
 
-    set_data() sniffs CTYPE1 to choose the default X axis: instruments that put RA
-    first get AXIS 1, OSIRIS (wavelength first) must fall through to AXIS 3. The
-    synthetic fixtures encode that same assumption, so this real-data check is the
-    only guard against the sniffing regressing for actual instrument headers.
+    set_data() takes the default axes from `header_info.default_axes`: the celestial
+    axes go on screen, longitude as X, so OSIRIS (wavelength, Dec, RA) gets X = AXIS 3.
+    The synthetic fixtures encode the same layout, so this real-data check is the only
+    guard against that choice regressing for actual instrument headers.
 
     Shapes are derived from the file's NAXIS cards; no cube-specific constants.
     """
@@ -914,18 +915,25 @@ def test_a_wcs_that_returns_nan_reads_out_as_not_available(loaded_viewer):
     assert _hover_centre(loaded_viewer) == "WCS: N/A"
 
 
-def test_a_two_axis_wcs_that_returns_nan_reads_out_as_not_available(loaded_viewer):
-    """The 2D branch of the readout formats a SkyCoord directly, and needs the same guard."""
+def test_a_two_axis_wcs_that_returns_nan_reads_out_as_not_available(qapp):
+    """The 2D branch of the readout formats a SkyCoord directly, and needs the same guard.
+
+    On a 2-D image: a cube shows FITS axis 3, which a two-axis WCS does not have, so the
+    readout there says N/A before it reaches the SkyCoord (R52).
+    """
     from astropy.coordinates import SkyCoord
     import astropy.units as u
 
-    loaded_viewer.wcs = SimpleNamespace(
+    viewer = _encoded_viewer()
+    viewer.wcs = SimpleNamespace(
         naxis=2,
         pixel_to_world=lambda *a, **k: SkyCoord(ra=np.nan * u.deg, dec=np.nan * u.deg),
     )
-    loaded_viewer.wcs_z_idx = None
+    viewer.lbl_wcs.setText("WCS: stale")
 
-    assert _hover_centre(loaded_viewer) == "WCS: N/A"
+    _hover_item(viewer, 5.5, 5.5)
+
+    assert viewer.lbl_wcs.text() == "WCS: N/A"
 
 
 def test_a_finite_wcs_still_reads_out(loaded_viewer):
@@ -1109,7 +1117,6 @@ def test_new_data_is_unrotated_before_anyone_is_told(loaded_viewer):
 
 @pytest.mark.parametrize("data", [
     pytest.param(None, id="no-data"),
-    pytest.param(np.zeros(5, dtype=np.float32), id="1-d"),
 ])
 def test_a_load_with_nothing_to_show_drops_the_old_rotation(loaded_viewer, data):
     """With nothing displayable there is no plane to pivot on, but the rotation of the
@@ -1237,3 +1244,317 @@ def test_readout_left_of_the_image_is_out_of_bounds(qapp):
     _, _, value = _hover_item(viewer, -0.6, 5.5)
 
     assert value == "Value: Out of Bounds"
+
+
+# --- R13: set_data validates before it changes anything ------------------------------
+
+def _unit_header(unit):
+    from astropy.io import fits
+    h = fits.Header()
+    h['NAXIS'] = 3
+    h['CTYPE1'], h['CUNIT1'], h['CRVAL1'], h['CDELT1'], h['CRPIX1'] = 'WAVE', unit, 2.0, 0.001, 1
+    h['CTYPE2'], h['CUNIT2'], h['CRVAL2'], h['CDELT2'], h['CRPIX2'] = 'DEC--TAN', 'deg', -29.0, 1e-5, 5
+    h['CTYPE3'], h['CUNIT3'], h['CRVAL3'], h['CDELT3'], h['CRPIX3'] = 'RA---TAN', 'deg', 266.4, -1e-5, 5
+    return h
+
+
+def test_micron_cunit_loads_with_a_wavelength_axis(qapp):
+    viewer = ImageViewer()
+    cube = np.full((10, 10, 20), 7.0)
+
+    viewer.set_data(cube, _unit_header('micron'))
+
+    assert viewer.raw_data is cube
+    assert viewer.wcs is not None
+    assert viewer.wcs_z_idx is not None
+    assert viewer.wcs.wcs.ctype[viewer.wcs_z_idx] == 'WAVE'
+
+
+def test_unparseable_wcs_leaves_data_displayed_without_wcs(qapp):
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((10, 10, 20)), _unit_header('um'))
+    cube = np.full((10, 10, 20), 7.0)
+    header = _unit_header('parsec')
+
+    viewer.set_data(cube, header)
+
+    assert viewer.wcs is None
+    assert viewer.raw_data is cube
+    assert viewer.header is header
+    assert viewer.display_data.max() == 7.0
+    assert viewer.lbl_wcs.text().startswith("WCS: unreadable (")
+
+
+def test_the_unreadable_wcs_note_survives_a_hover_off_the_image(qapp):
+    """Hovering a pixel, or a point beside the image, writes the readout again; for a file
+    whose WCS could not be read it must still say why, not "WCS: N/A"."""
+    viewer = ImageViewer()
+    viewer.resize(800, 800)
+    viewer.set_data(np.ones((10, 10, 20)), _unit_header('parsec'))
+    note = viewer.lbl_wcs.text()
+    assert note.startswith("WCS: unreadable (")
+
+    _, _, value = _hover_item(viewer, 5.5, 5.5)            # on the image
+    assert value.startswith("Value: 1 ")
+    assert viewer.lbl_wcs.text() == note
+    _, _, value = _hover_item(viewer, -0.5, 5.5)           # beside it
+    assert value == "Value: Out of Bounds"
+    assert viewer.lbl_wcs.text() == note
+
+    viewer.set_data(np.ones((10, 10, 20)), None)
+    _hover_item(viewer, 5.5, 5.5)
+    assert viewer.lbl_wcs.text() == "WCS: N/A"
+
+
+def test_an_unreadable_wcs_note_is_one_line(qapp):
+    """wcslib's message has a first line naming its own source file
+    (`ERROR 6 in wcs_units() at line 3322 of file cextern/wcslib/C/wcs.c:`), which made
+    `lbl_wcs` three times its height. The label shows the last line, which says what is
+    wrong; the tooltip holds the whole message."""
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((10, 10, 20)), _unit_header('parsec'))
+
+    assert viewer.lbl_wcs.text() == \
+        "WCS: unreadable (In CUNIT1 : Invalid symbol in INITIAL context in 'parsec'.)"
+    assert "ERROR 6 in wcs_units()" in viewer.lbl_wcs.toolTip()
+    assert "'parsec'" in viewer.lbl_wcs.toolTip()
+
+    viewer.set_data(np.ones((10, 10, 20)), _unit_header('um'))
+    assert viewer.lbl_wcs.toolTip() == ""
+
+
+@pytest.mark.parametrize("shape", [(1, 6, 5, 5), (6,)], ids=["4-D", "1-D"])
+def test_a_refused_array_leaves_the_viewer_unchanged(loaded_viewer, shape):
+    viewer = loaded_viewer
+    before = (viewer.raw_data, viewer.header, viewer.wcs, viewer.display_data,
+              viewer._itime_coadds)
+    viewer.apply_view_rotation(90.0)
+
+    with pytest.raises(ValueError):
+        viewer.set_data(np.zeros(shape, dtype=np.float32), _unit_header('um'))
+
+    after = (viewer.raw_data, viewer.header, viewer.wcs, viewer.display_data,
+             viewer._itime_coadds)
+    assert all(a is b for a, b in zip(before, after))
+    assert viewer.view_rotation == 90.0
+    assert not viewer.imv.getImageItem().transform().isIdentity()
+
+
+# --- R24, R26, R52, R81, R82: axes found through the WCS ------------------------------
+
+def _hover_wcs(viewer, x, y):
+    """Hover ImageItem pixel (x, y) and return the WCS readout."""
+    _hover_item(viewer, x + 0.5, y + 0.5)
+    return viewer.lbl_wcs.text()
+
+
+def _sky_text(world):
+    """The RA and Dec of `world` as the 3-axis readout writes them."""
+    return (f"RA: {world.ra.to_string(unit='hour', sep='hms', precision=3)}",
+            f"DEC: {world.dec.to_string(unit='deg', sep='dms', precision=2)}")
+
+
+def _sky_text_dec(dec_deg):
+    from astropy.coordinates import Angle
+    return f"DEC: {Angle(dec_deg, unit='deg').to_string(unit='deg', sep='dms', precision=2)}"
+
+
+def _spectral_cube_viewer(spectral_ctype):
+    """R24's cube: the spectral axis on FITS axis 1, Dec on 2, RA on 3 (OSIRIS order)."""
+    from astropy.wcs import WCS
+    w = WCS(naxis=3)
+    w.wcs.ctype = [spectral_ctype, 'DEC--TAN', 'RA---TAN']
+    w.wcs.crval = [2.2, 34.0, 242.0]
+    w.wcs.cdelt = [0.0005, 1e-4, 1e-4]
+    w.wcs.cunit = ['um', 'deg', 'deg']
+    viewer = ImageViewer()
+    viewer.resize(800, 800)
+    viewer.set_data(np.random.default_rng(0).normal(size=(16, 12, 20)).astype(np.float32),
+                    w.to_header())
+    return viewer
+
+
+def test_awav_is_a_spectral_axis(qapp):
+    """R24: an air-wavelength axis is a wavelength axis, and the sky readout works on it."""
+    viewer = _spectral_cube_viewer('AWAV')
+
+    assert viewer.wcs_z_idx == 0
+    assert viewer.lbl_slice_info.text() == "Slice: 0, Wavelength: 2.2005 µm"
+    assert viewer.top_axis.isVisible(), "the timeline's wavelength axis"
+    ox, oy = viewer.display_to_orig(3, 3)
+    world = viewer.wcs.celestial.pixel_to_world(oy, ox)     # celestial order: Dec, RA axes
+    ra, dec = _sky_text(world)
+    assert _hover_wcs(viewer, 3, 3) == f"WCS: {ra}  |  {dec}"
+
+
+def test_wcs_readout_never_shows_a_previous_position(qapp):
+    """R24: with RA on Z, the readout kept the coordinates of the last pixel hovered before
+    the axis change while X and Y moved on."""
+    viewer = _spectral_cube_viewer('WAVE')
+    before = _hover_wcs(viewer, 3, 3)
+    assert "RA:" in before
+
+    viewer.combo_x.setCurrentText("AXIS 1")      # wavelength on X, Dec on Y, RA on Z
+    after = _hover_wcs(viewer, 15, 9)
+
+    assert after != before
+    world = viewer.wcs.pixel_to_world_values(15, 9, viewer.current_z())
+    assert after == f"WCS: em.wl: {world[0]:.5g} m  |  {_sky_text_dec(world[1])}"
+
+
+def test_duplicate_axis_choice_swaps_the_axes(qapp):
+    """R26: picking for Y the axis X shows used to put the combo back but keep the stale
+    choice in `current_y_axis`, so the display claimed FITS axes 1 and 1. The two now swap."""
+    from astropy.wcs import WCS
+    w = WCS(naxis=3)
+    w.wcs.ctype = ['RA---TAN', 'DEC--TAN', 'WAVE']     # JWST NIRSpec order
+    w.wcs.crval = [266.4, -29.0, 2.0e-6]
+    w.wcs.cdelt = [-1e-5, 1e-5, 1e-9]
+    w.wcs.crpix = [20, 15, 1]
+    w.wcs.cunit = ['deg', 'deg', 'm']
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((25, 30, 40), np.float32), w.to_header())
+    assert (viewer.combo_x.currentText(), viewer.combo_y.currentText()) == ("AXIS 1", "AXIS 2")
+    planes = []
+    viewer.plane_changed.connect(lambda: planes.append(1))
+
+    viewer.combo_y.setCurrentText("AXIS 1")
+
+    assert (viewer.combo_x.currentText(), viewer.combo_y.currentText()) == ("AXIS 2", "AXIS 1")
+    assert (viewer.current_x_axis, viewer.current_y_axis) == ("AXIS 2", "AXIS 1")
+    assert viewer.current_z_axis == "AXIS 3"
+    assert viewer.display_axis_indices() == (1, 0)
+    assert len(planes) == 1, "the swap must redraw the plane once"
+
+    viewer.combo_x.setCurrentText("AXIS 1")       # and the other way round
+
+    assert (viewer.combo_x.currentText(), viewer.combo_y.currentText()) == ("AXIS 1", "AXIS 2")
+    assert viewer.display_axis_indices() == (0, 1)
+    assert viewer.current_z_axis == "AXIS 3"
+    assert len(planes) == 2
+
+
+def _collapsed_cube_image_and_header():
+    """R52: a collapsed cube saved with the cube's header, so its WCS has a third axis."""
+    import warnings
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    w = WCS(naxis=3)
+    w.wcs.ctype = ['RA---TAN', 'DEC--TAN', 'WAVE']
+    w.wcs.crval = [266.4, -29.0, 2.0e-6]
+    w.wcs.cdelt = [-1e-5, 1e-5, 1e-9]
+    w.wcs.crpix = [20, 15, 1]
+    w.wcs.cunit = ['deg', 'deg', 'm']
+    img = np.zeros((30, 40), np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        header = fits.PrimaryHDU(img, header=w.to_header()).header
+    assert header['NAXIS'] == 2 and header['CTYPE3'] == 'WAVE'
+    return img, header, w
+
+
+@pytest.mark.parametrize("cube_first", [False, True], ids=["fresh", "after a cube"])
+def test_2d_image_with_a_third_wcs_axis_reads_sky(qapp, sample_3d_fits, cube_first):
+    """R52: the readout chose its branch by `wcs.naxis`, so a 2-D image with a 3-axis WCS read
+    "WCS: N/A", or after a cube a wavelength and a Dec from the wrong pixel axes."""
+    img, header, w = _collapsed_cube_image_and_header()
+    viewer = ImageViewer()
+    viewer.resize(800, 800)
+    if cube_first:
+        reader = FitsReader(sample_3d_fits)
+        viewer.set_data(reader.data, reader.header)
+        reader.close()
+        assert viewer.wcs_z_idx is not None
+
+    viewer.set_data(img, header)
+
+    assert viewer.wcs.naxis == 3
+    assert viewer.wcs_z_idx is None
+    ra, dec = _sky_text(w.celestial.pixel_to_world(10, 5))
+    assert _hover_wcs(viewer, 10, 5) == f"WCS: {ra}  |  {dec}"
+
+
+def test_a_nifs_cube_opens_with_wavelength_on_z(qapp, nifs_like_header):
+    """R81: with no celestial axis types the cube used to get OSIRIS's layout, so the image
+    was wavelength against y and the slider paged through x."""
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 12, 10), dtype=np.float32), nifs_like_header)
+
+    assert (viewer.current_x_axis, viewer.current_y_axis, viewer.current_z_axis) == \
+        ("AXIS 1", "AXIS 2", "AXIS 3")
+    assert viewer.current_plane().shape == (10, 12)
+
+
+def test_an_iraf_spectral_axis_has_wavelengths(qapp, nifs_like_header):
+    """R82: `WAT3_001 = '... axtype=wave'` names the spectral axis. With no unit stated the
+    header's numbers are shown as they are and labelled Unknown; with one, they are µm."""
+    viewer = ImageViewer()
+    cube = np.zeros((40, 12, 10), dtype=np.float32)
+    viewer.set_data(cube, nifs_like_header)
+
+    assert viewer.wcs_z_idx == 2
+    assert viewer.wavelength_unit() is None
+    assert viewer.get_wavelength_for_slice(0) == pytest.approx(19968.66)
+    assert "Wavelength (Unknown)" in viewer.lbl_slice_info.text()
+
+    nifs_like_header['WAT3_001'] = 'wtype=linear axtype=wave units=angstroms'
+    viewer.set_data(cube, nifs_like_header)
+
+    assert viewer.get_wavelength_for_slice(0) == pytest.approx(1.99687, abs=1e-5)
+    assert viewer.lbl_slice_info.text() == "Slice: 0, Wavelength: 1.9969 µm"
+
+
+def test_an_iraf_axis_is_read_out_by_its_iraf_name(qapp, nifs_like_header):
+    """NIFS's `LINEAR` axes have no physical type, so the readout said
+    `WCS: None: 1.687   |  None: 1.55 `. The name comes from the IRAF `axtype` (xi, eta), and
+    a unit the file does not state is left out rather than shown empty."""
+    viewer = ImageViewer()
+    viewer.resize(800, 800)
+    viewer.set_data(np.zeros((40, 12, 10), dtype=np.float32), nifs_like_header)
+
+    text = _hover_centre(viewer)
+
+    assert "None" not in text
+    assert text == text.strip()
+    xi, eta = text.removeprefix("WCS: ").split("  |  ")
+    assert xi == f"xi: {(5 + 1) * 0.05:.5g}"       # pixel 5, CRPIX 0, CD 0.05
+    assert eta == f"eta: {(6 + 1) * 0.05:.5g}"
+
+    # Without the WAT cards the name is the CTYPE
+    for key in ('WAT1_001', 'WAT2_001'):
+        del nifs_like_header[key]
+    viewer.set_data(np.zeros((40, 12, 10), dtype=np.float32), nifs_like_header)
+    assert _hover_centre(viewer) == f"WCS: LINEAR: {0.3:.5g}  |  LINEAR: {0.35:.5g}"
+
+
+# --- R83: every unit label names the file's own unit ----------------------------------
+
+@pytest.mark.parametrize("bunit,label", [("MJy/sr", "MJy/sr"), (None, "Unknown")])
+def test_labels_use_the_declared_unit(qapp, bunit, label):
+    """The colorbar, the hover readout and the cut plots said "DN/s" whatever the file declared
+    (R83). They name the declared unit, and "Unknown" when there is none. Values in the
+    thousands must not put an SI prefix on the unit name ("kUnknown")."""
+    from astropy.io import fits
+    from pyql3.gui.tools.cuts import CutPlotDialog
+    header = fits.Header({'EXPTIME': 600.0})
+    if bunit is not None:
+        header['BUNIT'] = bunit
+    viewer = ImageViewer()
+    viewer.set_data(np.full((10, 12, 14), 5000.0, dtype=np.float32), header)
+    viewer.show()
+    viewer.toggle_colorbar(True)
+    cut = CutPlotDialog('horizontal', None, viewer)
+    try:
+        assert viewer.value_unit_label() == label
+        axis = viewer.imv.ui.histogram.axis
+        assert axis.labelString().count(label) == 1
+        assert f"k{label}" not in axis.labelString()
+        assert cut.plot_widget.getAxis('left').labelText == f"Intensity ({label})"
+
+        _hover_centre(viewer)
+        # A bare "Unknown" after the number would read as part of it
+        expected = "Value: 5000 (Unknown)" if bunit is None else f"Value: 5000 {label}"
+        assert viewer.lbl_val.text() == expected
+    finally:
+        cut.close()
+        viewer.close()

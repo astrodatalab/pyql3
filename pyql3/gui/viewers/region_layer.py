@@ -34,6 +34,7 @@ from pyql3.gui.label_policy import (
     LabelDensityGuard,
     labels_in_view,
 )
+from pyql3.gui.scene_items import delete_items, release_scene_references
 
 #: Shapes `begin_draw` understands, by the name used in the file format.
 DRAWABLE = ("circle", "box", "arrow", "text")
@@ -897,7 +898,14 @@ class RegionLayer(QObject):
             self.viewer.imv.getView().addItem(item)
 
     def _remove_from_scene(self, item):
-        """`ViewBox.removeItem` is removal; `setParentItem(None)` only re-parents (B7)."""
+        """`ViewBox.removeItem` is removal; `setParentItem(None)` only re-parents (B7).
+
+        The scene first forgets the item, since `_drop_retired` deletes it (R89).
+        """
+        try:
+            release_scene_references(self.viewer.imv.getView().scene(), item)
+        except (AttributeError, RuntimeError):
+            pass    # no viewer, or Qt has already deleted it: no scene to hold the item
         try:
             self.viewer.imv.getView().removeItem(item)
             return
@@ -1007,9 +1015,14 @@ class RegionLayer(QObject):
         threshold: a QGraphicsItem sits in a reference cycle with its children and its scene, so
         dropping the list frees nothing by refcount alone. Running it at this known-quiet point is
         the whole purpose of the deferral.
+
+        Each item is deleted outright before the collection, as the tool dialogs'
+        `_drop_retired_rois` does: left to the collector, retired ROIs and their handles crashed
+        the collection in `callCppDestructor`, for a reason not established (`BUGS.md` R89).
         """
         if not self._retired:
             return
+        delete_items(self._retired)
         self._retired = []
         gc.collect()
 

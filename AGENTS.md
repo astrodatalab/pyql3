@@ -100,8 +100,16 @@ nothing once that has moved on: a new detection, and every `load_fits` call made
 default `cancel_auto_load=True`, advance it, so a late retry cannot replace a newer frame or a
 file the user opened. **Only the auto-load passes `cancel_auto_load=False`.** The end of a watch
 advances it too (`DirectoryPoller.polling_stopped`, emitted by `stop_polling()` and so also when
-`start_polling()` replaces a watch), so a retry from the old directory cannot land after a
-restart. A modal dialog that edits or saves the loaded file runs inside
+`start_polling()` moves to another directory or another poller takes this one over), so a retry
+from the old directory cannot land after a restart. **Restarting the directory already watched is
+not the end of a watch**: an `interval` change restarts the `PollingObserver` without emitting
+`polling_stopped`, and keeps the files seen but not yet announced (`_pending` and the held file),
+because the new observer's first scan counts them as pre-existing and would never offer them again
+(`BUGS.md` R43). A takeover moves them to the new owner. An auto-load of the file the window
+already holds, unchanged since it was read (`FitsReader.holds_current_copy()`, which compares
+canonical paths), does nothing, and `on_file_detected()` returns before advancing the generation:
+that is the window's own Save Header coming back from the poller, reloading it reset the view
+(`BUGS.md` R70), and it must not cancel a retry queued for a real frame. A modal dialog that edits or saves the loaded file runs inside
 `MainWindow.auto_load_held()`, as `edit_header()` and `save_file_as()` do — its `exec()` (or
 `QFileDialog.getSaveFileName`) runs a nested event loop in which the poller keeps announcing
 frames and queued retries keep firing. The hold covers both: an attempt that comes due stores
@@ -193,7 +201,18 @@ under it once more than one is open.
 The DN/s → Total DN conversion is exposed as the `data_multiplier` property, whose value is
 `header_info.total_dn_multiplier()`: `TRUITIME` (seconds) times `COADDS`. `ITIME` is used only when
 there is no usable `TRUITIME`, because it is in milliseconds in OSIRIS cubes written since the
-detector upgrade. Tools should multiply plotted values by `data_multiplier` rather than recomputing.
+detector upgrade, and `EXPTIME` (not multiplied by `COADDS`) only when there is neither. Tools should
+multiply plotted values by `data_multiplier` rather than recomputing. It is 1.0 whenever Total DN is
+not shown, and Total DN is offered only when `ImageViewer.total_dn_available`: the file's `BUNIT`
+(`header_info.data_unit()`) is a count per second — per second exactly, since the multiplier is in
+seconds — and the header states an integration time. `set_data` switches Total DN off, before it
+announces the new plane, for data that do not support it. **Every unit label goes through
+`ImageViewer.value_unit_label()`** — "Total DN", else the file's own unit (in the file's own words
+when astropy cannot read it, which is then never a rate), "Unknown" only when neither the
+extension's header nor the primary header it may borrow from states a `BUNIT`; never write
+"DN/s" into a label. The keywords these
+read come from `ImageViewer.data_keywords`, which may have been taken from the primary header (see
+"An extension borrows what its header lacks" below).
 
 ### FITS axis / WCS conventions (CRITICAL)
 
@@ -205,8 +224,46 @@ OSIRIS cubes put wavelength on FITS axis 1, Dec on axis 2, RA on axis 3:
 
 `astropy.io.fits.getdata()` reverses these into C-contiguous order, so `data.shape` is
 `(RA, DEC, WAVE)`. Other instruments put wavelength on axis 3 instead. **Never hardcode an
-axis index** — parse `wcs.wcs.ctype[idx]` dynamically to identify WAVE/RA/DEC. `set_data()`
-picks the default X-axis by sniffing whether `CTYPE1` contains `RA`.
+axis index, and never find an axis by a `CTYPE` substring** — `'WAVE' in ctype` missed `AWAV`
+(`BUGS.md` R24) and every IRAF-style `LINEAR` axis (R82). The axes are found through the WCS, in
+`pyql3/core/header_info.py`: the celestial axes are `wcs.wcs.lng` / `wcs.wcs.lat`;
+`spectral_axis()` is astropy's `wcs.wcs.spec`, else the axis whose `WAT<n>_001` says
+`axtype=wave`, else `DISPAXIS` (Gemini NIFS writes `CTYPEn = 'LINEAR'` and names the axis only
+there). `set_data()` takes the default axes from `default_axes()`: with celestial axes, X is
+longitude and Y latitude; else a spectral axis is Z and the other two are X and Y in FITS order;
+else an OSIRIS file (`INSTRUME` or `CURRINST`) gets OSIRIS's layout; else FITS axes 1, 2, 3 are
+taken to be x, y and wavelength, as most IFUs write them — so a cube with no header opens as
+numpy `(z, y, x)`.
+
+**An extension borrows what its header lacks** (`BUGS.md` R25). A JWST ERR or DQ extension has no
+WCS cards, an OSIRIS noise or quality extension has an empty header, and NIFS keeps `EXPTIME` and
+`COADDS` in the primary header only. `FitsReader.reference_header()` names the header to borrow
+from — for a missing WCS, the first other image extension of the same shape with a celestial or
+spectral axis, else the primary; for a missing integration time, the primary — and
+`MainWindow.load_fits()` passes it to `set_data(reference_header=...)`. The viewer uses its WCS only
+when the extension's own WCS has neither kind of axis **and** the reference WCS has as many axes as
+the data: a NIFS primary header carries the 2-axis RA/Dec WCS of the raw detector frame, which is
+not the cube's. `ImageViewer.wcs_header` is the header the WCS came from, and is what
+`spectral_axis()` / `spectral_unit()` read; `ImageViewer.header` stays the extension's own.
+`header_info.data_keywords()` takes the integration time with its `COADDS`, and `BUNIT`, from the
+extension's header where it states them, else from the reference, into `ImageViewer.data_keywords`
+— **but only when the reference is the primary header and the data are not integers**. OSIRIS
+writes the unit and time of its float noise extension in the primary; a sibling extension describes
+only its own values (JWST's SCI is MJy/sr, its DQ, WMAP and VAR_* are not), and integer data are
+flags (the OSIRIS quality extension, JWST DQ), which have no unit. Otherwise nothing is borrowed and
+an extension that states no `BUNIT` reads "Unknown". The WCS is borrowed either way.
+
+**A wavelength unit the file does not state is Unknown, never inferred.** `spectral_unit()`
+returns a unit only when the header states one: in its own `CUNIT<n>` card, else in `units=` in
+`WAT<n>_001`. The FITS default wcslib fills in for a standard spectral axis with no `CUNIT<n>`
+(`m` for `WAVE`, `Hz` for `FREQ`) does not count. When `CUNIT<n>` is stated, the unit returned is
+the one the WCS holds, because wcslib rescales a spectral axis to SI (`CUNIT1 = 'nm'` reads back as
+`m`, in which the WCS's values are). With no stated unit, `ImageViewer.wavelength_unit()` is None:
+the axis reads "Wavelength (Unknown)" in the header's own numbers and the Depth Plot's line list,
+which is in µm, is not matched against it. A known unit is shown in µm
+(`header_info.in_microns`); a spectral unit that is not a wavelength, such as the m/s of a `VELO`
+axis, gets no wavelength axis and the line list says "Z-axis is not a wavelength". `wavelength_unit()`
+is the one place the viewer and the tools ask for the unit.
 
 The view supports rotation and flips (N up, E left); when mapping a screen coordinate back to
 a numpy index or WCS position, apply the inverse transforms.
@@ -315,23 +372,23 @@ Four Qt traps here each cost real time. They are not hypothetical:
    M18). The release forces a `gc.collect()`, because these items are in reference cycles and
    dropping the list frees nothing on its own. The tool dialogs' counterpart,
    `BaseToolDialog._drop_retired_rois`, goes one step further and `shiboken6.delete`s each
-   still-valid retired ROI *before* the `gc.collect()`: left to the collector, a ROI, its handles
-   and its context menu are freed in whatever order the cycle is walked, and in one order
-   `callCppDestructor` ran on an object already deleted — a segfault inside `gc.collect()` that
-   came and went with unrelated allocations (one extra `QLabel` in a dialog was enough;
-   `BUGS.md` M31). `region_layer._drop_retired` still releases by collection alone. That is a
-   difference of history, not a decision: the region layer has not shown the crash, and the scene
-   references noted in M31 make an explicit delete there riskier, so it is left until it does.
+   still-valid retired ROI *before* the `gc.collect()`. Left to the collector, freeing retired ROIs
+   segfaulted inside `gc.collect()`, and whether it did depended on unrelated allocations (one extra
+   `QLabel` in a dialog was enough; `BUGS.md` M31). lldb showed `callCppDestructor<QGraphicsObject>`
+   called on a bad pointer; in the region layer's crashing collection the only `QGraphicsItem`s
+   were the retired ROIs and their handles (`BUGS.md` R89). Whose pointer was bad, and why, is not
+   established; deleting first means the collector never destroys a C++ object.
+   `region_layer._drop_retired` does the same since the region layer showed the crash too; both use
+   `pyql3/gui/scene_items.py` (`delete_items`).
    **Tool dialogs release `_retired_rois` synchronously, at the end of
    `BaseToolDialog.tear_down()`**, not from the timer. That is required: `MainWindow._open_tool()`
    deletes a hidden dialog it replaces, and a timer that fires after the dialog is gone never runs,
    which would leave the ROIs to the collector. It is not the pattern forbidden above, because
    nothing is built during the release — `_open_tool()` builds the replacement after `tear_down()`
    has returned. The region layer's rule is unchanged: `_retired` is released only from the timer.
-   `retire_roi()` also clears `GraphicsScene.dragItem` and `lastHoverEvent` when they name the ROI
-   or one of its handles, so a deleted tool ROI is not reachable from the scene. The region layer
-   does not clear them, so a retired region item may still be held there (`BUGS.md` M31); do not
-   assume such an item is safe to touch.
+   `retire_roi()` and the region layer's `_remove_from_scene()` also clear
+   `GraphicsScene.dragItem` and `lastHoverEvent` when they name the item or one of its handles
+   (`scene_items.release_scene_references`), so a deleted item is not reachable from the scene.
 4. **`GraphicsScene.addParentContextMenus` walks up to the ImageItem**, whose `getContextMenus()`
    returns `[None]`, and a right-click then raises. `RegionItemInteraction.raiseContextMenu`
    overrides that walk (`BUGS.md` M12). The same mixin must check for an inherited

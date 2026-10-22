@@ -151,6 +151,52 @@ def test_adding_a_region_does_not_touch_the_others(layer, monkeypatch):
     assert len(touched) == 1, f"adding one region touched {len(touched)} of them"
 
 
+def test_retired_items_are_deleted_before_they_are_collected(layer, qapp):
+    """R89, the region layer's M31: left to `gc.collect()`, retired ROIs and their handles
+    crashed the collection in `callCppDestructor`, for a reason not established. Each retired
+    item is now deleted outright first, so when the collector runs no item or child still has a
+    C++ object for it to destroy."""
+    import shiboken6
+
+    regions = [layer.add(Circle(x=3.0, y=3.0, radius=1.0)),
+               layer.add(Box(x=8.0, y=5.0, width=2.0, height=3.0, angle=30.0)),
+               layer.add(Arrow(x=4.0, y=9.0, length=4.0, angle=45.0)),
+               layer.add(Text(x=6.0, y=2.0, text="S0-2"))]
+    items = [item for entry in layer._entries for item in entry.items]
+    items += [child for item in items for child in item.childItems()]
+    assert len(items) > len(regions), "the premise: the ROIs have handles"
+
+    for region in regions:
+        layer.remove(region)
+    qapp.processEvents()
+
+    assert layer._retired == []
+    assert not any(shiboken6.isValid(item) for item in items)
+
+
+def test_removing_a_region_mid_drag_leaves_the_scene_no_deleted_item(layer, loaded_viewer, qapp):
+    """R89: the scene keeps `dragItem` and the last hover event, which can name a region's ROI or
+    one of its handles; a right-click Remove is made while hovering it. Once the ROI is deleted,
+    the next click would reach a deleted C++ object."""
+    from PySide6.QtCore import Qt
+    from pyqtgraph.GraphicsScene.mouseEvents import HoverEvent
+
+    region = layer.add(Circle(x=3.0, y=3.0, radius=1.0))
+    roi = layer.item_for(region)
+    scene = loaded_viewer.imv.getView().scene()
+    hover = HoverEvent(None, True)
+    hover.currentItem = roi.getHandles()[0]
+    hover.acceptClicks(Qt.MouseButton.LeftButton)
+    scene.lastHoverEvent = hover
+    scene.dragItem = roi
+
+    layer.remove(region)
+    qapp.processEvents()
+
+    assert scene.dragItem is None
+    assert scene.lastHoverEvent is None
+
+
 def test_the_lookup_index_is_emptied_by_removals(layer):
     """A leaked id key would hold an entry — and its graphics items — alive forever."""
     regions = [layer.add(Circle(x=float(i), y=1.0, radius=1.0)) for i in range(10)]

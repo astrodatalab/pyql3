@@ -469,3 +469,87 @@ def test_photometry_retires_its_sky_rings(qapp, loaded_viewer):
     assert _items_left_by(loaded_viewer, before) == []
     assert [ring for ring in rings if shiboken6.isValid(ring)] == []
     assert dialog.roi_inner is None and dialog.roi_outer is None
+
+
+# --- R83: Total DN only for a declared count rate -------------------------------------
+
+@pytest.fixture
+def unitless_fits(tmp_path):
+    """A cube laid out as a Gemini NIFS one: no `BUNIT` anywhere, and `EXPTIME`/`COADDS` in
+    the primary only. Its values look like summed counts, but the file does not say so."""
+    from astropy.io import fits
+    import numpy as np
+    path = tmp_path / "unitless.fits"
+    fits.HDUList([fits.PrimaryHDU(header=fits.Header({'EXPTIME': 600.0, 'COADDS': 1})),
+                  fits.ImageHDU(np.ones((20, 9, 7), dtype=np.float32), name='SCI')]
+                 ).writeto(path)
+    return str(path)
+
+
+def test_total_dn_is_offered_only_for_a_count_rate(qapp, s3d_like_fits, unitless_fits,
+                                                    osiris_like_fits):
+    """JWST MJy/sr and a cube with no `BUNIT` used to offer "As Total DN", multiply by 1.0 and
+    relabel the unchanged numbers Total DN (R83). The action is disabled with the reason as its
+    tooltip and status tip, and the native unit's action is named after the file's unit."""
+    win = MainWindow()
+    try:
+        assert win.action_dn_s.text() == "As Stored"
+        assert not win.action_tot_dn.isEnabled()
+        win.colorbar_action.trigger()                   # Display > Show Colorbar, no file open
+        assert win.image_viewer.imv.ui.histogram.axis.labelText == "Pixel Value"
+
+        for path, native, reason in [
+                (s3d_like_fits, "As Stored (MJy/sr)", "data are in MJy/sr"),
+                (unitless_fits, "As Stored (unit not stated)", "no unit is stated for these data")]:
+            assert win.load_fits(path)
+            assert not win.action_tot_dn.isEnabled(), path
+            assert win.action_tot_dn.toolTip() == reason
+            assert win.action_tot_dn.statusTip() == reason
+            assert win.action_dn_s.text() == native
+            assert win.action_dn_s.isChecked()
+
+        assert win.load_fits(osiris_like_fits)
+        assert win.action_tot_dn.isEnabled()
+        assert win.action_tot_dn.statusTip() == ""
+        assert win.action_dn_s.text() == "As Stored (DN/s)"
+        win.action_tot_dn.trigger()
+        assert win.image_viewer.data_multiplier == pytest.approx(899.92)
+        assert win.image_viewer.value_unit_label() == "Total DN"
+        assert win.image_viewer.imv.ui.histogram.axis.labelText == "Pixel Value (Total DN)"
+    finally:
+        win.close()
+
+
+def test_loading_a_non_rate_cube_leaves_total_dn(qapp, osiris_like_fits, s3d_like_fits):
+    """Loading an MJy/sr cube while Total DN is shown returns to the file's own unit, says so in
+    the status bar, and redraws once: `set_data` clears the unit before it announces the plane,
+    so no second `refresh_display` follows the load."""
+    win = MainWindow()
+    try:
+        assert win.load_fits(osiris_like_fits)
+        win.action_tot_dn.trigger()
+        assert win.image_viewer.disp_as_dn
+
+        planes = []
+        win.image_viewer.plane_changed.connect(
+            lambda: planes.append((win.image_viewer.disp_as_dn,
+                                   win.image_viewer.value_unit_label())))
+        assert win.load_fits(s3d_like_fits)
+
+        assert planes == [(False, "MJy/sr")]
+        assert win.image_viewer.data_multiplier == 1.0
+        assert win.action_dn_s.isChecked() and not win.action_tot_dn.isChecked()
+        assert win.statusBar().currentMessage() == (
+            "Total DN is not available for this file (data are in MJy/sr); "
+            "showing the values as stored.")
+
+        # Back on a count-rate cube the user chooses Total DN again; it is not restored
+        assert win.load_fits(osiris_like_fits)
+        assert win.action_tot_dn.isEnabled() and not win.image_viewer.disp_as_dn
+
+        # Nothing was switched, so nothing is said
+        win.statusBar().clearMessage()
+        assert win.load_fits(s3d_like_fits)
+        assert win.statusBar().currentMessage() == ""
+    finally:
+        win.close()

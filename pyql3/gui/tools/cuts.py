@@ -34,8 +34,7 @@ class CutPlotDialog(BaseToolDialog):
         main_layout.addLayout(controls_layout)
         
         self.plot_widget = pg.PlotWidget(title=f"{title} Profile", background='w')
-        unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-        self.plot_widget.setLabel('left', f'Intensity ({unit})')
+        self._set_intensity_label()
         self.plot_widget.setLabel('bottom', 'Position')
         
         self.plot_widget.getAxis('bottom').setPen('k')
@@ -292,6 +291,10 @@ class CutPlotDialog(BaseToolDialog):
                 self.plot_curve.setData(np.arange(len(profile)), profile * self.image_viewer.data_multiplier)
             else:
                 self.plot_curve.setData([], [])
-                
-        unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-        self.plot_widget.setLabel('left', f'Intensity ({unit})')
+
+        self._set_intensity_label()
+
+    def _set_intensity_label(self):
+        """Name the unit the plotted values are in (`ImageViewer.value_unit_label`)."""
+        if self.image_viewer is not None:
+            self.plot_widget.setLabel('left', f'Intensity ({self.image_viewer.value_unit_label()})')

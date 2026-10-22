@@ -39,8 +39,8 @@ class StrehlDialog(BaseToolDialog):
         
         # Plot widget for profiles
         self.plot_widget = pg.PlotWidget(title="Radial Profile (Normalized)")
-        unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-        self.plot_widget.setLabel('left', f'Intensity ({unit})')
+        # calculate_strehl divides both profiles by their peak, so they have no data unit
+        self.plot_widget.setLabel('left', 'Intensity / Peak')
         self.plot_widget.setLabel('bottom', 'Radius (arcsec)')
         self.plot_widget.addLegend(offset=(-30, 30), brush=(50, 50, 50, 200), pen='w')
         self.star_plot = self.plot_widget.plot([], [], pen=None, symbol='o', symbolPen='y', symbolBrush='y', symbolSize=5, name="Star")
@@ -110,15 +110,8 @@ class StrehlDialog(BaseToolDialog):
             r_psf = res.get('r_psf', [])
             val_psf = np.array(res.get('val_psf', []))
             
-            # Since normalized, maybe we don't multiply by data_multiplier?
-            # Wait, Strehl radial profile normalizes the peak to 1!
-            # It's a normalized profile. So unit is arbitrary (Normalized Intensity)
-            # Actually, let me check strehl.py: title="Radial Profile (Normalized)"
             self.star_plot.setData(r_star, val_star)
             self.psf_plot.setData(r_psf, val_psf)
-            
-            unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-            self.plot_widget.setLabel('left', f'Intensity ({unit})')
             
         except Exception as e:
             self.lbl_strehl.setText(f"Error: {e}")

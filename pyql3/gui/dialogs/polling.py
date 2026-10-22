@@ -45,6 +45,10 @@ class PollingDialog(QDialog):
         self.spin_interval.setDecimals(1)
         self.spin_interval.setSuffix(" s")
         self.spin_interval.setValue(getattr(poller, "interval", DEFAULT_POLL_INTERVAL))
+        # What the box showed when it was last applied. The box rounds to one decimal and
+        # clamps to its range, so the poller's own interval (a hand-edited 2.25 s in the
+        # config) is no test of whether the user changed anything.
+        self._shown_interval = self.spin_interval.value()
         self.spin_interval.setToolTip(
             "How often the watch directory is scanned.\n\n"
             "The directory is scanned rather than watched for filesystem events, so "
@@ -52,7 +56,9 @@ class PollingDialog(QDialog):
             "grows with the number of files in the directory, so raise this for a "
             "directory holding a whole run."
         )
-        self.spin_interval.valueChanged.connect(self.set_interval)
+        # Applied when editing finishes (Return, or focus leaving the box), not on every
+        # step: each change restarts the observer, and typing "10" passes through "1".
+        self.spin_interval.editingFinished.connect(self.apply_interval)
         h2.addWidget(QLabel("Scan Interval:"))
         h2.addWidget(self.spin_interval)
         h2.addStretch()
@@ -118,7 +124,17 @@ class PollingDialog(QDialog):
             if self.chk_active.isChecked():
                 self._set_active_silently(self.start_watch(path))
 
-    def set_interval(self, seconds):
+    def done(self, result):
+        # A value stepped with the arrows is not "finished" until the box loses focus,
+        # and on macOS clicking Close does not take the focus from it.
+        self.apply_interval()
+        super().done(result)
+
+    def apply_interval(self):
+        seconds = self.spin_interval.value()
+        if seconds == self._shown_interval:
+            return
+        self._shown_interval = seconds
         # Assigning this restarts an active observer so the new period takes effect.
         self.poller.interval = seconds
         if self.config is not None:

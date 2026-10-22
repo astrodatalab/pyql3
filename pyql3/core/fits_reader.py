@@ -3,6 +3,8 @@ import stat
 import tempfile
 from astropy.io import fits
 
+from pyql3.core.header_info import build_wcs, has_world_axes, states_integration_time
+
 
 def _default_file_mode():
     """The mode a normally-created file would get, i.e. 0666 masked by the umask.
@@ -18,6 +20,31 @@ def _default_file_mode():
     current = os.umask(0)
     os.umask(current)
     return 0o666 & ~current
+
+
+class NoImageData(ValueError):
+    """The chosen extension holds no 2-D or 3-D image, the only kinds the viewer shows.
+    Raised by `FitsReader.load(require_data=True)`."""
+
+
+def _header_shape(header):
+    """The numpy shape of an HDU's data, read from its `NAXISn` cards without reading the data."""
+    try:
+        naxis = int(header.get('NAXIS', 0))
+        return tuple(int(header.get(f'NAXIS{n}', 0)) for n in range(naxis, 0, -1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_world_axes(header):
+    wcs, _ = build_wcs(header)
+    return has_world_axes(wcs, header)
+
+
+def _canonical(path):
+    """One spelling per file: absolute, symlinks resolved, case folded where the OS does."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
 
 class FitsReader:
     """Wrapper class for handling FITS file reading and header management."""
@@ -41,7 +68,7 @@ class FitsReader:
             return None
         return (st.st_mtime_ns, st.st_size, st.st_ino)
 
-    def load(self, filepath, ext=None, force=False):
+    def load(self, filepath, ext=None, force=False, require_data=False):
         """Loads a FITS file and its primary data/header.
 
         The HDUList is reopened whenever the file on disk differs from the one we hold
@@ -50,6 +77,14 @@ class FitsReader:
         for the byte-identical case so that switching extensions stays cheap and does not
         throw away header edits that have not been saved yet. `force=True` reopens
         regardless, for an explicit "reload from disk".
+
+        All or nothing: the new file is opened and the chosen extension's data read before
+        anything here is replaced, so if any of that raises, the reader still holds the
+        file it held before, open (R12). A frame still being copied fails in the data
+        read, and the window that displays the old file goes on acting on it.
+
+        `require_data=True` raises `NoImageData`, also before anything is replaced, when
+        the chosen extension holds no 2-D or 3-D image.
         """
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"FITS file not found: {filepath}")
@@ -60,45 +95,101 @@ class FitsReader:
                  or signature is None
                  or signature != self._file_signature)
         if force or stale:
-            self.close()
             # memmap=False: reading through a mapping of a file the DRP is rewriting under
             # us yields undefined data (and can SIGBUS if it shrinks), and writeto() back
             # to the same path can fail while the mapping is open.
-            self.hdul = fits.open(filepath, memmap=False)
-            self._file_signature = signature
-
-        self.filepath = filepath
-        self.image_extensions = self.get_image_extensions()
-
-        self.data = None
-        self.header = None
-        self.current_ext = 0
-        
-        if ext is not None:
-            self.data = self.hdul[ext].data
-            self.header = self.hdul[ext].header
-            self.current_ext = ext
+            hdul = fits.open(filepath, memmap=False)
         else:
-            for i, _name in self.image_extensions:
-                self.data = self.hdul[i].data
-                self.header = self.hdul[i].header
-                self.current_ext = i
-                break
-                
-        # No displayable image extension. `data` deliberately stays None so callers
-        # can tell "nothing to show" from "here is your image".
+            hdul = self.hdul
+
+        try:
+            image_extensions = self._image_extensions_of(hdul)
+            if ext is not None:
+                data = hdul[ext].data
+            elif image_extensions:
+                ext = image_extensions[0][0]
+                data = hdul[ext].data
+            else:
+                ext, data = 0, None
+            header = hdul[ext].header if data is not None else hdul[0].header
+            # The viewer shows only 2-D and 3-D arrays. An extension asked for by number
+            # need not be displayable: a 1-D or 4-D image, or a table, whose FITS_rec is 1-D.
+            if require_data and (data is None or data.ndim not in (2, 3)):
+                raise NoImageData(f"No displayable image in {os.path.basename(filepath)}")
+        except BaseException:
+            if hdul is not self.hdul:
+                hdul.close()
+            raise
+
+        if hdul is not self.hdul:
+            self.close()
+            self.hdul = hdul
+            self._file_signature = signature
+        self.filepath = filepath
+        self.image_extensions = image_extensions
+        self.current_ext = ext
+        self.data = data
+        # With no displayable image, `data` deliberately stays None so callers can tell
+        # "nothing to show" from "here is your image", and the primary header is published
+        # so the file can be inspected.
         #
         # This used to substitute np.zeros((10, 10)) with an empty Header. That made
-        # `data` never None, which silently disabled every `if data is None` guard in
-        # the application: a FITS carrying no image HDU was displayed as a black 10x10
+        # `data` never None, which silently disabled every `if data is None` guard in the
+        # application: a FITS carrying no image HDU was displayed as a black 10x10
         # square, titled with the filename and added to Recent Files, indistinguishable
         # from a real observation of an empty field.
-        #
-        # The primary header is still published, so a file worth inspecting but not
-        # displaying can be opened in the Header Editor.
-        if self.data is None and self.hdul:
-            self.header = self.hdul[0].header
-            
+        self.header = header
+
+    def reference_header(self):
+        """The header to take the WCS and the integration time from when the current
+        extension's own header lacks them (R25), or None when it has both.
+
+        A JWST ERR or DQ extension has no WCS cards, and an OSIRIS noise or quality extension
+        has an empty header. When the WCS is missing, the reference is the first other image
+        extension with the same data shape whose header has a celestial or spectral axis (SCI
+        in a JWST file, the primary in an OSIRIS file), else the primary header. When only the
+        integration time is missing, it is the primary header, where OSIRIS and NIFS keep it.
+        None when the reference would be the current extension itself.
+
+        Only headers are read, so no other extension's data is pulled into memory. The viewer
+        decides what it uses from the reference: it does not apply a WCS with fewer axes than
+        the data (a NIFS primary's WCS is the 2-D detector frame's), and takes `BUNIT` and the
+        integration time from it only when it is the primary header and the data are not
+        integers (`header_info.data_keywords`). So an extension lacking both, whose reference
+        is the sibling with the WCS (JWST DQ beside SCI), borrows the WCS and no unit.
+        """
+        header = self.header
+        if self.hdul is None or header is None or self.data is None:
+            return None
+        has_wcs = _has_world_axes(header)
+        if has_wcs and states_integration_time(header):
+            return None
+        if not has_wcs:
+            shape = _header_shape(header)
+            for idx, _name in self.image_extensions:
+                candidate = self.hdul[idx].header
+                if (idx != self.current_ext and _header_shape(candidate) == shape
+                        and _has_world_axes(candidate)):
+                    return candidate
+        if self.current_ext == 0:
+            return None
+        return self.hdul[0].header
+
+    def holds_current_copy(self, path):
+        """True if `path` is the file this reader holds and it is unchanged on disk.
+
+        After `save()` the reader has reopened the file it wrote, so this is true of the
+        reader's own save until something else changes the file. A watched directory
+        announces that save as a changed file (R70), naming it through the watch
+        directory, which need not be spelled the way the file was opened -- hence the
+        canonical comparison, as the poller's `_watch_key` makes.
+        """
+        if self.filepath is None or self._file_signature is None:
+            return False
+        if _canonical(path) != _canonical(self.filepath):
+            return False
+        return self._stat_signature(path) == self._file_signature
+
     def load_from_memory(self, data, header):
         if self.hdul:
             self.hdul.close()
@@ -128,6 +219,10 @@ class FitsReader:
     def _is_displayable(hdu):
         """Whether an HDU holds an image the viewer can actually show.
 
+        An image HDU with two or three axes: the viewer shows nothing else, so a 1-D or 4-D
+        image is neither offered in the Extension combo nor picked by default, and a file whose
+        primary is 4-D opens its 3-D SCI extension.
+
         Header-only on purpose: touching `hdu.data` here would pull every extension of a
         multi-extension file into memory now that `memmap` is off, and `data is not None`
         is also the wrong question — a `BINTABLE` answers yes (B6).
@@ -135,7 +230,7 @@ class FitsReader:
         if not getattr(hdu, 'is_image', False):
             return False
         try:
-            return int(hdu.header.get('NAXIS', 0)) > 0
+            return int(hdu.header.get('NAXIS', 0)) in (2, 3)
         except (TypeError, ValueError):
             return False
 
@@ -146,10 +241,16 @@ class FitsReader:
         disagree, so the Extension combo offered table HDUs that silently left the previous
         image on screen while `data`/`header` switched to the table underneath (B6).
         """
+        return self._image_extensions_of(self.hdul)
+
+    @classmethod
+    def _image_extensions_of(cls, hdul):
+        """`get_image_extensions()` for a given HDUList, which `load()` needs before it
+        has replaced `self.hdul`."""
         extensions = []
-        if self.hdul:
-            for idx, hdu in enumerate(self.hdul):
-                if not self._is_displayable(hdu):
+        if hdul:
+            for idx, hdu in enumerate(hdul):
+                if not cls._is_displayable(hdu):
                     continue
                 name = hdu.name if hdu.name else f"EXT {idx}"
                 if name == "PRIMARY" and idx != 0:

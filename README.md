@@ -203,7 +203,7 @@ behaviour is stated here because it determines what the tool will and will not d
 * **Slices & Slabs**: The bottom control panel allows you to switch between viewing a single Z-slice or a collapsed Z-range of a 3D datacube. Use the slider to navigate through cube depth.
 * **Scaling**: Adjust scaling limits dynamically using the intensity histogram gradient on the right side of the image, or select scaling algorithms (Linear, Logarithmic, Square Root, AsinH, Negative, Histogram Equalization) via the `Display -> Scaling` menu or bottom left dropdown.
 * **Rotation & Flips**: `Display -> Rotate Image...` lets you orient the image properly while preserving spatial coordinate accuracy.
-* **Data Units**: Toggle between native `As DN/s` and Total DN (`As Total DN`) through the `Display` menu.
+* **Data Units**: Toggle between the values as stored, in the file's own unit (`As Stored (DN/s)`, `As Stored (MJy/sr)`, ...), and Total DN (`As Total DN`) through the `Display` menu. Total DN is offered only for a count rate with an integration time in the header.
 * **Position Angle (PA)**: Enable `Display -> Position Angle` to display dynamic North/East compass rose vectors.
 
 ### Analysis & Catalog Tools

@@ -1,11 +1,13 @@
 import os
 import re
 import pathlib
+import astropy.units as u
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog, QWidget
 from PySide6.QtCore import Qt, QDir
 from pyql3.core import coords
+from pyql3.core.header_info import in_microns
 from pyql3.core.spectral_photometry import (
     ApertureError,
     annulus_spectrum,
@@ -595,8 +597,11 @@ class DepthPlotDialog(BaseToolDialog):
             y_val = mousePoint.y()
             if hasattr(self, 'current_wavelengths') and self.current_wavelengths is not None and len(self.current_wavelengths) > 0:
                 pix_idx = int(round(np.interp(x_val, self.current_wavelengths, np.arange(len(self.current_wavelengths)))))
-                unit_str = getattr(self, 'current_wavelength_unit', 'µm')
-                self.lbl_cursor.setText(f"Wavelength: {x_val:.4f} {unit_str}  (Pixel: {pix_idx})   Intensity: {y_val:.4f}")
+                if getattr(self, 'current_wavelength_unit', 'µm') == 'Unknown':
+                    wavelength = f"Wavelength (Unknown): {x_val:.6g}"
+                else:
+                    wavelength = f"Wavelength: {x_val:.4f} µm"
+                self.lbl_cursor.setText(f"{wavelength}  (Pixel: {pix_idx})   Intensity: {y_val:.4f}")
             else:
                 self.lbl_cursor.setText(f"Pixel: {x_val:.1f}   Intensity: {y_val:.4f}")
             
@@ -1207,23 +1212,16 @@ class DepthPlotDialog(BaseToolDialog):
         wcs = self.image_viewer.wcs
         z_idx = self.image_viewer.wcs_z_idx
 
+        # Line lists are in µm; the WCS takes the spectral axis's own unit. An Unknown unit
+        # is not matched at all (update_line_overlays says so).
+        unit = self.image_viewer.wavelength_unit()
+        if unit is None:
+            return None
         try:
-            cunit = str(wcs.wcs.cunit[z_idx]).strip().lower()
-        except Exception:
-            cunit = "m"
-
-        if cunit == 'm':
-            scale = 1e-6
-        elif cunit in ['um', 'micron', 'microns', 'µm']:
-            scale = 1.0
-        elif cunit == 'nm':
-            scale = 1e3
-        elif cunit in ['angstrom', 'a', 'angstroms']:
-            scale = 1e4
-        else:
-            scale = 1e-6
-
-        wls_wcs = np.array(wavelengths_um) * scale
+            wls_wcs = (np.asarray(wavelengths_um, dtype=float) * u.um).to_value(
+                unit, equivalencies=u.spectral())
+        except u.UnitConversionError:
+            return None
         n_lines = len(wls_wcs)
         coords_world = np.zeros((n_lines, wcs.naxis))
 
@@ -1279,13 +1277,22 @@ class DepthPlotDialog(BaseToolDialog):
                     self.lbl_line_info.setText("No WCS present for wavelength mapping.")
             return
 
-        z_idx = getattr(self.image_viewer, 'wcs_z_idx', None)
-        if z_idx is not None:
-            ctype_raw = str(self.image_viewer.wcs.wcs.ctype[z_idx]).upper()
-            if 'WAVE' not in ctype_raw and 'AWAV' not in ctype_raw:
-                self.clear_line_overlays()
-                self.lbl_line_info.setText("Z-axis is not Wavelength.")
-                return
+        # wcs_z_idx is set only for a spectral Z axis (header_info.spectral_axis)
+        if getattr(self.image_viewer, 'wcs_z_idx', None) is None:
+            self.clear_line_overlays()
+            self.lbl_line_info.setText("Z-axis is not Wavelength.")
+            return
+        unit = self.image_viewer.wavelength_unit()
+        if unit is None:
+            self.clear_line_overlays()
+            self.lbl_line_info.setText("The line list needs a known wavelength unit; "
+                                       "this file does not state one.")
+            return
+        if in_microns(1.0, unit) is None:
+            # A spectral axis in, for example, m/s: there is no wavelength to match lines to
+            self.clear_line_overlays()
+            self.lbl_line_info.setText(f"Z-axis is not a wavelength ({unit.physical_type}).")
+            return
 
         use_wavelength_x = hasattr(self, 'current_wavelengths') and self.current_wavelengths is not None and len(self.current_wavelengths) > 0
 
@@ -1447,22 +1454,15 @@ class DepthPlotDialog(BaseToolDialog):
         """
         x_axis = np.arange(z_len)
         wavelengths = None
-        cunit = ""
-        ctype = ""
-        
+        # µm when the file states the unit; the header's own numbers, labelled Unknown, when
+        # it does not (header_info.spectral_unit)
+        unit = self.image_viewer.wavelength_unit()
+        cunit = "µm" if unit is not None else "Unknown"
+
         if self.image_viewer.wcs is not None and self.image_viewer.wcs_z_idx is not None:
             wcs = self.image_viewer.wcs
             z_idx = self.image_viewer.wcs_z_idx
-            ctype_raw = str(wcs.wcs.ctype[z_idx]).upper()
-            ctype = ctype_raw.split('-')[0] if '-' in ctype_raw else ctype_raw
-            
-            try:
-                cunit = str(wcs.wcs.cunit[z_idx]).strip()
-                if cunit.lower() == 'm':
-                    cunit = 'µm'
-            except Exception:
-                cunit = "µm"
-            
+
             cx, cy = center
 
             # Un-flip and un-rotate to get coords in transposed_data space. This used to
@@ -1481,12 +1481,9 @@ class DepthPlotDialog(BaseToolDialog):
             try:
                 world = wcs.wcs_pix2world(fixed_coords, 0)
                 wavelengths = world[:, z_idx]
-                try:
-                    orig_cunit = str(wcs.wcs.cunit[z_idx]).strip().lower()
-                    if orig_cunit == 'm':
-                        wavelengths = wavelengths * 1e6
-                except Exception:
-                    pass
+                if unit is not None:
+                    # None for a spectral unit that is not a wavelength, such as a velocity
+                    wavelengths = in_microns(wavelengths, unit)
             except Exception as e:
                 print(f"Warning: WCS pixel_to_world failed in DepthPlotDialog: {e}")
                 wavelengths = None
@@ -1496,9 +1493,7 @@ class DepthPlotDialog(BaseToolDialog):
             self.current_wavelengths = wavelengths
             self.current_wavelength_unit = cunit
             
-            label = "Wavelength" if 'WAVE' in ctype else ctype
-            unit_str = f" ({cunit})" if cunit else ""
-            self.plot_widget.getAxis('bottom').setLabel(f"{label}{unit_str}")
+            self.plot_widget.getAxis('bottom').setLabel(f"Wavelength ({cunit})")
             
             self.top_axis.wavelengths = wavelengths
             self.plot_widget.showAxis('top')
@@ -1525,9 +1520,9 @@ class DepthPlotDialog(BaseToolDialog):
         self.sync_legend()
 
     def _set_intensity_label(self):
-        """Name the unit the plotted values are in: DN/s, or DN under Total DN."""
-        unit = "DN" if self.image_viewer and getattr(self.image_viewer, 'disp_as_dn', False) else "DN/s"
-        self.plot_widget.setLabel('left', f"Intensity ({unit})")
+        """Name the unit the plotted values are in (`ImageViewer.value_unit_label`)."""
+        if self.image_viewer is not None:
+            self.plot_widget.setLabel('left', f"Intensity ({self.image_viewer.value_unit_label()})")
 
     def on_plane_changed(self):
         """A cut is taken through the plane on screen, so it follows every plane change.

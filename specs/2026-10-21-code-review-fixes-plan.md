@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix R1–R87 from the 2026-10-21 code review, and add the shared helpers, signals and fixtures whose absence caused most of them.
+**Goal:** Fix R1–R89 from the 2026-10-21 code review, and add the shared helpers, signals and fixtures whose absence caused most of them.
 
 **Architecture:** Five shared changes carry most of the fixes, and they come first: one integration-time and WCS helper module (`pyql3/core/header_info.py`); one whole-pixel box helper in `coords.py`; one redisplay path and two new viewer signals (`plane_changed`, `view_rotation_changed`) in `ImageViewer`; one tool lifecycle (`BaseToolDialog.tear_down()` and `MainWindow._open_tool()`); and frame-aware direction mapping on `CelestialMap`. Everything after Phase 4 is a local fix in one file or one area, built on those.
 
 **Tech Stack:** PySide6, pyqtgraph, astropy (WCS, SkyCoord), photutils, `regions` 0.12, pytest + pytest-xdist. Everything runs through `uv run`.
 
-**Spec:** `BUGS.md`, section "Code review — 2026-10-21" (R1–R87; R80 was added in the Phase 1 review, R81–R83 from a NIFS reference cube, R84 in the Phase 2 review, R85 in Task 9, R86 and R87 in the Phase 3 review). Each task names the entries it closes. The entry holds the reproduction, the measured numbers and the proposed regression test; read it before starting the task. Where a task below differs from an entry's "Fix (proposed)", the task wins and says why.
+**Spec:** `BUGS.md`, section "Code review — 2026-10-21" (R1–R89; R80 was added in the Phase 1 review, R81–R83 from a NIFS reference cube, R84 in the Phase 2 review, R85 in Task 9, R86 and R87 in the Phase 3 review, R88 in the Task 20 review). Each task names the entries it closes. The entry holds the reproduction, the measured numbers and the proposed regression test; read it before starting the task. Where a task below differs from an entry's "Fix (proposed)", the task wins and says why.
 
 ## Global Constraints
 
@@ -379,7 +379,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 4: Run the tests and `tests/test_poller.py`; they pass.** S0, S2 and M26 tests must still pass.
 - [ ] **Step 5: Close-out** for R43 and R70.
 
-### Task 20: Axes found through the WCS, not by string (R24, R26, R52, R56, R81, R82)
+### Task 20: Axes found through the WCS, not by string (R24, R26, R52, R56, R81, R82, R88)
 
 **Files:**
 - Modify: `pyql3/core/header_info.py`, `pyql3/gui/viewers/image_viewer.py` (`apply_axis_mapping` `:1155-1199`, default X axis `:1117-1122`, `get_north_angle_base` `:1283-1347`, `mouse_moved` `:1655-1700`, `get_wavelength_for_slice`), `pyql3/gui/tools/depth_plot.py:1264` (and its wavelength-unit handling for the line list), `AGENTS.md` ("FITS axis / WCS conventions": replace "`set_data()` picks the default X-axis by sniffing whether `CTYPE1` contains `RA`" with the rule below)
@@ -396,9 +396,9 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 2: Run them and see them fail.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run the tests, `tests/test_image_viewer.py` and `tests/test_position_angle.py`; they pass.** B20's tests must still pass.
-- [ ] **Step 5: Close-out** for R24, R26, R52, R56, R81, R82.
+- [ ] **Step 5: Close-out** for R24, R26, R52, R56, R81, R82, R88.
 
-### Task 21: An extension without its own WCS borrows the science header's (R25)
+### Task 21: An extension without its own WCS borrows the science header's (R25, R89)
 
 **Files:**
 - Modify: `pyql3/core/fits_reader.py`, `pyql3/gui/viewers/image_viewer.py` (`set_data` signature), `pyql3/gui/main_window.py:619-620`
@@ -413,7 +413,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - [ ] **Step 2: Run them and see them fail.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run the tests; they pass.**
-- [ ] **Step 5: Close-out** for R25.
+- [ ] **Step 5: Close-out** for R25 and R89 (R89, found while implementing this task: the region layer's `_drop_retired` crashed in `gc.collect()` once the viewer held a `fits.Header`; fixed as M31 was, with the shared code in `pyql3/gui/scene_items.py`).
 
 ### Task 44: Total DN offered only for a declared count rate (R83)
 
@@ -466,7 +466,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 **Interfaces:**
 - Produces: `PixelIndexAxis(log_x: bool)` state set from `chk_log_x`; with Log X checked, view x is converted with `10 ** x` for comparison and readout, and each line is placed at `log10(wavelength)`. `linelist_files` is keyed by full path and read with `combo_linelist.currentData()`; whitespace separates fields when a line has no comma; an empty parse sets `lbl_line_info` to `No lines could be read from <name>`. `DepthPlotDialog._sync_rect_spins() -> None`, called from `on_roi_changed`, `on_radius_changed` and `toggle_roi_shape`.
 - Consumes: `header_info.spectral_unit` (Task 20).
-- Produces (user-chosen wavelength unit): `ImageViewer.wavelength_unit_override: astropy.units.Unit | None` (one value per window, `None` by default) and `ImageViewer.wavelength_unit() -> tuple[astropy.units.Unit | None, str]` — the override when set, else the header's `spectral_unit`; the string is the label text: `"µm"` for a header unit, `"Å, set by you"` for an override, `"Unknown"` for neither. The slice label, the Depth Plot's x-axis label, its cursor readout and the line list all read the unit through it. The override is kept across loads (so successive polled frames from the same instrument keep it) and cleared by a load whose header states its own unit, unless the user had overridden a stated unit too.
+- Produces (user-chosen wavelength unit): `ImageViewer.wavelength_unit_override: astropy.units.Unit | None` (one value per window, `None` by default) and two methods on `ImageViewer`. `wavelength_unit() -> astropy.units.Unit | None` keeps the signature Phase 5 gave it (its callers are `ImageViewer` and the Depth Plot) and returns the override when set, else the header's `spectral_unit`. A new `wavelength_unit_label() -> str` returns the label text: `"µm"` for a header unit, `"Å, set by you"` for an override, `"Unknown"` for neither. The slice label, the Depth Plot's x-axis label, its cursor readout and the line list all read the unit through `wavelength_unit()` and the label through `wavelength_unit_label()`. The override is kept across loads (so successive polled frames from the same instrument keep it) and cleared by a load whose header states its own unit, unless the user had overridden a stated unit too.
 - Produces: a *Wavelength unit* combo box beside the line-list controls, entries `From header (<unit or Unknown>)`, `Å`, `nm`, `µm`. Choosing one of the last three sets `wavelength_unit_override`; `From header` clears it. With the unit Unknown and no override, the line list stays unavailable and `lbl_line_info` says `Choose the wavelength unit to show the line list`; the combo is the control that enables it.
 
 - [ ] **Step 1: Write the failing tests.** `::test_the_line_list_survives_log_x` (R53), `::test_two_line_lists_with_one_name_load_their_own_files`, `::test_an_unreadable_line_list_says_so`, `::test_a_whitespace_separated_line_list_loads` (R54), `::test_the_rectangle_spins_follow_a_radius_edit` (R55), `::test_a_circle_off_the_image_masks_the_drawn_circle` (R80: a Circle background box half off the low edge keeps exactly the drawn circle's on-image pixels). `::test_choosing_a_wavelength_unit_enables_the_line_list` (the R81/R82 NIFS-like header with no unit: line list unavailable with the message; choose `Å` → lines are drawn, the axis reads `Wavelength (Å, set by you)` and channel 0 is 1.99687 µm), `::test_the_wavelength_unit_choice_survives_a_reload_without_a_unit`, `::test_a_header_unit_replaces_an_unused_override`. `test_image_viewer.py::test_the_slice_label_uses_the_chosen_wavelength_unit`.
@@ -772,4 +772,4 @@ was added there.
 - [ ] **Step 2: Run them and see them fail.**
 - [ ] **Step 3: Implement:** map the colorbar's ticks back through the inverse of the active scale (keep the label "Pixel Value (<unit>)"); set the 1:1 range from the ViewBox's screen size, centred on the current view centre; put a `QIntValidator` on Z Min, Z Max and Boxcar, or fall back to the full range with a message (R84).
 - [ ] **Step 4: Run them; they pass.**
-- [ ] **Step 5: Close-out** for R65, R66 and R84. **End of Phase 11: stop and report the staged diff.** All of R1–R87 should now be ticked in the checklist.
+- [ ] **Step 5: Close-out** for R65, R66 and R84. **End of Phase 11: stop and report the staged diff.** All of R1–R89 should now be ticked in the checklist.

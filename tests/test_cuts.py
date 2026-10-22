@@ -228,7 +228,8 @@ def test_cuts_follow_boxcar_and_range(qapp):
     change at the same slider value never send: those are drawn past the ImageView, so the
     profile stayed on the last single channel (BUGS.md R14)."""
     channel_values = np.array([0., 50., 3., 80., 1., 90., 7., 20., 60., 5.])
-    cube = np.broadcast_to(channel_values, (40, 30, 10)).astype(np.float32)  # channel k: values[k]
+    # numpy (z, y, x) with no header; channel k is values[k]
+    cube = np.broadcast_to(channel_values[:, None, None], (10, 30, 40)).astype(np.float32)
     viewer = ImageViewer()
     viewer.set_data(cube)
     dialogs = [CutPlotDialog(cut_type, None, viewer) for cut_type in ("horizontal", "vertical")]

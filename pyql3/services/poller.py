@@ -128,8 +128,10 @@ class DirectoryPoller(QObject):
     file_detected = Signal(str)
     #: (number of files suppressed, path actually emitted) for a coalesced batch.
     batch_coalesced = Signal(int, str)
-    #: A running watch has stopped, including when `start_polling` replaces it. Files
-    #: announced before this belong to the old watch.
+    #: A running watch has stopped, including when `start_polling` moves this poller to
+    #: another directory or another poller takes the directory over. Files announced
+    #: before this belong to the old watch. Restarting the same directory (an `interval`
+    #: change) does not emit it.
     polling_stopped = Signal()
 
     # Internal: marshals a candidate from the observer thread onto the GUI thread.
@@ -158,14 +160,15 @@ class DirectoryPoller(QObject):
 
     @property
     def interval(self):
-        """Seconds between directory scans. Applies on the next `start_polling`."""
+        """Seconds between directory scans. Setting it restarts a running watch at once."""
         return self._interval
 
     @interval.setter
     def interval(self, seconds):
         self._interval = max(0.1, float(seconds))
         if self.observer is not None:
-            # Restart so the observer picks up the new scan period.
+            # Restart so the observer picks up the new scan period. A restart on the same
+            # directory keeps the files not yet announced; see `start_polling`.
             self.start_polling(self.watch_path)
 
     def is_polling(self):
@@ -180,15 +183,26 @@ class DirectoryPoller(QObject):
         one-watch-per-directory rule holds however polling is started -- the menu, the
         `--poll-dir` flag, or a test. The GUI asks the user before taking a watch away
         from another window; see `MainWindow.confirm_watch_takeover`.
+
+        Files seen but not yet announced survive a restart. The new observer's first
+        scan counts every file already in the directory as pre-existing, so a file
+        dropped from `_pending` here would never be offered again (R43). Restarting the
+        directory this poller already watches -- what an `interval` change does -- keeps
+        them and does not emit `polling_stopped`, since the watch has not ended. A
+        takeover moves them to the new owner, and the previous owner's watch does end.
         """
-        self.stop_polling()
-
-        if not path or not os.path.isdir(path):
-            return False
-
-        previous = watcher_of(path)
-        if previous is not None and previous is not self:
-            previous.stop_polling()
+        restarting = (self.observer is not None and bool(path) and os.path.isdir(path)
+                      and _watch_key(path) == self._watch_key)
+        if restarting:
+            self._stop_observer()
+        else:
+            self.stop_polling()
+            if not path or not os.path.isdir(path):
+                return False
+            previous = watcher_of(path)
+            if previous is not None and previous is not self:
+                self._take_unsettled_from(previous)
+                previous.stop_polling()
 
         self.watch_path = path
         self._watch_key = _watch_key(path)
@@ -208,16 +222,29 @@ class DirectoryPoller(QObject):
                 del _watches[self._watch_key]
             self._watch_key = None
 
-        self._timer.stop()
         self._pending.clear()
         self._held_path = None
         self._held_count = 0
         self._hold_ticks = 0
-        if self.observer:
-            self.observer.stop()
-            self.observer.join(timeout=5)
-            self.observer = None
+        if self._stop_observer():
             self.polling_stopped.emit()
+
+    def _stop_observer(self):
+        """Stop the scan thread and the settle timer. True if an observer was running."""
+        self._timer.stop()
+        if not self.observer:
+            return False
+        self.observer.stop()
+        self.observer.join(timeout=5)
+        self.observer = None
+        return True
+
+    def _take_unsettled_from(self, previous):
+        """Move the files `previous` has seen but not yet announced to this poller."""
+        self._pending, previous._pending = previous._pending, {}
+        self._held_path = previous._held_path
+        self._held_count = previous._held_count
+        self._hold_ticks = previous._hold_ticks
 
     # ------------------------------------------------------------------ innards
 

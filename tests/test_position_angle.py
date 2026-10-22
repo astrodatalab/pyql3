@@ -290,3 +290,96 @@ def test_rotate_dialog_own_rotation_is_not_undone(qapp, osiris_like_fits):
         assert "North is Up" in dialog.lbl_pa.text(), dialog.lbl_pa.text()
     finally:
         dialog.close()
+
+
+# --- R52, R56: the base angles themselves ----------------------------------------------
+
+@pytest.mark.parametrize("cube_first", [False, True], ids=["fresh", "after a cube"])
+def test_2d_image_with_a_third_wcs_axis_has_the_right_compass(qapp, sample_3d_fits, cube_first):
+    """R52: a 2-D image whose header keeps a cube's `CTYPE3` has a 3-axis WCS. The compass
+    took X from `current_x_axis` — AXIS 3 by default, or whatever a previous cube left — and
+    so differentiated along the wavelength axis and put East at -90°."""
+    import warnings
+    import numpy as np
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=3)
+    w.wcs.ctype = ['RA---TAN', 'DEC--TAN', 'WAVE']
+    w.wcs.crval = [266.4, -29.0, 2.0e-6]
+    w.wcs.cdelt = [-1e-5, 1e-5, 1e-9]
+    w.wcs.crpix = [20, 15, 1]
+    w.wcs.cunit = ['deg', 'deg', 'm']
+    img = np.zeros((30, 40), np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        header = fits.PrimaryHDU(img, header=w.to_header()).header
+
+    viewer = ImageViewer()
+    if cube_first:
+        reader = FitsReader(sample_3d_fits)
+        viewer.set_data(reader.data, reader.header)
+        reader.close()
+    viewer.set_data(img, header)
+    reference = ImageViewer()
+    reference.set_data(img, w.celestial.to_header())
+
+    n, e, is_wcs = viewer.get_north_angle_base()
+    n_ref, e_ref, _ = reference.get_north_angle_base()
+
+    assert is_wcs
+    assert_same_direction(n, n_ref)
+    assert_same_direction(e, e_ref)
+
+
+def _rotator_header(pa):
+    """The WCS and rotator cards of an OSIRIS spectrograph cube at position angle `pa`
+    (`example/s180722_a005002_Kn3_035.fits` at PA 285), `ROTPOSN - INSTANGL = pa`."""
+    from astropy.io import fits
+    c, s = math.cos(math.radians(pa)), math.sin(math.radians(pa))
+    return fits.Header({'NAXIS': 3, 'CTYPE1': 'WAVE', 'CTYPE2': 'DEC--TAN', 'CTYPE3': 'RA---TAN',
+                        'CUNIT1': 'nm', 'CUNIT2': 'deg', 'CUNIT3': 'deg', 'CRVAL1': 2121.0,
+                        'CDELT1': 0.25, 'CRVAL2': -29.0, 'CRVAL3': 266.4,
+                        'CDELT2': 9.72222e-06, 'CDELT3': 9.72222e-06,
+                        'PC2_2': c, 'PC2_3': s, 'PC3_2': s, 'PC3_3': -c,
+                        'ROTPOSN': pa + 311.99999999, 'INSTANGL': 311.99999999,
+                        'INSTR': 'spec', 'TELESCOP': 'Keck I'})
+
+
+@pytest.mark.parametrize("pa", [0.0, 45.0, 285.0, 300.0])
+def test_rotposn_fallback_matches_the_wcs(qapp, pa):
+    """R56: without a celestial WCS the compass falls back on ROTPOSN - INSTANGL. It used
+    90 + PA for North where the WCS and QL2's `osiris_calc_pa` both give 90 - PA."""
+    import numpy as np
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((51, 66, 40), np.float32), _rotator_header(pa))
+    n_wcs, e_wcs, is_wcs = viewer.get_north_angle_base()
+    assert is_wcs
+
+    viewer.wcs = None
+    n, e, is_fallback = viewer.get_north_angle_base()
+
+    assert is_fallback
+    for got, expected in ((n, n_wcs), (e, e_wcs)):
+        difference = (got - expected) % 360.0
+        assert min(difference, 360.0 - difference) < 0.1, f"{got % 360:.1f} vs {expected % 360:.1f}"
+
+
+def test_the_compass_is_evaluated_at_the_plane_centre(qapp, osiris_like_fits):
+    """R88: the centre was taken as `((shape[-1] - 1) / 2, (shape[-2] - 1) / 2)` of
+    `transposed_data`, which is `(z, x, y)`, so X got the Y length's centre. On this 66 x 51
+    plane the angles were evaluated 7.5 px from the centre in each axis."""
+    reader = FitsReader(osiris_like_fits)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    reader.close()
+    points = []
+    evaluate = viewer.wcs.pixel_to_world_values
+    viewer.wcs.pixel_to_world_values = lambda *pixel: (points.append(pixel), evaluate(*pixel))[1]
+
+    _, _, is_wcs = viewer.get_north_angle_base()
+
+    assert is_wcs
+    assert viewer.orig_spatial_dims() == (66, 51)
+    x_idx, y_idx = viewer.display_axis_indices()
+    assert (points[0][x_idx], points[0][y_idx]) == (32.5, 25.0)

@@ -6,7 +6,8 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QMenu, QFileDialog, QInputDialog,
                                QMessageBox, QApplication)
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
-from pyql3.core.fits_reader import FitsReader
+from pyql3.core.fits_reader import FitsReader, NoImageData
+from pyql3.core.header_info import UNKNOWN_UNIT
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.gui.tools.base_tool import as_center
@@ -219,9 +220,12 @@ class MainWindow(QMainWindow):
         self.pa_action.triggered.connect(self.toggle_pa)
         
         self.units_menu = self.display_menu.addMenu("Data Units")
+        # The disabled "As Total DN" explains itself in its tooltip
+        self.units_menu.setToolTipsVisible(True)
         self.unit_action_group = QActionGroup(self)
-        
-        self.action_dn_s = self.units_menu.addAction("As DN/s")
+
+        # The file's own unit is added to it by sync_unit_menu
+        self.action_dn_s = self.units_menu.addAction("As Stored")
         self.action_dn_s.setCheckable(True)
         self.action_dn_s.setChecked(True)
         self.unit_action_group.addAction(self.action_dn_s)
@@ -231,6 +235,7 @@ class MainWindow(QMainWindow):
         self.action_tot_dn.setCheckable(True)
         self.unit_action_group.addAction(self.action_tot_dn)
         self.action_tot_dn.triggered.connect(lambda: self.set_display_unit(True))
+        self.sync_unit_menu()
         
         # Sync scaling changes from viewer combo
         self.image_viewer.combo_scale.currentIndexChanged.connect(self.sync_scaling_from_viewer)
@@ -667,37 +672,42 @@ class MainWindow(QMainWindow):
             self._cancel_auto_loads()
         self._last_load_error = ""
         try:
-            self.fits_reader.load(filepath, ext=ext, force=force)
+            # require_data: a file with no displayable image does not replace the reader,
+            # so the window keeps showing, and editing the header of, the file it displays.
+            # Any failed load leaves the reader unchanged in the same way (R12).
+            self.fits_reader.load(filepath, ext=ext, force=force, require_data=True)
             data = self.fits_reader.get_data()
-            if data is not None:
-                header = self.fits_reader.get_header()
-                self.image_viewer.set_data(data, header=header)
-                filename = os.path.basename(filepath)
-                self.setWindowTitle(f"QuickLook 3 - {filename}")
-                
-                # Update extension combobox
-                extensions = self.fits_reader.get_image_extensions()
-                current_ext = self.fits_reader.current_ext
-                
-                self.image_viewer.combo_ext.blockSignals(True)
-                self.image_viewer.combo_ext.clear()
-                for idx, name in extensions:
-                    self.image_viewer.combo_ext.addItem(f"{idx}: {name}", userData=idx)
-                
-                combo_idx = self.image_viewer.combo_ext.findData(current_ext)
-                if combo_idx >= 0:
-                    self.image_viewer.combo_ext.setCurrentIndex(combo_idx)
-                self.image_viewer.combo_ext.blockSignals(False)
+            header = self.fits_reader.get_header()
+            was_total_dn = self.image_viewer.disp_as_dn
+            self.image_viewer.set_data(data, header=header,
+                                       reference_header=self.fits_reader.reference_header())
+            self.sync_unit_menu(was_total_dn)
+            filename = os.path.basename(filepath)
+            self.setWindowTitle(f"QuickLook 3 - {filename}")
 
-                # Add to recent files and update menu
-                self.config.add_recent_file(filepath)
-                self.update_recent_files_menu()
-                return True
-            else:
-                if show_errors:
-                    QMessageBox.warning(self, "Warning", "No valid data found in FITS file.")
-                self._last_load_error = "no image data"
-                return False
+            # Update extension combobox
+            extensions = self.fits_reader.get_image_extensions()
+            current_ext = self.fits_reader.current_ext
+
+            self.image_viewer.combo_ext.blockSignals(True)
+            self.image_viewer.combo_ext.clear()
+            for idx, name in extensions:
+                self.image_viewer.combo_ext.addItem(f"{idx}: {name}", userData=idx)
+
+            combo_idx = self.image_viewer.combo_ext.findData(current_ext)
+            if combo_idx >= 0:
+                self.image_viewer.combo_ext.setCurrentIndex(combo_idx)
+            self.image_viewer.combo_ext.blockSignals(False)
+
+            # Add to recent files and update menu
+            self.config.add_recent_file(filepath)
+            self.update_recent_files_menu()
+            return True
+        except NoImageData:
+            if show_errors:
+                QMessageBox.warning(self, "Warning", "No valid data found in FITS file.")
+            self._last_load_error = "no image data"
+            return False
         except Exception as e:
             if show_errors:
                 QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{str(e)}")
@@ -793,7 +803,9 @@ class MainWindow(QMainWindow):
     def load_from_memory(self, data, header, title):
         try:
             self.fits_reader.load_from_memory(data, header)
+            was_total_dn = self.image_viewer.disp_as_dn
             self.image_viewer.set_data(data, header=header)
+            self.sync_unit_menu(was_total_dn)
             filename = os.path.basename(title)
             self.setWindowTitle(f"QuickLook 3 - {filename}")
             
@@ -818,7 +830,12 @@ class MainWindow(QMainWindow):
             return
         ext_idx = self.image_viewer.combo_ext.itemData(index)
         if ext_idx is not None and self.fits_reader.filepath:
-            self.load_fits(self.fits_reader.filepath, ext=ext_idx)
+            if not self.load_fits(self.fits_reader.filepath, ext=ext_idx):
+                # The reader stayed on the extension on screen (R12); so does the combo.
+                combo = self.image_viewer.combo_ext
+                combo.blockSignals(True)
+                combo.setCurrentIndex(combo.findData(self.fits_reader.current_ext))
+                combo.blockSignals(False)
 
     def redisplay_image(self):
         # force=True so this is always a genuine re-read from disk, even for a rewrite that
@@ -846,8 +863,42 @@ class MainWindow(QMainWindow):
     def toggle_pa(self, checked):
         self.image_viewer.toggle_position_angle(checked)
         
+    def sync_unit_menu(self, was_total_dn=False):
+        """Make the Data Units menu describe the viewer's data (R83).
+
+        Called after each load. The first action names the file's own unit. "As Total
+        DN" is enabled only for a count rate with an integration time; otherwise its tooltip and
+        status tip are the reason. `set_data` has already left Total DN for data that do not
+        support it, before announcing the new plane, so this only moves the check mark and, when
+        `was_total_dn` says Total DN was shown before the load, says so in the status bar.
+        Switching unit here instead would redraw the image, and recompute every open tool, a
+        second time.
+        """
+        viewer = self.image_viewer
+        available = viewer.total_dn_available
+        if viewer.raw_data is None:
+            self.action_dn_s.setText("As Stored")
+            reason = "no file is loaded"
+        else:
+            unit = viewer.data_unit.label
+            stated = "unit not stated" if unit == UNKNOWN_UNIT else unit
+            self.action_dn_s.setText(f"As Stored ({stated})")
+            reason = viewer.data_unit.reason
+        self.action_tot_dn.setEnabled(available)
+        self.action_tot_dn.setToolTip("" if available else reason)
+        # The status bar shows the status tip while the item is highlighted, which reaches a
+        # user whose menu does not show tooltips
+        self.action_tot_dn.setStatusTip("" if available else reason)
+        (self.action_tot_dn if viewer.disp_as_dn else self.action_dn_s).setChecked(True)
+        if was_total_dn and not viewer.disp_as_dn:
+            self.statusBar().showMessage(
+                f"Total DN is not available for this file ({reason}); showing the values as "
+                f"stored.", 8000)
+
     def set_display_unit(self, as_total_dn):
-        """Show the image, and every open tool, in Total DN or in DN/s.
+        """Show the image, and every open tool, in Total DN or in the file's own unit.
+
+        Total DN is refused for data that do not support it (`total_dn_available`).
 
         The tools are not called from here. `refresh_display()` emits the viewer's
         `plane_changed`, which every tool follows (`BaseToolDialog.on_plane_changed`), and each
@@ -856,6 +907,8 @@ class MainWindow(QMainWindow):
         change (`BUGS.md` R14). Of the dialogs in `TOOL_DIALOG_ATTRS` only the Arithmetic
         tool is not a `BaseToolDialog`, and it shows nothing in either unit.
         """
+        as_total_dn = bool(as_total_dn) and self.image_viewer.total_dn_available
+        (self.action_tot_dn if as_total_dn else self.action_dn_s).setChecked(True)
         if self.image_viewer.disp_as_dn != as_total_dn:
             self.image_viewer.disp_as_dn = as_total_dn
             self.image_viewer.update_colorbar_label()
@@ -1417,7 +1470,14 @@ class MainWindow(QMainWindow):
         (`DirectoryPoller.polling_stopped`). While `auto_load_held()` is active, an
         attempt that comes due stores its path instead, and only the newest is loaded
         afterwards.
+
+        The file this window already shows, unchanged since it was read, is not a new
+        frame: it is this window's own Save Header, which the poller sees as a replaced
+        file (R70). It is ignored here, before it can supersede a retry queued for a
+        real frame.
         """
+        if self.fits_reader.holds_current_copy(filepath):
+            return
         self._auto_load_generation += 1
         self._attempt_auto_load(filepath, 0, self._auto_load_generation)
 
@@ -1451,6 +1511,11 @@ class MainWindow(QMainWindow):
         # is_polling() test only matters for a direct call made with no watch running.
         if generation != self._auto_load_generation or not self.poller.is_polling():
             return
+        # The file this window already shows, unchanged since it was read (R70). The
+        # same test as in on_file_detected, repeated for a retry. Checked before the
+        # hold so that it does not displace a real frame waiting there.
+        if self.fits_reader.holds_current_copy(filepath):
+            return
         if self._auto_load_hold:
             self._deferred_auto_load = filepath
             return
@@ -1474,7 +1539,7 @@ class MainWindow(QMainWindow):
             "Could not display new file",
             f"{os.path.basename(filepath)} could not be read after {waited:.0f} seconds "
             f"of retrying.\n\nIt may still be transferring, or it may be incomplete. "
-            f"Use Display → Redisplay image to try again.\n\nLast error: {detail}",
+            f"Use File → Open... to try again.\n\nLast error: {detail}",
         )
 
     def on_batch_coalesced(self, suppressed, filepath):

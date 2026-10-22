@@ -400,6 +400,53 @@ def test_a_retry_does_not_survive_a_restarted_watch(qapp, tmp_path, polling_wind
     assert win.image_viewer.raw_data is None, "a retry from the previous watch loaded"
 
 
+def test_changing_the_interval_keeps_a_pending_retry(qapp, tmp_path, polling_window):
+    """R43: the Scan Interval restarts the observer on the directory already watched.
+    That restart must not cancel the retry of a file the new observer will not
+    announce again."""
+    from PySide6.QtTest import QTest
+
+    win = polling_window
+    f1 = str(tmp_path / "frame_0001.fits")
+    _write_partial(f1, 1.0)
+    with pytest.warns(AstropyUserWarning, match="truncated"):
+        win.on_file_detected(f1)                # fails; a retry is queued
+
+    win.poller.interval = 0.6                   # the Scan Interval spin box
+    assert win.poller.is_polling()
+    _write_whole(f1, 1.0)
+    QTest.qWait(RETRY_WAIT_MS)
+
+    assert win.windowTitle() == "QuickLook 3 - frame_0001.fits", \
+        "the interval change cancelled the retry"
+    assert win.image_viewer.raw_data.mean() == 1.0
+
+
+def test_the_windows_own_save_does_not_cancel_a_pending_retry(qapp, tmp_path,
+                                                              polling_window):
+    """R70: the poller re-announces the file this window just saved. That announcement
+    is not a new frame, so it must not supersede the retry queued for one."""
+    from PySide6.QtTest import QTest
+
+    win = polling_window
+    saved, arriving = str(tmp_path / "frame_0001.fits"), str(tmp_path / "frame_0002.fits")
+    _write_whole(saved, 1.0)
+    assert win.load_fits(saved)
+    _write_partial(arriving, 2.0)
+    with pytest.warns(AstropyUserWarning, match="truncated"):
+        win.on_file_detected(arriving)          # fails; a retry is queued
+
+    win.fits_reader.update_header_card("OBJECT", "GC")
+    win.fits_reader.save()                      # Save Header, in place
+    win.on_file_detected(saved)                 # the poller sees the replaced file
+    _write_whole(arriving, 2.0)
+    QTest.qWait(RETRY_WAIT_MS)
+
+    assert win.windowTitle() == "QuickLook 3 - frame_0002.fits", \
+        "the re-announced save cancelled the retry"
+    assert win.image_viewer.raw_data.mean() == 2.0
+
+
 def test_a_retry_queued_before_the_header_editor_opens_waits_for_it(qapp, tmp_path,
                                                                     polling_window,
                                                                     monkeypatch):
@@ -412,10 +459,10 @@ def test_a_retry_queued_before_the_header_editor_opens_waits_for_it(qapp, tmp_pa
     f0, f1 = str(tmp_path / "frame_0000.fits"), str(tmp_path / "frame_0001.fits")
     _write_whole(f0, 0.5)
     assert win.load_fits(f0)
-    # Announced but not yet visible here, as an NFS attribute cache can make it. A
-    # missing file fails before the reader lets go of frame 0; a truncated one would
-    # leave the reader holding nothing (R12), and Edit FITS Header would not open.
-    win.on_file_detected(f1)                    # fails; a retry is queued
+    # A failed load leaves the reader on frame 0 (R12), so Edit FITS Header still opens.
+    _write_partial(f1, 1.0)
+    with pytest.warns(AstropyUserWarning, match="truncated"):
+        win.on_file_detected(f1)                # fails; a retry is queued
     _write_whole(f1, 1.0)
 
     loads = []
@@ -465,6 +512,9 @@ def test_the_failure_warning_quotes_this_files_error(qapp, tmp_path, polling_win
     message = warnings[0][2]
     assert "Last error: no image data" in message
     assert "yesterday_frame" not in message
+    # A failed load leaves the window on the file it displays (R12), so Redisplay would
+    # reload that file, not this one. The advice has to name a way to open this one.
+    assert "Redisplay" not in message and "File → Open" in message
 
 
 # ------------------------------------------------------------------ lifecycle
@@ -492,6 +542,107 @@ def test_interval_is_configurable(qapp, tmp_path):
     poller.interval = 3.0
     assert poller.interval == 3.0
     poller.stop_polling()
+
+
+def test_the_polling_dialog_applies_the_interval_when_editing_finishes(qapp, tmp_path):
+    """R43: every spin-box step used to restart the observer. Stepping from 2.0 to 5.0
+    restarted it six times; typing "10" restarted it at "1" first."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from pyql3.gui.dialogs.polling import PollingDialog
+
+    poller = DirectoryPoller(interval=2.0)
+    assert poller.start_polling(str(tmp_path))
+    dialog = PollingDialog(poller)
+    try:
+        observer = poller.observer
+        for _ in range(6):
+            dialog.spin_interval.stepUp()
+        assert poller.interval == 2.0 and poller.observer is observer, \
+            "a spin-box step restarted the watch"
+
+        QTest.keyClick(dialog.spin_interval, Qt.Key.Key_Return)
+        assert poller.interval == 5.0
+        assert poller.observer is not observer, "the new interval did not restart the scan"
+
+        dialog.spin_interval.setValue(7.5)          # stepped, then Close clicked
+        dialog.accept()
+        assert poller.interval == 7.5
+    finally:
+        dialog.deleteLater()
+        poller.stop_polling()
+
+
+def test_closing_the_polling_dialog_unedited_keeps_the_interval(qapp, tmp_path):
+    """The spin box shows one decimal from 0.5 s, so a hand-edited 2.25 s reads 2.3.
+    Closing the dialog without editing applied that shown value: it restarted the watch
+    and wrote 2.3 to the config."""
+    from pyql3.gui.dialogs.polling import PollingDialog
+    from pyql3.services.config import ConfigManager
+
+    config = ConfigManager(tmp_path / "config.json")
+    config.set("polling_interval", 2.25)
+    poller = DirectoryPoller(interval=2.25)
+    assert poller.start_polling(str(tmp_path))
+    try:
+        observer = poller.observer
+        for close in ("reject", "accept"):          # Escape, then Close
+            dialog = PollingDialog(poller, config=config)
+            dialog.spin_interval.editingFinished.emit()     # focus left the box, unedited
+            getattr(dialog, close)()
+            dialog.deleteLater()
+            assert poller.interval == 2.25, f"{close} changed the interval"
+            assert poller.observer is observer, f"{close} restarted the watch"
+            assert config.get("polling_interval") == 2.25
+    finally:
+        poller.stop_polling()
+
+
+@pytest.mark.parametrize("restart", ["interval", "takeover"])
+def test_restarting_a_watch_keeps_unsettled_files(qapp, tmp_path, restart):
+    """R43: a file seen by a scan but not yet settled, and a settled file held while a
+    batch finishes arriving, were dropped by a restart. The new observer's first scan
+    treats both as already present, so neither was ever announced."""
+    owner, successor = DirectoryPoller(), DirectoryPoller()
+    seen, coalesced, stopped = [], [], []
+    for poller in (owner, successor):
+        poller.file_detected.connect(seen.append)
+        poller.batch_coalesced.connect(lambda n, path: coalesced.append(n))
+    owner.polling_stopped.connect(lambda: stopped.append(owner))
+    try:
+        assert owner.start_polling(str(tmp_path))
+
+        held, unsettled = str(tmp_path / "frame_0001.fits"), str(tmp_path / "frame_0002.fits")
+        _write_cube(held)
+        _write_cube(unsettled)
+        base = os.stat(held).st_mtime_ns
+        os.utime(held, ns=(base, base))
+        os.utime(unsettled, ns=(base + 1_000_000_000, base + 1_000_000_000))
+
+        owner._add_candidate(held)
+        _tick(owner)
+        owner._add_candidate(unsettled)
+        _tick(owner, SETTLE_CHECKS)
+        # The premise: frame 1 has settled and is held while frame 2 is still pending.
+        assert owner._held_path == held and unsettled in owner._pending
+        assert seen == []
+
+        if restart == "interval":
+            owner.interval = 0.6                    # the Scan Interval spin box
+            now_watching = owner
+            assert stopped == [], "a restart on the same directory is not the end of a watch"
+        else:
+            assert successor.start_polling(str(tmp_path))
+            now_watching = successor
+            assert stopped == [owner], "the previous owner's watch has ended"
+        assert now_watching.is_polling()
+
+        _settle(now_watching)
+        assert seen == [unsettled], "the newest file was not announced exactly once"
+        assert coalesced == [1], "the held file was not counted in the batch"
+    finally:
+        owner.stop_polling()
+        successor.stop_polling()
 
 
 def test_hidden_files_are_ignored(qapp, tmp_path):

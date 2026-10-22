@@ -169,6 +169,69 @@ def osiris_like_fits(tmp_path):
 
 
 @pytest.fixture
+def nifs_like_header():
+    """The SCI header of a Gemini NIFS cube, cut down to its axis cards (`BUGS.md` R81, R82).
+
+    NIFS writes its axes the IRAF way: every `CTYPEn` is `LINEAR`, so astropy finds neither a
+    celestial nor a spectral axis, and the wavelength axis (FITS axis 3) is named only by
+    `WAT3_001 = '... axtype=wave'` and `DISPAXIS = 3`. No unit is stated anywhere; the numbers
+    are Ångström by Gemini's convention. A data array for it is numpy `(wave, y, x)`.
+    """
+    header = fits.Header()
+    for key, value in [('DISPAXIS', 3), ('CTYPE1', 'LINEAR'), ('CTYPE2', 'LINEAR'),
+                       ('CTYPE3', 'LINEAR'), ('CD1_1', 0.05), ('CD2_2', 0.05),
+                       ('CD3_3', 2.1325798), ('CRVAL3', 19968.66), ('CRPIX3', 1.0),
+                       ('WAT1_001', 'wtype=linear axtype=xi'),
+                       ('WAT2_001', 'wtype=linear axtype=eta'),
+                       ('WAT3_001', 'wtype=linear axtype=wave')]:
+        header[key] = value
+    return header
+
+
+def _wcs_cards(*ctypes):
+    """The header cards of a 3-axis WCS with the given `CTYPEn`."""
+    wcs = WCS(naxis=3)
+    wcs.wcs.ctype = list(ctypes)
+    wcs.wcs.cdelt = [1e-9 if ctype.startswith('WAVE') else 1e-5 for ctype in ctypes]
+    return wcs.to_header()
+
+
+@pytest.fixture
+def s3d_like_fits(tmp_path):
+    """A file laid out as a JWST NIRSpec `*_s3d.fits` (`BUGS.md` R25): an empty primary, then
+    SCI, ERR and DQ cubes of one shape. Only SCI carries WCS cards and `BUNIT`. Numpy shape
+    (wave, dec, ra) = (60, 9, 7)."""
+    cube = np.arange(60 * 9 * 7, dtype=np.float32).reshape(60, 9, 7)
+    science = _wcs_cards('RA---TAN', 'DEC--TAN', 'WAVE')
+    science['BUNIT'] = 'MJy/sr'
+    path = tmp_path / "s3d_like.fits"
+    fits.HDUList([fits.PrimaryHDU(),
+                  fits.ImageHDU(cube, science, name='SCI'),
+                  fits.ImageHDU(cube, name='ERR'),
+                  fits.ImageHDU(np.zeros(cube.shape, dtype=np.uint8), name='DQ')]).writeto(path)
+    return str(path)
+
+
+@pytest.fixture
+def osiris_like_fits_with_noise(tmp_path):
+    """A file laid out as an OSIRIS cube (`BUGS.md` R25): the primary holds the science data, its
+    WCS (wavelength, Dec, RA), `TRUITIME`/`ITIME`/`COADDS` and `BUNIT`; extensions 1 and 2 (noise
+    and quality) have the primary's shape and headers with nothing in them. Numpy shape
+    (ra, dec, wave) = (7, 9, 60)."""
+    cube = np.ones((7, 9, 60), dtype=np.float32)
+    header = _wcs_cards('WAVE', 'DEC--TAN', 'RA---TAN')
+    header['ITIME'] = 900000
+    header['TRUITIME'] = 899.92
+    header['COADDS'] = 2
+    header['BUNIT'] = 'ADU per second per coadd'
+    path = tmp_path / "osiris_like.fits"
+    fits.HDUList([fits.PrimaryHDU(cube, header),
+                  fits.ImageHDU(cube * 0.1),
+                  fits.ImageHDU(np.zeros(cube.shape, dtype=np.uint8))]).writeto(path)
+    return str(path)
+
+
+@pytest.fixture
 def sample_2d_fits(tmp_path):
     """Generate a synthetic 2D FITS image for testing."""
     data = np.random.normal(50.0, 5.0, (100, 100)).astype(np.float32)
