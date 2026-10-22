@@ -365,6 +365,20 @@ def test_channel_ranges_follow_a_collapse_range(loaded_viewer, layer):
     assert item.isVisible(), "a collapse that overlaps the region's range must show it"
 
 
+def test_an_unparsable_collapse_range_shows_the_regions_of_every_channel(loaded_viewer, layer):
+    """The collapse drawn for an unparsable Z Min is the whole cube (R84), so a region is
+    shown against 0 to the last channel, not against the middle channel alone."""
+    region = layer.add(Circle(x=10.0, y=10.0, radius=2.0, z_range=(30, 35)))
+    item = layer.item_for(region)
+    loaded_viewer.slider_slice.setValue(2)
+    assert not item.isVisible()
+
+    loaded_viewer.txt_zmin.setText("abc")
+    loaded_viewer.radio_range.setChecked(True)
+
+    assert item.isVisible(), "hidden against a collapse of the whole cube"
+
+
 @pytest.mark.parametrize("aggregate", [False, True], ids=["per-region", "aggregate"])
 def test_a_channel_range_does_not_hide_a_region_on_a_2d_image(qapp, aggregate):
     """A 2-D image has no channels, so a channel range cannot exclude it (`BUGS.md` R63)."""

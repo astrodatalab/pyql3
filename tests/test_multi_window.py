@@ -498,3 +498,33 @@ def test_window_menu_groups_each_windows_tools_under_it(manager, sample_3d_fits)
     assert any("Photometry" in a.text() for a in submenus["second.fits"].actions())
     assert not any("Photometry" in a.text() for a in submenus["first.fits"].actions()), \
         "a tool was listed under the window that does not own it"
+
+
+# --------------------------------------------------------- Exit and Recent Files
+
+
+def test_exit_closes_every_window(manager):
+    """File -> Exit closed only its own window, so the application kept running (R49)."""
+    first = MainWindow()
+    first.show()
+    first.new_window().show()
+    assert manager.count() == 2
+
+    exit_action = next(a for a in first.file_menu.actions() if a.text() == "Exit")
+    exit_action.trigger()
+
+    assert manager.count() == 0
+
+
+def test_recent_files_menu_is_current_in_every_window(manager, sample_3d_fits):
+    """A file opened in window A is in B's menu once B's menu is about to show (R58)."""
+    a, b = MainWindow(), MainWindow()
+    a.config.clear_recent_files()       # the settings file lives as long as the session
+    b.recent_menu.aboutToShow.emit()
+    assert [act.text() for act in b.recent_menu.actions()] == ["No Recent Files"]
+
+    a.load_fits(sample_3d_fits)
+    b.recent_menu.aboutToShow.emit()
+
+    texts = [act.text() for act in b.recent_menu.actions()]
+    assert texts[0] == f"1. {os.path.basename(sample_3d_fits)}"

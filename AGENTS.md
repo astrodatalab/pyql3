@@ -161,11 +161,13 @@ Three things are process-wide and must stay that way:
 - **`get_window_manager()`** (`pyql3/gui/window_manager.py`) is the window list, plus the
   most-recently-used order. A path arriving with no window attached (a Finder open-document
   event) goes to `WindowManager.open_path()`, which targets the most recently used window and
-  creates one if all are closed. `quicklook3 cube.fits` does **not** arrive this way: the
+  creates one if all are closed, or when that window already took a path in the same event-loop
+  pass (several files selected in Finder arrive as one event each; `BUGS.md` R59).
+  `quicklook3 cube.fits` does **not** arrive this way: the
   launcher ends in `exec` (`cli_install.shim_text()`) and nothing implements a single-instance
   hand-off, so every call is a separate process with its own window list and its own
-  `ConfigManager` — two of them share `~/.pyql3/config.json` with no coordination
-  (`BUGS.md` R58). **Never bind
+  `ConfigManager` — two of them share `~/.pyql3/config.json`; each change re-reads the file
+  before writing it, so neither drops the other's entries, though there is no lock (`BUGS.md` R58). **Never bind
   the open-document handler to a particular window's `load_fits`** — that was a crash waiting to
   happen, since closing that window left `FileOpenHandler` calling a method on a deleted C++
   object.

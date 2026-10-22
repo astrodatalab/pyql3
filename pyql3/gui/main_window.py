@@ -131,6 +131,9 @@ class MainWindow(QMainWindow):
 
         self.recent_menu = self.file_menu.addMenu("Recent Files")
         self.update_recent_files_menu()
+        # Another window, or another quicklook3 process, may have changed the list since
+        # this menu was built (BUGS.md R58).
+        self.recent_menu.aboutToShow.connect(self._refresh_recent_files_menu)
         
         save_action = self.file_menu.addAction("Save FITS As...")
         save_action.setShortcut(QKeySequence.StandardKey.Save)
@@ -154,7 +157,10 @@ class MainWindow(QMainWindow):
         exit_action = self.file_menu.addAction("Exit")
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.setMenuRole(QAction.MenuRole.QuitRole)
-        exit_action.triggered.connect(self.close)
+        # Exit leaves the application; Close Window closes only this window (BUGS.md R49).
+        # closeAllWindows() runs every window's closeEvent, so pollers, tools and readers
+        # are still released.
+        exit_action.triggered.connect(lambda checked=False: QApplication.closeAllWindows())
 
         # Display Menu
         self.display_menu = menubar.addMenu("Display")
@@ -713,6 +719,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{str(e)}")
             self._last_load_error = str(e)
             return False
+
+    def _refresh_recent_files_menu(self):
+        self.config.load()
+        self.update_recent_files_menu()
 
     def update_recent_files_menu(self):
         if not hasattr(self, 'recent_menu'):

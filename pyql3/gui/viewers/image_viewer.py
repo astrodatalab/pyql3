@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QRadioButton, QGroupBox, QSlider, QFrame,
                                QButtonGroup, QTabWidget, QStyle, QStyleOptionSlider)
 from PySide6.QtCore import Qt, Signal, QEvent, QPointF
-from PySide6.QtGui import QTransform
+from PySide6.QtGui import QIntValidator, QTransform
 import numpy as np
 from astropy.coordinates import SkyCoord
 import astropy.units as u
@@ -113,6 +113,14 @@ class ImageViewer(QWidget):
         # Top: The Image View
         self.imv = pg.ImageView()
         self.imv.ui.histogram.hide()
+        # The colorbar's ticks are positions in the rendered values; label them with the data
+        # values those positions stand for (R65). `update_image_display` sets the inverse.
+        self._colorbar_inverse = None
+        self._colorbar_domain = None
+        # pyqtgraph's automatic SI prefix would divide the ticks by a factor and put "(x1e-06)" in
+        # the label, but these are data values already.
+        self.imv.ui.histogram.axis.enableAutoSIPrefix(False)
+        self.imv.ui.histogram.axis.tickStrings = self._colorbar_tick_strings
         self.imv.ui.roiBtn.hide()
         self.imv.ui.menuBtn.hide()
         self.imv.getView().setAspectLocked(True)
@@ -318,6 +326,30 @@ class ImageViewer(QWidget):
         except (ValueError, AttributeError):
             return None
         return self.clamp_z_range(zmin, zmax, write_back=write_back)
+
+    def z_fields_unparsable(self):
+        """True when a cube is loaded and Z Min or Z Max does not hold a whole number.
+
+        The validators keep letters out of what is typed, but `setText` and an emptied box
+        bypass them (R84).
+        """
+        data = getattr(self, 'transposed_data', None)
+        return (data is not None and data.ndim == 3
+                and self.z_range_from_fields() is None)
+
+    def z_range_in_effect(self, write_back=False):
+        """The channel range a Z Range collapse covers: the Z Min / Z Max boxes, or the whole
+        cube while either does not parse.
+
+        Everything that draws or reads the collapse asks this, not `z_range_from_fields`, so the
+        plane on screen, `display_data`, `current_plane()` and the slice label agree. Stopping at
+        an unparsable box left the ImageView's cube painted at channel 0 (R84). A box that does
+        not parse is never rewritten.
+        """
+        rng = self.z_range_from_fields(write_back=write_back)
+        if rng is None and self.z_fields_unparsable():
+            return self.clamp_z_range(0, self.transposed_data.shape[0] - 1)
+        return rng
 
     def boxcar_width(self):
         """The Boxcar setting, at least 1."""
@@ -549,8 +581,7 @@ class ImageViewer(QWidget):
 
         # The collapsed plane the viewer drew, when it is still the one these fields describe
         if hasattr(self, 'radio_range') and self.radio_range.isChecked():
-            rng = self.z_range_from_fields()
-            plane = self._collapse_for_reading(*rng) if rng is not None else None
+            plane = self._collapse_for_reading(*self.z_range_in_effect())
         elif self.boxcar_width() > 1:
             rng = self.boxcar_range()
             plane = (self._collapse_for_reading(*rng, method="Median")
@@ -573,9 +604,7 @@ class ImageViewer(QWidget):
 
         if hasattr(self, 'radio_range') and self.radio_range.isChecked():
             # Collapsed plane: report the middle of the range, as the WCS readout does
-            rng = self.z_range_from_fields()
-            if rng is None:
-                return int(np.clip(self.slider_slice.value(), 0, nz - 1))
+            rng = self.z_range_in_effect()
             return (rng[0] + rng[1]) // 2
 
         # Slice mode, boxcar included: the slider is the source of truth
@@ -717,7 +746,7 @@ class ImageViewer(QWidget):
             return
 
         if hasattr(self, 'radio_range') and self.radio_range.isChecked():
-            rng = self.z_range_from_fields()
+            rng = self.z_range_in_effect()
             if rng is None:
                 self.lbl_slice_info.setText("Collapsed: Invalid Range")
             else:
@@ -728,6 +757,8 @@ class ImageViewer(QWidget):
                 wave_max = self.get_wavelength_for_slice(zmax)
                 if wave_min is not None and wave_max is not None:
                     text += f", {self.wavelength_text(wave_min, wave_max)}"
+                if self.z_fields_unparsable():
+                    text += "  —  Invalid Range in Z Min/Z Max, full range used"
 
                 self.lbl_slice_info.setText(text)
         else:
@@ -987,11 +1018,13 @@ class ImageViewer(QWidget):
         range_hbox.addWidget(QLabel("Z Min:"))
         self.txt_zmin = QLineEdit("0")
         self.txt_zmin.setFixedWidth(50)
+        self.txt_zmin.setValidator(QIntValidator(self.txt_zmin))
         self.txt_zmin.editingFinished.connect(self.on_z_range_entered)
         range_hbox.addWidget(self.txt_zmin)
         range_hbox.addWidget(QLabel("Z Max:"))
         self.txt_zmax = QLineEdit("0")
         self.txt_zmax.setFixedWidth(50)
+        self.txt_zmax.setValidator(QIntValidator(self.txt_zmax))
         self.txt_zmax.editingFinished.connect(self.on_z_range_entered)
         range_hbox.addWidget(self.txt_zmax)
         self.btn_apply_range = QPushButton("Apply")
@@ -1021,6 +1054,7 @@ class ImageViewer(QWidget):
         slice_hbox.addWidget(QLabel("Boxcar:"))
         self.txt_boxcar = QLineEdit("1")
         self.txt_boxcar.setFixedWidth(40)
+        self.txt_boxcar.setValidator(QIntValidator(self.txt_boxcar))
         self.txt_boxcar.editingFinished.connect(self.on_boxcar_entered)
         slice_hbox.addWidget(self.txt_boxcar)
         self.btn_apply_slice = QPushButton("Apply")
@@ -1047,10 +1081,32 @@ class ImageViewer(QWidget):
         self.imv.autoRange()
 
     def main_zoom_11(self):
+        """One data pixel per screen pixel, centred where the view is now (R66).
+
+        The range is the ViewBox's size in screen pixels, in data units: the ImageItem is one
+        unit per pixel, whatever the view rotation. Setting it to the whole image, as this did,
+        is Fit."""
         self.imv.getView().setAspectLocked(True)
         if self.display_data is not None:
-            w, h = self.display_data.shape[-2:]
-            self.imv.getView().setRange(xRange=(0, w), yRange=(0, h), padding=0)
+            self._set_one_to_one(x=True, y=True)
+
+    def _set_one_to_one(self, x, y):
+        """Make the chosen axes span the ViewBox's screen size, about the current centre.
+        Falls back to the whole image on an axis when the ViewBox has no size yet."""
+        view = self.imv.getView()
+        rect = view.viewRect()
+        w, h = self.display_data.shape[-2:]
+        ranges = {}
+        for key, wanted, screen, centre, extent in (
+                ('xRange', x, view.width(), rect.center().x(), w),
+                ('yRange', y, view.height(), rect.center().y(), h)):
+            if not wanted:
+                continue
+            if screen > 0:
+                ranges[key] = (centre - screen / 2.0, centre + screen / 2.0)
+            else:
+                ranges[key] = (0, extent)
+        view.setRange(padding=0, **ranges)
 
     def independent_zoom(self, x=None, y=None):
         self.imv.getView().setAspectLocked(False)
@@ -1059,14 +1115,12 @@ class ImageViewer(QWidget):
     def zoom_x_1_1(self):
         self.imv.getView().setAspectLocked(False)
         if self.display_data is not None:
-            w = self.display_data.shape[-2]
-            self.imv.getView().setRange(xRange=(0, w), padding=0)
+            self._set_one_to_one(x=True, y=False)
             
     def zoom_y_1_1(self):
         self.imv.getView().setAspectLocked(False)
         if self.display_data is not None:
-            h = self.display_data.shape[-1]
-            self.imv.getView().setRange(yRange=(0, h), padding=0)
+            self._set_one_to_one(x=False, y=True)
             
     def zoom_x_fit(self):
         self.imv.getView().setAspectLocked(False)
@@ -1180,11 +1234,7 @@ class ImageViewer(QWidget):
         # Clamp both ends and reflect the correction in the UI before collapsing: a
         # reversed or out-of-range entry used to slice an empty subcube and blank the
         # display with only a console warning (B12).
-        rng = self.z_range_from_fields(write_back=True)
-        if rng is None:
-            self.lbl_slice_info.setText("Collapsed: Invalid Range")
-            return
-        zmin, zmax = rng
+        zmin, zmax = self.z_range_in_effect(write_back=True)
 
         if getattr(self.imv, 'timeLine', None) is not None:
             self.imv.timeLine.hide()
@@ -1939,34 +1989,49 @@ class ImageViewer(QWidget):
             base = base.astype(np.result_type(base.dtype, np.float32), copy=False)
 
         scale_type = self.combo_scale.currentText()
+        # What the colorbar needs to turn a rendered value back into a data value (R65)
+        inverse = None
         if scale_type == "Linear":
             render_data = base
             render_vmin, render_vmax = vmin, vmax
         elif scale_type == "Negative":
             render_data = -base
             render_vmin, render_vmax = -vmax, -vmin
+            inverse = lambda r: -r
         elif scale_type == "Logarithmic":
             render_data = np.log10(np.clip(base - vmin + 1, 1, None))
             render_vmin, render_vmax = 0.0, np.log10(max(1.0, vmax - vmin + 1))
+            inverse = lambda r, lo=vmin: 10.0 ** r + lo - 1.0
         elif scale_type == "Sqrt":
             render_data = np.sqrt(np.clip(base - vmin, 0, None))
             render_vmin, render_vmax = 0.0, np.sqrt(max(0.0, vmax - vmin))
+            inverse = lambda r, lo=vmin: r ** 2 + lo
         elif scale_type == "AsinH":
             noise = (vmax - vmin) / 100.0 if vmax > vmin else 1.0
             render_data = np.arcsinh((base - vmin) / noise)
             render_vmin, render_vmax = 0.0, np.arcsinh((vmax - vmin) / noise)
+            inverse = lambda r, lo=vmin, n=noise: np.sinh(r) * n + lo
         elif scale_type == "HistEq":
             valid_mask = ~np.isnan(base)
             valid_data = base[valid_mask]
             sample = valid_data
             if sample.size > 50000:
-                sample = np.random.choice(sample, 50000)
+                # Seeded, so the colorbar's labels, which come from this sample, repeat
+                sample = np.random.default_rng(0).choice(sample, 50000)
             sorted_flat = np.sort(sample)
 
             render_data = np.zeros(base.shape, dtype=base.dtype)
             if sorted_flat.size > 0:
                 render_data[valid_mask] = np.searchsorted(sorted_flat, valid_data) / float(sorted_flat.size)
             render_vmin, render_vmax = 0.0, 1.0
+            if sorted_flat.size > 0:
+                # The rendered value is a rank as a fraction of the sample
+                ranks = np.arange(sorted_flat.size) / float(sorted_flat.size)
+                inverse = lambda r, k=ranks, v=sorted_flat: np.interp(r, k, v)
+        self._colorbar_inverse = inverse
+        # Only these two are not defined past the levels (see `_colorbar_tick_strings`)
+        self._colorbar_domain = ((render_vmin, render_vmax)
+                                 if scale_type in ("Sqrt", "HistEq") else None)
 
         # Is the plane the user is looking at entirely invalid (a dead slice, a fully masked
         # region)? Probe the data, not render_data — HistEq substitutes zeros of its own,
@@ -2204,6 +2269,35 @@ class ImageViewer(QWidget):
                 self.imv.setColorMap(cmap)
         except Exception as e:
             print(f"Warning: Could not set colormap {lookup_name}: {e}")
+
+    def colorbar_value(self, rendered):
+        """The data value a rendered value stands for: the inverse of the active Scale.
+
+        The colorbar's axis is in rendered values (0 to 99.0 under Sqrt for data from 25 to
+        9825), which are not the values the label "Pixel Value (...)" names. Accepts a number
+        or an array.
+        """
+        inverse = self._colorbar_inverse
+        return np.asarray(rendered, dtype=float) if inverse is None else inverse(
+            np.asarray(rendered, dtype=float))
+
+    def _colorbar_tick_strings(self, values, scale, spacing):
+        """Tick labels for the colorbar: the data value at each tick. The axis runs a little past
+        the levels, where Sqrt would map a negative rendered value to a value above the minimum
+        and HistEq would repeat its end value, so those ticks are left blank."""
+        rendered = np.atleast_1d(np.asarray(values, dtype=float))
+        with np.errstate(all='ignore'):
+            shown = np.atleast_1d(self.colorbar_value(rendered))
+        domain = self._colorbar_domain
+        strings = []
+        for r, value in zip(rendered, shown):
+            if domain is not None:
+                slack = 1e-9 * (domain[1] - domain[0])
+                if r < domain[0] - slack or r > domain[1] + slack:
+                    strings.append("")
+                    continue
+            strings.append(f"{value:.4g}")
+        return strings
 
     def toggle_colorbar(self, show: bool):
         if show:

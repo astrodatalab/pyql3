@@ -81,6 +81,11 @@ class ConfigManager:
         return self.config.get(key, default)
         
     def set(self, key, value):
+        # Re-read before changing, as `quicklook3` runs started while the application is
+        # open are separate processes sharing this file, and a snapshot taken at start-up
+        # would write their changes back over theirs (BUGS.md R58). `load()` still
+        # quarantines a damaged file.
+        self.load()
         self.config[key] = value
         self.save()
 
@@ -93,6 +98,7 @@ class ConfigManager:
     def add_recent_file(self, filepath, max_items=10):
         if not filepath:
             return
+        self.load()
         filepath = os.path.realpath(os.path.abspath(os.path.expanduser(filepath)))
         recent = [os.path.realpath(os.path.abspath(os.path.expanduser(f))) for f in self.get_recent_files()]
         recent = [f for f in recent if f != filepath]
@@ -103,13 +109,14 @@ class ConfigManager:
     def remove_recent_file(self, filepath):
         if not filepath:
             return
+        self.load()
         filepath = os.path.realpath(os.path.abspath(os.path.expanduser(filepath)))
         recent = [os.path.realpath(os.path.abspath(os.path.expanduser(f))) for f in self.get_recent_files()]
         recent = [f for f in recent if f != filepath]
         self.set("recent_files", recent)
 
     def clear_recent_files(self):
-        self.set("recent_files", [])
+        self.set("recent_files", [])  # set() re-reads the file first
 
 
 #: The single ConfigManager shared by every window in this process (see get_config).

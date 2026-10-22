@@ -75,7 +75,7 @@ def test_plan_reports_what_an_install_would_replace(tmp_path, monkeypatch):
     assert cli_install.plan(dest_dir=tmp_path).existing is None
 
     (tmp_path / 'quicklook3').write_text("#!/bin/sh\necho someone else\n")
-    assert cli_install.plan(dest_dir=tmp_path).existing == 'foreign'
+    assert cli_install.plan(dest_dir=tmp_path, force=True).existing == 'foreign'
 
     install(dest_dir=tmp_path, force=True)
     assert cli_install.plan(dest_dir=tmp_path).existing == 'ours'
@@ -168,6 +168,45 @@ def test_a_foreign_file_at_the_target_is_left_alone(tmp_path, monkeypatch):
 
     install(dest_dir=tmp_path, force=True)
     assert MARKER in existing.read_text()
+
+
+def test_plan_refuses_a_foreign_launcher(tmp_path, monkeypatch):
+    """The dialog would say "Create <path>" and "rm <path>" for a file that is not ours (R73)."""
+    monkeypatch.setattr(cli_install, 'launch_command', lambda: ['/bin/echo', 'QL3'])
+    existing = tmp_path / 'quicklook3'
+    existing.write_text("#!/bin/sh\necho not ours\n")
+
+    with pytest.raises(CliInstallError, match="not created by QuickLook 3"):
+        cli_install.plan(dest_dir=tmp_path)
+
+    assert existing.read_text() == "#!/bin/sh\necho not ours\n"
+
+
+def test_plan_refuses_a_translocated_bundle(tmp_path, monkeypatch):
+    """A quarantined bundle that was never moved runs from a temporary read-only copy (R74)."""
+    translocated = Path('/private/var/folders/xx/T/AppTranslocation/ABCD-1234/d/QuickLook3.app')
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    monkeypatch.setattr(cli_install, 'launch_command',
+                        lambda: [str(translocated / 'Contents/MacOS/QuickLook3')])
+    monkeypatch.setattr(cli_install, 'macos_app_bundle', lambda executable=None: translocated)
+
+    with pytest.raises(CliInstallError, match="copy it to /Applications first"):
+        cli_install.plan(dest_dir=tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_file_that_appears_after_the_plan_is_not_overwritten(tmp_path, monkeypatch):
+    """The confirmation can stay open while another program writes the same name."""
+    monkeypatch.setattr(cli_install, 'launch_command', lambda: ['/bin/echo', 'QL3'])
+    proposed = cli_install.plan(dest_dir=tmp_path)
+    assert proposed.existing is None
+    (tmp_path / 'quicklook3').write_text("#!/bin/sh\necho appeared later\n")
+
+    with pytest.raises(CliInstallError, match="not created by QuickLook 3"):
+        install(plan_=proposed)
+
+    assert (tmp_path / 'quicklook3').read_text() == "#!/bin/sh\necho appeared later\n"
 
 
 def test_installing_from_a_mounted_disk_image_is_refused(tmp_path, monkeypatch):

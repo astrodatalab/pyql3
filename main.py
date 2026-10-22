@@ -1,7 +1,6 @@
 import sys
 import argparse
 import os
-import glob
 from PySide6.QtWidgets import QApplication, QSplashScreen
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtCore import Qt
@@ -9,6 +8,7 @@ from pyql3 import get_resource_path
 from pyql3.gui.file_open import FileOpenHandler
 from pyql3.gui.main_window import MainWindow
 from pyql3.gui.window_manager import get_window_manager
+from pyql3.services.poller import is_fits_path
 
 
 def install_cli():
@@ -84,11 +84,25 @@ def main():
     if args.poll_dir:
         poll_dir = os.path.expanduser(args.poll_dir)
         if os.path.isdir(poll_dir):
-            window.poller.start_polling(poll_dir)
-            if not args.filenames:
-                files = glob.glob(os.path.join(poll_dir, '*.fits')) + glob.glob(os.path.join(poll_dir, '*.fit'))
-                if files:
-                    args.filenames = [max(files, key=os.path.getmtime)]
+            try:
+                names = os.listdir(poll_dir)
+            except OSError as exc:
+                # The launch goes on, without the watch: the window is still useful, and
+                # the reason is on the terminal and in the status bar.
+                warning = f"cannot read {poll_dir} ({exc.strerror or exc}); not watching it"
+                print(f"pyql3: {warning}", file=sys.stderr)
+                window.statusBar().showMessage(f"pyql3: {warning}")
+            else:
+                window.poller.start_polling(poll_dir)
+                if not args.filenames:
+                    # The poller's own test, so the frames it would announce are the ones
+                    # considered here: .fts and the compressed forms, in any case (BUGS.md R59).
+                    files = [os.path.join(poll_dir, name) for name in names
+                             if is_fits_path(name) and os.path.isfile(os.path.join(poll_dir, name))]
+                    if files:
+                        args.filenames = [max(files, key=os.path.getmtime)]
+        else:
+            print(f"pyql3: no directory at {poll_dir}", file=sys.stderr)
 
     def apply_startup_view(win):
         """Apply the collapse options, which only mean anything for a loaded 3D cube."""

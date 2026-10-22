@@ -143,3 +143,41 @@ def test_recent_files_of_the_wrong_type_yields_empty(tmp_path):
     with open(path, "w") as handle:
         json.dump({"recent_files": "not-a-list"}, handle)
     assert ConfigManager(path).get_recent_files() == []
+
+
+def test_two_managers_do_not_drop_each_others_recent_files(tmp_path):
+    """Two `quicklook3` processes each read the file once, at startup (R58)."""
+    path = _config_at(tmp_path)
+    first, second = ConfigManager(path), ConfigManager(path)
+
+    first.add_recent_file("/data/x.fits")
+    second.set("polling_interval", 5.0)
+
+    with open(path) as handle:
+        saved = json.load(handle)
+    assert saved["recent_files"] == [os.path.realpath("/data/x.fits")]
+    assert saved["polling_interval"] == 5.0
+
+    second.add_recent_file("/data/y.fits")
+    first.remove_recent_file("/data/x.fits")
+    assert ConfigManager(path).get_recent_files() == [os.path.realpath("/data/y.fits")]
+    second.clear_recent_files()
+    first.set("other", 1)
+    fresh = ConfigManager(path)
+    assert fresh.get_recent_files() == []
+    assert fresh.get("other") == 1
+
+
+def test_a_corrupt_file_is_quarantined_on_every_re_read(tmp_path):
+    """The re-read before a change goes through `load()`, so the quarantine still applies."""
+    path = _config_at(tmp_path)
+    cfg = ConfigManager(path)
+    cfg.set("keep", 1)
+    with open(path, "w") as handle:
+        handle.write("{ not json")
+
+    cfg.set("after", 2)
+
+    assert os.path.exists(path + ".corrupt")
+    with open(path) as handle:
+        assert json.load(handle) == {"after": 2}

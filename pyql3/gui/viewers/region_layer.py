@@ -696,7 +696,7 @@ class RegionLayer(QObject):
         if data is None or data.ndim != 3:
             return None
         if self.viewer.radio_range.isChecked():
-            window = self.viewer.z_range_from_fields()
+            window = self.viewer.z_range_in_effect()
         elif self.viewer.boxcar_width() > 1:
             window = self.viewer.boxcar_range()
         else:

@@ -11,7 +11,8 @@ with no window attached to it:
 `quicklook3 cube.fits` is not one of these: the launcher `exec`s a new process, which has
 its own manager and never reaches a QuickLook 3 that is already running.
 
-The destination is the most recently used window. That is deliberately *not* "the
+The destination is the most recently used window, except that several files arriving in one
+event-loop pass (a multi-selection in Finder) open one window each. That is deliberately *not* "the
 window that happened to be created first": binding to one particular window is the bug
 this module exists to remove -- `main.py` used to hand `window.load_fits` to the
 open-document handler, so once that window was closed a double-clicked file called a
@@ -23,7 +24,7 @@ follow a reduction cannot hijack a window someone has since opened to compare
 something (`pyql3.services.poller`, "Why only one poller may watch a directory").
 """
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QTimer
 
 
 def _is_alive(window):
@@ -51,6 +52,8 @@ class WindowManager:
     def __init__(self):
         self._windows = []
         self._mru = []
+        # Windows that received a path in the current event-loop pass; see `open_path`.
+        self._fed = []
 
     # ------------------------------------------------------------------ registry
 
@@ -125,14 +128,27 @@ class WindowManager:
 
         This is the callable handed to `FileOpenHandler.set_loader`, so its signature
         has to match `MainWindow.load_fits`'s first arguments.
+
+        Selecting several files in Finder sends one open-document event per file, all in
+        one pass of the event loop, and every one would find the same most recently used
+        window and replace the file before it (`BUGS.md` R59). A path whose target window
+        already took one in this pass therefore goes to a new window, as the command line
+        does. The record is cleared by a zero-delay timer, so a file opened later goes to
+        the window in use as before.
         """
         window = self.most_recent()
-        if window is None:
+        if window is None or window in self._fed:
             window = self.new_window()
+        if not self._fed:
+            QTimer.singleShot(0, self._end_pass)
+        self._fed.append(window)
         loaded = window.load_fits(path, ext=ext)
         window.raise_()
         window.activateWindow()
         return loaded
+
+    def _end_pass(self):
+        self._fed = []
 
 
 #: Process-wide manager. There is one window list per running application.

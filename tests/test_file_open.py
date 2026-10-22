@@ -330,6 +330,34 @@ def test_an_impossible_install_is_reported_before_any_dialog(qapp, monkeypatch):
 
 
 @shell_launcher_only
+def test_a_foreign_launcher_is_reported_before_any_confirmation(qapp, monkeypatch, tmp_path):
+    """R73: the confirmation used to offer to create, and to `rm`, a file that was not ours."""
+    from pyql3.gui.main_window import MainWindow
+    from pyql3.services import cli_install
+
+    foreign = tmp_path / 'quicklook3'
+    foreign.write_text("#!/bin/sh\necho not ours\n")
+    monkeypatch.setattr(cli_install, 'choose_install_dir', lambda: tmp_path)
+    monkeypatch.setattr(cli_install, 'launch_command', lambda: ['/bin/echo', 'QL3'])
+    asked = []
+    monkeypatch.setattr(MainWindow, 'confirm_cli_install',
+                        lambda self, proposed: asked.append(proposed) or True)
+    shown = []
+    monkeypatch.setattr('pyql3.gui.main_window.QMessageBox.warning',
+                        lambda parent, title, text: shown.append(text))
+
+    win = MainWindow()
+    try:
+        win.install_cli_tool()
+    finally:
+        win.close()
+
+    assert len(shown) == 1 and "not created by QuickLook 3" in shown[0]
+    assert asked == []
+    assert foreign.read_text() == "#!/bin/sh\necho not ours\n"
+
+
+@shell_launcher_only
 def test_a_write_failure_after_confirmation_is_reported(qapp, monkeypatch, tmp_path):
     """The plan can succeed and the write still fail -- a race, or a permissions change."""
     from pyql3.gui.main_window import MainWindow
@@ -381,3 +409,45 @@ def test_the_success_message_repeats_the_path_setup_when_one_is_needed(qapp, mon
     assert str(installed) in shown[0]
     assert 'export PATH=' in shown[0], "a directory off PATH must come with the fix"
     assert f'rm {installed}' in shown[0], "the success message must say how to undo it"
+
+
+def test_several_finder_files_open_in_separate_windows(qapp, tmp_path, monkeypatch):
+    """Selecting three cubes in Finder sends three events in one pass; each gets a window (R59)."""
+    import numpy as np
+    from astropy.io import fits
+    from PySide6.QtWidgets import QApplication
+
+    from pyql3.gui import window_manager
+    from pyql3.gui.main_window import MainWindow
+    from pyql3.gui.window_manager import WindowManager
+
+    manager = WindowManager()
+    monkeypatch.setattr(window_manager, "_manager", manager)
+    paths = []
+    for i in range(3):
+        path = str(tmp_path / f"cube_{i}.fits")
+        fits.PrimaryHDU(np.full((4, 4, 4), float(i), "f4")).writeto(path)
+        paths.append(path)
+
+    handler = FileOpenHandler()
+    qapp.installEventFilter(handler)
+    try:
+        for path in paths:                      # a cold launch queues them all
+            QApplication.sendEvent(qapp, QFileOpenEvent(path))
+        window = MainWindow()                   # what main.py does next
+        handler.set_loader(manager.open_path)
+
+        assert manager.count() == 3
+        shown = sorted(w.windowTitle() for w in manager.windows())
+        assert shown == [f"QuickLook 3 - cube_{i}.fits" for i in range(3)]
+
+        # The next pass is a new event batch, so a later file goes to the window in use.
+        qapp.processEvents()
+        late = str(tmp_path / "late.fits")
+        fits.PrimaryHDU(np.ones((4, 4, 4), "f4")).writeto(late)
+        manager.open_path(late)
+        assert manager.count() == 3
+    finally:
+        qapp.removeEventFilter(handler)
+        for win in manager.windows():
+            win.close()

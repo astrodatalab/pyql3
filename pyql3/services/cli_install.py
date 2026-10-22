@@ -174,16 +174,24 @@ def choose_install_dir():
         "No writable directory to install into. Tried " + ", ".join(CANDIDATE_DIRS) + ".")
 
 
+#: Part of the path macOS App Translocation runs a quarantined, unmoved bundle from.
+TRANSLOCATION_MARKER = '/AppTranslocation/'
+
+_FOREIGN_FILE = "{path} already exists and was not created by QuickLook 3; it was left alone."
+
+
 #: What an install *would* do. `existing` is None, 'ours' or 'foreign'; `hint` is the shell
 #: line needed to reach the launcher, or None when the directory is already on PATH.
 InstallPlan = namedtuple('InstallPlan', 'path command app_bundle hint existing name')
 
 
-def plan(dest_dir=None, name=SHIM_NAME):
+def plan(dest_dir=None, name=SHIM_NAME, force=False):
     """Work out exactly what `install()` would do, without touching the filesystem.
 
     Every condition that makes installing impossible raises here, so a caller can show the
     user the consequences -- or the reason it cannot proceed -- before anything is written.
+    That includes a file of that name this module did not create, unless `force` says it
+    may be replaced.
     """
     if sys.platform.startswith('win'):
         raise CliInstallError(
@@ -192,6 +200,17 @@ def plan(dest_dir=None, name=SHIM_NAME):
     command = launch_command()
     target = Path(command[0])
     bundle = macos_app_bundle(target) if sys.platform == 'darwin' else None
+
+    # A quarantined bundle that was never moved runs from a read-only copy that macOS
+    # makes under /private/var/folders, which is not under any mount root and is gone
+    # after a restart (BUGS.md R74).
+    for location in (bundle, target):
+        if location is not None and TRANSLOCATION_MARKER in str(location):
+            raise CliInstallError(
+                f"QuickLook 3 is running from a temporary copy that macOS made because the "
+                f"application was downloaded and never moved ({location}); the launcher "
+                "would point at a path that is gone after a restart. Quit it, copy it to "
+                "/Applications first, open it from there, and run this again.")
 
     if on_temporary_volume(bundle or target):
         location = bundle or target
@@ -206,6 +225,8 @@ def plan(dest_dir=None, name=SHIM_NAME):
     existing = None
     if path.exists():
         existing = 'ours' if MARKER in _read_text(path) else 'foreign'
+        if existing == 'foreign' and not force:
+            raise CliInstallError(_FOREIGN_FILE.format(path=path))
 
     return InstallPlan(path, command, bundle, path_hint(directory), existing, name)
 
@@ -251,12 +272,14 @@ def install(dest_dir=None, name=SHIM_NAME, force=False, plan_=None):
     directory, or a same-named file this module did not create.
     """
     if plan_ is None:
-        plan_ = plan(dest_dir, name)
+        plan_ = plan(dest_dir, name, force=force)
 
     if plan_.existing == 'foreign' and not force:
-        raise CliInstallError(
-            f"{plan_.path} already exists and was not created by QuickLook 3; it was left "
-            "alone.")
+        raise CliInstallError(_FOREIGN_FILE.format(path=plan_.path))
+    if plan_.existing is None and not force and plan_.path.exists() \
+            and MARKER not in _read_text(plan_.path):
+        # Created by someone else while the confirmation was open
+        raise CliInstallError(_FOREIGN_FILE.format(path=plan_.path))
 
     try:
         plan_.path.parent.mkdir(parents=True, exist_ok=True)

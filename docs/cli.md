@@ -148,7 +148,8 @@ Two details worth knowing:
 
 * Finder does not pass a double-clicked file as a command-line argument — it sends the
   application an open-document event. This is handled while the app is running too, so
-  opening a second file from Finder loads it into the existing window.
+  opening a second file from Finder loads it into the existing window. Several files
+  selected together in Finder open one window each.
 * `.fits.gz` cannot be registered: macOS matches only the final extension, and claiming
   `.gz` would offer QuickLook 3 for every gzip file on the system. Open compressed cubes
   through **File ➔ Open...** or `quicklook3 cube.fits.gz`, both of which handle them.

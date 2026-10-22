@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtTest import QTest
 from types import SimpleNamespace
 from pyql3.gui.viewers.image_viewer import ImageViewer
 from pyql3.core.fits_reader import FitsReader
@@ -339,21 +340,26 @@ def test_collapse_range_emits_no_empty_slice_warning(channel_cube):
     assert runtime == [], f"unexpected RuntimeWarnings: {runtime}"
 
 
-def test_unparsable_collapse_range_is_reported_not_applied(channel_cube):
-    """Garbage in the box should say so, and must not rewrite what the user typed."""
+def test_unparsable_collapse_range_is_reported_and_collapses_the_full_range(channel_cube):
+    """Garbage in the box says so and must not be rewritten. What is drawn is the whole cube
+    collapsed, so the screen, `display_data` and `current_plane()` still describe one plane
+    (R84; it used to leave the previous collapse on screen)."""
     v = channel_cube
+    v.combo_collapse.setCurrentText("Sum")
     v.radio_range.setChecked(True)
     v.txt_zmin.setText("4")
     v.txt_zmax.setText("8")
     v.apply_z_range()
-    good = v.imv.getImageItem().image.copy()
+    assert np.allclose(v.imv.getImageItem().image, 30.0)
 
     v.txt_zmin.setText("abc")
     v.apply_z_range()
 
     assert "Invalid Range" in v.lbl_slice_info.text()
     assert v.txt_zmin.text() == "abc", "the user's text should not be silently rewritten"
-    assert np.allclose(v.imv.getImageItem().image, good), "display should be left alone"
+    full = float(sum(range(20)))
+    assert np.allclose(v.imv.getImageItem().image, full)
+    assert np.allclose(v.current_plane(), full)
 
 
 def test_clamp_z_range_helper_is_the_single_definition(channel_cube):
@@ -1558,3 +1564,153 @@ def test_labels_use_the_declared_unit(qapp, bunit, label):
     finally:
         cut.close()
         viewer.close()
+
+
+# --- R65 / R66 / R84: colorbar values, 1:1 zoom, unparsable Z fields -----------------
+
+@pytest.mark.parametrize("scale", ["Linear", "Negative", "Logarithmic", "Sqrt", "AsinH", "HistEq"])
+def test_colorbar_ticks_are_data_values_under_sqrt(qapp, scale):
+    """R65: the colorbar showed the render values (0 to 99.0 under Sqrt for data 25 to 9825)
+    beside a label that says "Pixel Value (...)". Its ticks are data values in every scale."""
+    data = np.linspace(25.0, 9825.0, 64 * 32).reshape(64, 32).astype(np.float32)
+    v = ImageViewer()
+    v.set_data(data)
+    v.txt_min.setText("25")
+    v.txt_max.setText("9825")
+    v.combo_scale.setCurrentText(scale)
+    v.apply_contrast()
+    low, high = v.imv.ui.histogram.getLevels()
+
+    axis = v.imv.ui.histogram.axis
+    shown = [float(s) for s in axis.tickStrings([low, high], 1.0, 1.0)]
+
+    # Negative renders the negated data, so its colorbar runs from the largest value down
+    expected = (9825.0, 25.0) if scale == "Negative" else (25.0, 9825.0)
+    assert shown == pytest.approx(expected, rel=2e-3, abs=0.6)
+    assert axis.labelText.startswith("Pixel Value")
+
+
+@pytest.mark.parametrize("scale", ["Linear", "Sqrt"])
+@pytest.mark.parametrize("low, high", [(1e-7, 5e-6), (2e6, 9e8)], ids=["small", "large"])
+def test_colorbar_ticks_are_not_scaled_by_an_si_prefix(qapp, scale, low, high):
+    """pyqtgraph appends "(x1e-06)" to the label and divides the ticks by it. The ticks here
+    are data values already, so a prefix would make them read 1e6 times too small."""
+    data = np.linspace(low, high, 64 * 32).reshape(64, 32)
+    v = ImageViewer()
+    v.set_data(data)
+    v.txt_min.setText(repr(low))
+    v.txt_max.setText(repr(high))
+    v.combo_scale.setCurrentText(scale)
+    v.apply_contrast()
+    hist = v.imv.ui.histogram
+    hist.axis.setRange(*hist.getLevels())      # the axis follows the colorbar's own range
+    qapp.processEvents()
+    axis = hist.axis
+
+    assert "(x" not in axis.labelString()
+    ticks = axis.tickValues(*axis.range, 400.0)
+    values = [t for _spacing, group in ticks for t in group]
+    scaled = axis.tickStrings(values, axis.autoSIPrefixScale, 1.0)
+    assert axis.autoSIPrefixScale == 1.0
+    shown = [float(t) for t in scaled if t]
+    assert shown, "no tick was labelled"
+    assert min(shown) >= low * 0.99 and max(shown) <= high * 1.01
+
+
+def test_colorbar_ticks_outside_the_levels_are_blank(qapp):
+    """The axis runs past the levels. A negative square root would read as a value above
+    the minimum, and HistEq would repeat its end value there."""
+    data = np.linspace(25.0, 9825.0, 64 * 32).reshape(64, 32).astype(np.float32)
+    v = ImageViewer()
+    v.set_data(data)
+    axis = v.imv.ui.histogram.axis
+    for scale in ("Sqrt", "HistEq"):
+        v.combo_scale.setCurrentText(scale)
+        low, high = v.imv.ui.histogram.getLevels()
+        span = high - low
+        assert axis.tickStrings([low - 0.1 * span, low, high, high + 0.1 * span], 1.0, 1.0)[0::3] \
+            == ["", ""], scale
+        assert all(axis.tickStrings([low, high], 1.0, 1.0))
+
+
+def test_histeq_colorbar_labels_do_not_change_between_redraws(qapp):
+    data = np.random.default_rng(1).random((300, 300)).astype(np.float32)   # over 50,000 pixels
+    v = ImageViewer()
+    v.set_data(data)
+    v.combo_scale.setCurrentText("HistEq")
+    axis = v.imv.ui.histogram.axis
+    first = axis.tickStrings([0.25, 0.5, 0.75], 1.0, 1.0)
+    v.update_image_display(use_manual_levels=True)
+
+    assert axis.tickStrings([0.25, 0.5, 0.75], 1.0, 1.0) == first
+
+
+def test_one_to_one_zoom_shows_one_data_pixel_per_screen_pixel(qapp):
+    """R66: 1:1 set the range to the whole image, which is Fit. One data pixel per screen
+    pixel means the view spans the ViewBox's width and height in data units."""
+    data = np.random.default_rng(0).random((200, 300)).astype(np.float32)   # 300 wide, 200 high
+    v = ImageViewer()
+    v.resize(900, 900)
+    v.show()
+    v.set_data(data)
+    qapp.processEvents()
+    view = v.imv.getView()
+
+    v.main_zoom_11()
+    qapp.processEvents()
+
+    rect = view.viewRect()
+    assert rect.width() == pytest.approx(view.width(), abs=1.0)
+    assert rect.height() == pytest.approx(view.height(), abs=1.0)
+    assert rect.center().x() == pytest.approx(150.0, abs=1.0), "1:1 moved the view's centre"
+    assert rect.center().y() == pytest.approx(100.0, abs=1.0)
+
+    v.close()
+
+
+def _reload_new_array(v):
+    v.set_data(v.raw_data.copy(), v.header)
+
+
+@pytest.mark.parametrize("redisplay", [pytest.param(_reload_new_array, id="reload"),
+                                       pytest.param(_flip, id="flip")])
+def test_an_unparsable_z_field_does_not_leave_a_stale_plane(qapp, redisplay):
+    """R84: with Z Min unparsable, a redisplay in Z Range mode stopped after giving the
+    ImageView the whole cube, so channel 0 stayed on screen at the old levels while
+    `display_data` was the cube. The full range is collapsed, with a message."""
+    nra, ndec, nz = 8, 6, 12
+    cube = np.zeros((nz, ndec, nra), dtype=np.float32)
+    for k in range(nz):
+        cube[k] = k + 100.0
+    v = ImageViewer()
+    v.set_data(cube)
+    v.combo_collapse.setCurrentText("Sum")
+    v.txt_zmin.setText("4")
+    v.txt_zmax.setText("8")
+    v.radio_range.setChecked(True)
+    assert np.allclose(_rendered(v), 530.0)
+
+    v.txt_zmin.setText("abc")
+    for _ in range(10):
+        if redisplay is _flip:
+            v.flip = not v.flip
+        redisplay(v)
+
+    full = float(sum(100 + k for k in range(nz)))
+    assert np.allclose(_rendered(v), full), "the screen is not the full-range collapse"
+    assert v.display_data.ndim == 2
+    assert np.allclose(v.display_data, _rendered(v)), "display_data is not what is painted"
+    assert np.allclose(v.current_plane(), _rendered(v)), "tools would read another plane"
+    assert "Invalid Range" in v.lbl_slice_info.text()
+    assert "0-11" in v.lbl_slice_info.text()
+    assert v.txt_zmin.text() == "abc", "the user's text was rewritten"
+
+
+def test_the_z_fields_refuse_letters_when_typed(qapp):
+    """R84: a validator on Z Min, Z Max and Boxcar, so the common way in is closed."""
+    v = ImageViewer()
+    for field in (v.txt_zmin, v.txt_zmax, v.txt_boxcar):
+        assert field.validator() is not None
+        field.clear()
+        QTest.keyClicks(field, "a1b2")
+        assert field.text() == "12"

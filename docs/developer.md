@@ -220,6 +220,7 @@ reuse them rather than re-deriving the range:
 |---|---|
 | `clamp_z_range(zmin, zmax, write_back=False)` | clamp **both** ends to the cube and order them |
 | `z_range_from_fields(write_back=False)` | the Z Min / Z Max boxes, parsed and clamped; `None` if unparsable |
+| `z_range_in_effect(write_back=False)` | the range a Z Range collapse covers: the boxes, or the whole cube while either does not parse (R84); use this to draw or read the collapse |
 | `boxcar_width()` / `boxcar_range(z)` | the Boxcar setting and the window it averages |
 | `collapse_plane(zmin, zmax, method=None)` | Median / Mean / Sum collapse over an inclusive range; always computes, so read the plane on screen through `current_plane()` |
 | `apply_spatial_transforms(arr)` | the flip/rotation half of `apply_transforms`, as a pure function on a 2-D plane or 3-D cube |

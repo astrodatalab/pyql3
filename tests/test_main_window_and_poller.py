@@ -716,3 +716,104 @@ def test_a_primary_wcs_with_fewer_axes_is_not_borrowed(qapp, tmp_path, nifs_like
     assert viewer.data_keywords['EXPTIME'] == 600.0
     assert viewer.data_keywords['COADDS'] == 1
     win.close()
+
+
+@pytest.fixture
+def run_main(qapp, monkeypatch):
+    """Run `main.main()` with the given arguments, returning at once instead of entering the loop."""
+    import importlib.util
+    import pathlib
+    import sys
+    from PySide6.QtWidgets import QApplication
+
+    # main.py sits at the repository root, which is not on the import path.
+    spec = importlib.util.spec_from_file_location(
+        "pyql3_main_script", pathlib.Path(__file__).resolve().parent.parent / "main.py")
+    main_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main_module)
+
+    handlers = []
+
+    class RecordedHandler(main_module.FileOpenHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            handlers.append(self)
+
+    monkeypatch.setattr(main_module, "FileOpenHandler", RecordedHandler)
+    monkeypatch.setattr(main_module, "QApplication", lambda argv: qapp)
+    monkeypatch.setattr(QApplication, "exec", staticmethod(lambda: 0))
+
+    def run(*args):
+        monkeypatch.setattr(sys, "argv", ["main.py", *args])
+        with pytest.raises(SystemExit):
+            main_module.main()
+
+    yield run
+    for handler in handlers:
+        qapp.removeEventFilter(handler)
+
+
+def test_poll_dir_opens_the_newest_compressed_frame(run_main, tmp_path):
+    """The initial file is chosen with `is_fits_path`, so `.fits.gz` and `.FITS` count (R59)."""
+    import os
+    import numpy as np
+    from astropy.io import fits
+    from pyql3.gui.window_manager import get_window_manager
+
+    frames = {"s0001.fits": 1000, "s0002.fits.gz": 3000, "s0003.FITS": 2000, "notes.txt": 4000}
+    for name, mtime in frames.items():
+        path = tmp_path / name
+        if name.endswith("txt"):
+            path.write_text("not a frame")
+        else:
+            fits.PrimaryHDU(np.ones((4, 4), "f4")).writeto(path)
+        os.utime(path, (mtime, mtime))
+
+    run_main("--poll-dir", str(tmp_path))
+
+    windows = get_window_manager().windows()
+    try:
+        assert "s0002.fits.gz" in windows[0].windowTitle()
+    finally:
+        for win in windows:
+            win.close()
+
+
+def test_a_missing_poll_dir_says_so(run_main, tmp_path, capsys):
+    from pyql3.gui.window_manager import get_window_manager
+
+    missing = tmp_path / "no_such_dir"
+    run_main("--poll-dir", str(missing))
+
+    assert f"pyql3: no directory at {missing}" in capsys.readouterr().err
+    for win in get_window_manager().windows():
+        win.close()
+
+
+def test_an_unreadable_poll_dir_warns_and_launches_without_the_watch(run_main, tmp_path,
+                                                                     monkeypatch, capsys):
+    """`os.listdir` raises where the old glob returned nothing; the launch must go on."""
+    import os
+    from pyql3.gui.window_manager import get_window_manager
+    from pyql3.services.poller import watcher_of
+
+    real_listdir = os.listdir
+
+    def listdir(path="."):
+        if str(path) == str(tmp_path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+
+    run_main("--poll-dir", str(tmp_path))
+
+    windows = get_window_manager().windows()
+    try:
+        assert len(windows) == 1
+        assert f"cannot read {tmp_path}" in capsys.readouterr().err
+        assert "cannot read" in windows[0].statusBar().currentMessage()
+        assert watcher_of(str(tmp_path)) is None, "the watch was started anyway"
+    finally:
+        for win in windows:
+            win.close()
