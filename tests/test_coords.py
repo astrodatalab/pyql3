@@ -433,3 +433,45 @@ def test_circle_index_mask_keeps_the_drawn_circle_off_the_edge():
     clipped = coords.circle_index_mask(-3.0, 20.0, 6, 6, x_slice, y_slice)
     assert clipped.shape == (3, 6)
     assert (clipped == whole[3:]).all()
+
+
+# ------------------------------------------------- directions on the sky (BUGS.md R37)
+
+def _rotated_non_square_wcs(rotation_deg=30.0):
+    """0.36" x 0.72" pixels, turned on the sky: the case a rectangle probe got wrong."""
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype, wcs.wcs.crval = ['RA---TAN', 'DEC--TAN'], [266.4, 34.0]
+    wcs.wcs.cdelt, wcs.wcs.crpix = [-1e-4, 2e-4], [50, 50]
+    turn = math.radians(rotation_deg)
+    wcs.wcs.pc = [[math.cos(turn), -math.sin(turn)], [math.sin(turn), math.cos(turn)]]
+    return wcs
+
+
+@pytest.mark.parametrize("axes", [(0, 1), (1, 0)], ids=["x=ra", "x=dec"])
+def test_direction_round_trip_on_a_rotated_non_square_wcs(axes):
+    """A direction is mapped as a direction, both ways, from orig coordinates (R37, R38)."""
+    from astropy.coordinates import SkyCoord
+
+    from pyql3.core.sky import CelestialMap
+
+    mapping = CelestialMap(_rotated_non_square_wcs(), *axes)
+    x, y = 30.0, 20.0
+    tail = mapping.skycoord(*mapping.to_sky(x, y))
+
+    for angle in range(0, 360, 15):
+        sky_angle = mapping.direction_to_sky(x, y, angle)
+
+        # What it should be: the position angle of a point one pixel along, plus 90 degrees.
+        step = (x + math.cos(math.radians(angle)), y + math.sin(math.radians(angle)))
+        ahead = SkyCoord(*mapping.to_sky(*step), unit="deg", frame=mapping.frame)
+        expected = (tail.position_angle(ahead).deg + 90.0) % 360.0
+        difference = (sky_angle - expected + 180.0) % 360.0 - 180.0
+        assert abs(difference) < 0.01, (angle, sky_angle, expected)
+
+        back = mapping.direction_from_sky(tail, sky_angle)
+        assert abs((back - angle + 180.0) % 360.0 - 180.0) < 0.01, (angle, back)
+
+        length = mapping.length_to_sky(x, y, angle, 10.0)
+        assert mapping.length_from_sky(tail, sky_angle, length) == pytest.approx(10.0, abs=1e-3)

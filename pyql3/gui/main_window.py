@@ -1149,7 +1149,6 @@ class MainWindow(QMainWindow):
         saved with rather than stopping a startup on a dialog.
         """
         from pyql3.core.regions_io import load_regions
-        from pyql3.core.regions_model import RegionFormatError
 
         if self.region_layer is None:
             return False
@@ -1159,7 +1158,10 @@ class MainWindow(QMainWindow):
                 filepath, wcs=self.image_viewer.wcs,
                 axis_indices=self.image_viewer.display_axis_indices(),
                 choose_frame=self.choose_region_frame if announce else None)
-        except (RegionFormatError, OSError) as exc:
+        except Exception as exc:
+            # Not only RegionFormatError and OSError: a conversion astropy or wcslib refuses
+            # raised out of the menu with no dialog, and out of a `--regions` startup entirely
+            # (`BUGS.md` R10). Either way the user is told and the window carries on.
             if announce:
                 QMessageBox.warning(self, "Load Regions", str(exc))
             else:
@@ -1167,6 +1169,8 @@ class MainWindow(QMainWindow):
             return False
 
         self.region_layer.set_regions(region_list.regions)
+        # Kept so a re-save writes the file's own `style:` block rather than the defaults (R77).
+        self.region_layer.style = region_list.style
         if announce:
             self._report_region_conversion("Load Regions", report,
                                            f"Loaded {len(region_list)} region(s).")
@@ -1419,7 +1423,8 @@ class MainWindow(QMainWindow):
                 filepath, regions, wcs=self.image_viewer.wcs,
                 axis_indices=self.image_viewer.display_axis_indices(),
                 written_by=f"QuickLook 3 v{pyql3.__version__}",
-                source=os.path.basename(self.fits_reader.filepath or ""))
+                source=os.path.basename(self.fits_reader.filepath or ""),
+                style=self.region_layer.style, record=True)
         except OSError as exc:
             QMessageBox.warning(self, "Save Regions", f"Could not write the file:\n{exc}")
             return None

@@ -13,14 +13,19 @@ Three things are worth pinning here:
 Menu actions are fired the way Qt fires them (`QAction.trigger()`), because that is the path that
 delivers a `bool` to a one-argument slot and has caught real bugs here before (`BUGS.md` B0).
 """
-from dataclasses import replace
 
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPointF
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
-from pyql3.core.regions_io import load_regions, save_regions, suggested_filename, with_sky_anchors
+from pyql3.core.regions_io import (
+    SAME_PLACE,
+    load_regions,
+    save_regions,
+    suggested_filename,
+    with_sky_anchors,
+)
 from pyql3.core.regions_model import Arrow, Box, Circle, RegionFormatError, Text
 from pyql3.core.sky import CelestialMap
 from pyql3.gui.main_window import MainWindow
@@ -240,7 +245,9 @@ def test_saving_and_loading_a_round_trip_through_the_menu(window, some_regions, 
         # that has to be a no-op rather than a WCS round trip's worth of drift per cycle.
         assert after.sky is not None, f"{after.TYPE} lost its sky anchor"
         assert after.frame == "sky", f"{after.TYPE} was not recorded as a sky position"
-        assert replace(after, sky=None, frame=before.frame) == before
+        # The save records the anchor on the regions on screen too (review M1).
+        assert before.sky == after.sky and before.frame == "sky"
+        assert after == before
 
 
 def test_exporting_ds9_forces_the_reg_suffix(window, some_regions, tmp_path, monkeypatch):
@@ -537,6 +544,90 @@ def test_a_rotated_field_turns_a_sky_anchored_box_with_it(tmp_path, loaded_viewe
         box.sky.angle_deg, abs=0.01), "its angle on the sky must be the one that was saved"
 
 
+#: Sgr A*, in ICRS. The FK5 and ICRS positions of it differ by about 32 mas.
+SGR_A_STAR = (266.41683708, -29.00781056)
+
+
+def celestial_wcs(ctype, crval, cdelt=1e-4, radesys=None, equinox=None):
+    """A plain 2-D WCS with the reference pixel at 0-based (49, 49), in the frame asked for."""
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype, wcs.wcs.crval = ctype, crval
+    wcs.wcs.cdelt, wcs.wcs.crpix = [-cdelt, cdelt], [50, 50]
+    if radesys:
+        wcs.wcs.radesys, wcs.wcs.equinox = radesys, equinox
+    return wcs
+
+
+def refuse_to_ask(offer):
+    raise AssertionError(f"asked on the image the file was drawn on: {offer.summary()}")
+
+
+def test_a_file_saved_on_a_galactic_image_loads_back(tmp_path):
+    """The anchor's numbers are (l, b) here, and reading them as ICRS raised from the SVD (R10)."""
+    path = tmp_path / "regions.yml"
+    galactic = celestial_wcs(['GLON-TAN', 'GLAT-TAN'], [0.0, 0.0])
+    drawn = [Box(x=60.0, y=40.0, width=8.0, height=3.0, angle=30.0),
+             Arrow(x=60.0, y=40.0, length=8.0, angle=30.0)]
+    save_regions(path, drawn, wcs=galactic)
+
+    loaded, _ = load_regions(path, wcs=galactic, choose_frame=refuse_to_ask)
+
+    for before, after in zip(drawn, loaded.regions, strict=True):
+        assert (after.x, after.y) == pytest.approx((before.x, before.y), abs=SAME_PLACE)
+        assert after.angle == pytest.approx(before.angle, abs=0.01)
+
+
+def test_an_fk4_image_keeps_a_box_angle(tmp_path):
+    """A B1950 position read as ICRS is 0.7 degrees away, where north points elsewhere (R10)."""
+    path = tmp_path / "regions.yml"
+    fk4 = celestial_wcs(['RA---TAN', 'DEC--TAN'], [265.6, -28.9], radesys='FK4', equinox=1950.0)
+    save_regions(path, [Box(x=60.0, y=40.0, width=8.0, height=3.0, angle=30.0)], wcs=fk4)
+
+    loaded, _ = load_regions(path, wcs=fk4, choose_frame=refuse_to_ask)
+
+    assert loaded.regions[0].angle == pytest.approx(30.0, abs=0.01)
+
+
+def test_an_fk5_anchor_lands_on_the_same_star_on_an_icrs_image(tmp_path):
+    """The bundled OSIRIS cube is FK5 and a JWST cube ICRS: 0.9 px apart at 36 mas (R10)."""
+    from astropy.coordinates import SkyCoord
+
+    path = tmp_path / "regions.yml"
+    star = SkyCoord(*SGR_A_STAR, unit="deg")
+    fk5 = celestial_wcs(['RA---TAN', 'DEC--TAN'], [star.fk5.ra.deg, star.fk5.dec.deg], 1e-5,
+                        radesys='FK5', equinox=2000.0)
+    icrs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [star.ra.deg, star.dec.deg], 1e-5)
+    save_regions(path, [Circle(x=49.0, y=49.0, radius=3.0)], wcs=fk5)
+
+    loaded, _ = load_regions(path, wcs=icrs, choose_frame=lambda offer: "sky")
+
+    circle, = loaded.regions
+    assert (circle.x, circle.y) == pytest.approx((49.0, 49.0), abs=0.05)
+
+
+def test_real_osiris_cube_has_an_fk5_frame(qapp, real_osiris_fits):
+    """OSIRIS writes RADESYS = 'FK5', so its anchors are written in fk5 (Review Focus 3)."""
+    if real_osiris_fits is None:
+        pytest.skip("PYQL3_TEST_CUBE not set")
+    from astropy.coordinates import FK5
+
+    from pyql3.core.fits_reader import FitsReader
+    from pyql3.gui.viewers.image_viewer import ImageViewer
+
+    reader = FitsReader(real_osiris_fits)
+    viewer = ImageViewer()
+    viewer.set_data(reader.data, reader.header)
+    mapping = CelestialMap(viewer.wcs, *viewer.display_axis_indices())
+
+    assert isinstance(mapping.frame, FK5)
+    assert mapping.ds9_frame == "fk5"
+    anchored, = with_sky_anchors([Circle(x=10.0, y=10.0, radius=3.0)], wcs=viewer.wcs,
+                                 axis_indices=viewer.display_axis_indices())
+    assert anchored.sky.frame == "fk5"
+
+
 def test_sky_anchors_are_skipped_when_the_plane_has_no_sky(loaded_viewer):
     """Wavelength against declination is a fine thing to display and has no sky position."""
     anchored = with_sky_anchors([Circle(x=1.0, y=2.0, radius=3.0)], wcs=loaded_viewer.wcs,
@@ -572,6 +663,276 @@ def test_a_sky_anchor_is_kept_when_this_image_cannot_make_a_new_one(loaded_viewe
                                 wcs=loaded_viewer.wcs, axis_indices=(0, 1))
 
     assert anchored[0].sky is kept
+
+
+def rotated_field(degrees):
+    """A plain north-up WCS turned by `degrees`, reference pixel at 0-based (49, 49)."""
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    turn = np.radians(degrees)
+    wcs.wcs.pc = [[np.cos(turn), -np.sin(turn)], [np.sin(turn), np.cos(turn)]]
+    return wcs
+
+
+@pytest.mark.parametrize("rotation", [-111, -91, -89])
+def test_an_angle_zero_box_is_not_questioned_on_its_own_image(tmp_path, rotation):
+    """0 and 359.99999999999994 are the same direction, not 360 degrees apart (R39)."""
+    path = tmp_path / "regions.yml"
+    wcs = rotated_field(rotation)
+    save_regions(path, [Box(x=30.0, y=20.0, width=6.0, height=3.0),
+                        Arrow(x=30.0, y=20.0, length=6.0)], wcs=wcs)
+
+    loaded, _ = load_regions(path, wcs=wcs, choose_frame=refuse_to_ask)
+
+    assert [region.angle for region in loaded.regions] == [0.0, 0.0]
+
+
+def detector_and_star_file(tmp_path):
+    """A star anchored to the sky and a hot pixel kept on the detector, saved on one pointing."""
+    path = tmp_path / "mixed.yml"
+    drawn = with_sky_anchors([Circle(x=20.0, y=20.0, radius=3.0, text="star"),
+                              Circle(x=70.0, y=70.0, radius=3.0, text="hot pixel")],
+                             wcs=celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0]))
+    drawn[1].frame = "image"
+    from pyql3.core.regions_model import RegionList
+    RegionList(regions=drawn).save(path)
+    dither = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    dither.wcs.crpix = [55, 50]                 # the next frame, 5 px away
+    return path, dither
+
+
+def test_a_frame_image_region_keeps_its_pixels_in_a_mixed_file(tmp_path):
+    """Each region is placed by its own `frame:`, and only sky regions are asked about (R40)."""
+    path, dither = detector_and_star_file(tmp_path)
+
+    unattended, _ = load_regions(path, wcs=dither)
+    asked = []
+    answered, _ = load_regions(path, wcs=dither,
+                               choose_frame=lambda offer: asked.append(offer) or "sky")
+
+    for loaded in (unattended, answered):
+        star, hot = loaded.regions
+        assert (star.x, star.y) == pytest.approx((25.0, 20.0), abs=0.01), "the star follows"
+        assert (hot.x, hot.y) == (70.0, 70.0), "the hot pixel stays on the detector"
+    assert len(asked) == 1 and asked[0].regions == 1, "only the star is a question"
+
+
+def test_resaving_keeps_frame_image(tmp_path):
+    """An explicit `frame: image` is kept through a save, not rewritten to `sky` (R40)."""
+    import yaml
+
+    path, dither = detector_and_star_file(tmp_path)
+    loaded, _ = load_regions(path, wcs=dither)
+    again = tmp_path / "again.yml"
+    save_regions(again, loaded.regions, wcs=dither)
+
+    written = yaml.safe_load(again.read_text())["regions"]
+    assert [(entry["text"], entry["frame"]) for entry in written] == [("star", "sky"),
+                                                                       ("hot pixel", "image")]
+
+
+def test_a_region_moved_on_an_image_without_a_wcs_keeps_its_new_pixels(tmp_path):
+    """An anchor that no longer matches the pixels must not be saved again and undo a move (R41)."""
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    save_regions(tmp_path / "a.yml", [Circle(x=20.0, y=20.0, radius=3.0)], wcs=wcs)
+
+    raw, _ = load_regions(tmp_path / "a.yml", wcs=None)          # an image with no WCS
+    raw.regions[0].x, raw.regions[0].y = 60.0, 45.0              # the user moves it
+    save_regions(tmp_path / "b.yml", raw.regions, wcs=None)
+
+    back, _ = load_regions(tmp_path / "b.yml", wcs=wcs, choose_frame=refuse_to_ask)
+    assert (back.regions[0].x, back.regions[0].y) == (60.0, 45.0)
+
+
+def test_an_old_image_frame_without_a_sky_block_follows_the_sky_after_a_save(tmp_path):
+    """cb555d8 wrote `frame: image` on every region saved without a WCS. That was its default,
+    not a choice, so saved again with a WCS the region follows the sky, as it did there (R40)."""
+    import yaml
+
+    old = tmp_path / "old.yml"
+    old.write_text("format: pyql3-regions/1\nregions:\n"
+                   "- {type: circle, x: 20.0, y: 20.0, radius: 3.0, frame: image}\n")
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    loaded, _ = load_regions(old, wcs=wcs)
+    again = tmp_path / "again.yml"
+    save_regions(again, loaded.regions, wcs=wcs)
+
+    written = yaml.safe_load(again.read_text())["regions"]
+    assert [entry["frame"] for entry in written] == ["sky"]
+
+    dither = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    dither.wcs.crpix = [55, 50]
+    asked = []
+    moved, _ = load_regions(again, wcs=dither,
+                            choose_frame=lambda offer: asked.append(offer) or "sky")
+    assert len(asked) == 1
+    assert (moved.regions[0].x, moved.regions[0].y) == pytest.approx((25.0, 20.0), abs=0.01)
+
+
+def test_every_written_region_states_its_frame(tmp_path):
+    """`frame:` is always written (`regions_model.ALWAYS_WRITTEN`), with or without a WCS."""
+    import yaml
+
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    for name, used in (("with.yml", wcs), ("without.yml", None)):
+        save_regions(tmp_path / name, [Circle(x=20.0, y=20.0, radius=3.0),
+                                       Box(x=30.0, y=30.0, width=4.0, height=2.0)], wcs=used)
+        written = yaml.safe_load((tmp_path / name).read_text())["regions"]
+        assert all("frame" in entry for entry in written), (name, written)
+
+
+def test_a_region_moved_without_a_wcs_follows_the_sky_once_saved_with_one(tmp_path):
+    """The R41 drop leaves the frame unchosen, so it is not pinned to the detector for good."""
+    import yaml
+
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    save_regions(tmp_path / "a.yml", [Circle(x=20.0, y=20.0, radius=3.0)], wcs=wcs)
+    raw, _ = load_regions(tmp_path / "a.yml", wcs=None)
+    raw.regions[0].x = 60.0
+    save_regions(tmp_path / "b.yml", raw.regions, wcs=None)
+
+    back, _ = load_regions(tmp_path / "b.yml", wcs=wcs, choose_frame=refuse_to_ask)
+    save_regions(tmp_path / "c.yml", back.regions, wcs=wcs)
+    entry, = yaml.safe_load((tmp_path / "c.yml").read_text())["regions"]
+    assert entry["frame"] == "sky" and entry["x"] == 60.0
+
+
+def test_a_region_moved_without_a_wcs_follows_the_sky_on_a_later_save_in_the_same_session(tmp_path):
+    """The R41 drop leaves the frame unchosen in memory too, not only after a file round trip:
+    saved with `record=True` and saved again with a WCS, the region is written `frame: sky`
+    (re-review N2)."""
+    import yaml
+
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    save_regions(tmp_path / "a.yml", [Circle(x=20.0, y=20.0, radius=3.0)], wcs=wcs)
+    loaded, _ = load_regions(tmp_path / "a.yml", wcs=None)
+    regions = loaded.regions
+    regions[0].x = 60.0                                          # moved on a raw frame
+
+    save_regions(tmp_path / "raw.yml", regions, wcs=None, record=True)
+    save_regions(tmp_path / "reduced.yml", regions, wcs=wcs, record=True)
+
+    entry, = yaml.safe_load((tmp_path / "reduced.yml").read_text())["regions"]
+    assert entry["frame"] == "sky" and entry["x"] == 60.0
+
+
+def test_sizes_are_kept_on_a_frame_astropy_does_not_recognise(tmp_path):
+    """With no frame there is no direction to measure along; sizes fall back to the mean pixel
+    scale rather than being left out of the anchor (review M5, re-review N4)."""
+    wcs = celestial_wcs(['RA---TAN', 'DEC--TAN'], [266.4, 34.0])
+    wcs.wcs.radesys = "GAPPT"
+    assert CelestialMap(wcs).frame is None, "the case this test is for"
+    save_regions(tmp_path / "a.yml", [Box(x=20.0, y=20.0, width=6.0, height=3.0, angle=30.0),
+                                      Arrow(x=30.0, y=30.0, length=8.0, angle=10.0)], wcs=wcs)
+
+    dither = wcs.deepcopy()
+    dither.wcs.crpix = [55, 50]
+    loaded, _ = load_regions(tmp_path / "a.yml", wcs=dither, choose_frame=lambda offer: "sky")
+
+    box, arrow = loaded.regions
+    assert box.sky.size_arcsec is not None and arrow.sky.size_arcsec is not None
+    assert (box.width, box.height, arrow.length) == pytest.approx((6.0, 3.0, 8.0), rel=1e-6)
+    assert (box.x, arrow.x) == pytest.approx((25.0, 35.0), abs=0.01), "placed from the sky"
+
+
+def test_a_second_save_keeps_the_anchor_the_first_one_recorded(window, tmp_path):
+    """A save records its anchors on the live regions too, so a later save on a plane with no sky
+    axes does not count a region moved before the first save as stale (Task 37, review M1)."""
+    import yaml
+
+    viewer = window.image_viewer
+    wcs, axes = viewer.wcs, viewer.display_axis_indices()
+    path = tmp_path / "a.yml"
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=2.0)], wcs=wcs, axis_indices=axes)
+    assert window.load_regions_from(path, announce=False) is True
+    region, = window.region_layer.regions
+    item = window.region_layer.item_for(region)
+    item.setPos([item.pos()[0] + 3.0, item.pos()[1]])
+
+    window._write_regions(str(tmp_path / "first.yml"), window.region_layer.regions)
+    viewer.wcs = None
+    window._write_regions(str(tmp_path / "second.yml"), window.region_layer.regions)
+
+    first, = yaml.safe_load((tmp_path / "first.yml").read_text())["regions"]
+    second, = yaml.safe_load((tmp_path / "second.yml").read_text())["regions"]
+    assert second.get("sky") == first["sky"] and second["frame"] == "sky"
+
+
+def test_a_colour_only_apply_leaves_the_geometry_alone(window):
+    """The angle box shows one decimal; an Apply that changed only the colour rounded 37.2846
+    to 37.3, which is more than SAME_PLACE and made the region's anchor stale (review M2)."""
+    from pyql3.gui.dialogs.region_properties import RegionPropertiesDialog
+
+    box = Box(x=10.1234, y=9.5678, width=4.0, height=2.0, angle=37.2846)
+    window.region_layer.set_regions([box])
+    dialog = RegionPropertiesDialog(box, window.region_layer, window)
+    dialog._colour = "red"
+    dialog.apply()
+    dialog.close()
+
+    assert (box.x, box.y, box.angle) == (10.1234, 9.5678, 37.2846)
+    assert box.color == "red"
+
+
+def test_every_way_of_moving_a_region_makes_its_old_anchor_stale(window, tmp_path):
+    """A drag and a properties Apply both move a region; a Cancel puts it back (R41).
+
+    Staleness is decided when the file is saved, by comparing each region with the geometry its
+    anchor was paired with, so it does not matter which path the edit came by.
+    """
+    from pyql3.gui.dialogs.region_properties import RegionPropertiesDialog
+
+    viewer = window.image_viewer
+    wcs, axes = viewer.wcs, viewer.display_axis_indices()
+    path = tmp_path / "a.yml"
+    save_regions(path, [Circle(x=10.0, y=9.0, radius=2.0), Circle(x=5.0, y=5.0, radius=2.0),
+                        Circle(x=15.0, y=12.0, radius=2.0)], wcs=wcs, axis_indices=axes)
+    assert window.load_regions_from(path, announce=False) is True
+    dragged, applied, cancelled = window.region_layer.regions
+
+    item = window.region_layer.item_for(dragged)
+    item.setPos([item.pos()[0] + 3.0, item.pos()[1]])
+    moved_to = (dragged.x, dragged.y)
+    assert moved_to != (10.0, 9.0)
+
+    dialog = RegionPropertiesDialog(applied, window.region_layer, window)
+    dialog.spin_x.setValue(7.0)
+    dialog.apply()
+    dialog.close()
+
+    dialog = RegionPropertiesDialog(cancelled, window.region_layer, window)
+    dialog.spin_x.setValue(18.0)
+    dialog.apply()
+    dialog.reject()
+
+    viewer.wcs = None                       # saved where no new anchor can be made
+    window._write_regions(str(tmp_path / "b.yml"), window.region_layer.regions)
+
+    back, _ = load_regions(tmp_path / "b.yml", wcs=wcs, axis_indices=axes,
+                           choose_frame=refuse_to_ask)
+    first, second, third = back.regions
+    assert (first.x, first.y) == pytest.approx(moved_to)
+    assert (second.x, second.y) == (7.0, 5.0)
+    assert (third.x, third.y) == (15.0, 12.0)
+    assert (first.sky, second.sky) == (None, None), "a moved region's old anchor is dropped"
+    assert third.sky is not None and third.frame == "sky", "an unmoved region keeps its anchor"
+
+
+def test_resaving_keeps_the_style_block(window, tmp_path):
+    """The window keeps the file's `style:` and writes it back, so the block still restyles (R77)."""
+    import yaml
+
+    path = tmp_path / "styled.yml"
+    path.write_text("format: pyql3-regions/1\n"
+                    "style: {color: red, line_width: 1, dash: false, font_size: 12}\n"
+                    "regions:\n- {type: circle, x: 5.0, y: 6.0, radius: 2.0, frame: image}\n")
+
+    assert window.load_regions_from(path, announce=False) is True
+    again = tmp_path / "again.yml"
+    window._write_regions(str(again), window.region_layer.regions)
+
+    written = yaml.safe_load(again.read_text())
+    assert written["style"]["color"] == "red" and written["style"]["line_width"] == 1
+    assert "color" not in written["regions"][0] and "line_width" not in written["regions"][0]
 
 
 # ------------------------------------------------------------ the list dialog
@@ -933,6 +1294,23 @@ def test_load_regions_from_reports_a_bad_file_without_a_dialog(window, tmp_path,
 
     assert window.load_regions_from(bad, announce=False) is False
     assert "could not load regions" in capsys.readouterr().err
+
+
+def test_any_loader_failure_is_reported_not_raised(window, tmp_path, monkeypatch, capsys):
+    """A conversion error from astropy is not a RegionFormatError, and escaped both paths (R10)."""
+    import pyql3.core.regions_io as regions_io
+
+    def explode(*args, **kwargs):
+        raise np.linalg.LinAlgError("SVD did not converge")
+
+    monkeypatch.setattr(regions_io, "load_regions", explode)
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
+
+    assert window.load_regions_from(tmp_path / "r.yml", announce=False) is False
+    assert "SVD did not converge" in capsys.readouterr().err
+    assert window.load_regions_from(tmp_path / "r.yml", announce=True) is False
+    assert len(warned) == 1
 
 
 def test_the_regions_flag_is_documented_by_the_cli():

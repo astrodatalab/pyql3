@@ -64,6 +64,24 @@ def test_a_sky_anchor_survives_a_round_trip():
     assert restored.frame == "sky"
 
 
+def test_sky_anchor_frame_round_trips():
+    """The anchor names the frame its numbers are in, so another image can convert them (R10)."""
+    sky = SkyAnchor(ra_deg=359.9, dec_deg=-0.04, size_arcsec=0.14, frame="galactic")
+    text = RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0, sky=sky, frame="sky")]).to_yaml()
+
+    assert yaml.safe_load(text)["regions"][0]["sky"]["frame"] == "galactic"
+    restored, = RegionList.from_yaml(text)
+    assert restored.sky == sky
+
+    # A file written before the anchor had a frame means "the loading image's own frame".
+    del_frame = text.replace("    frame: galactic\n", "")
+    old, = RegionList.from_yaml(del_frame)
+    assert old.sky.frame is None
+
+    with pytest.raises(RegionFormatError, match="frame"):
+        RegionList.from_yaml(text.replace("frame: galactic", "frame: supergalactic"))
+
+
 def test_an_empty_list_round_trips():
     restored = reload([])
     assert len(restored) == 0
@@ -85,6 +103,44 @@ def test_defaults_are_left_out_of_the_file():
     entry, = yaml.safe_load(text)["regions"]
 
     assert entry == {"type": "circle", "x": 1.0, "y": 2.0, "radius": 3.0, "frame": "image"}
+    # With no sky block there is nothing for the frame to choose between, so `frame: image` there
+    # is the default it always was, not a choice (R40).
+    assert RegionList.from_yaml(text).regions[0].frame is None
+
+
+def test_a_written_file_declares_format_version_2():
+    """`sky: frame:` is a field version 1 readers refuse one line per region; a new major version
+    makes them say "written by a newer version ... Upgrade, or export ... as a ds9 .reg file"."""
+    text = RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0)]).to_yaml()
+    assert yaml.safe_load(text)["format"] == "pyql3-regions/2"
+
+
+@pytest.mark.parametrize("with_sky", [False, True], ids=["no-sky", "sky"])
+def test_a_version_1_file_reads_as_before(with_sky):
+    """What cb555d8 and v3.0.20–v3.0.23 wrote: `frame: image` everywhere without a WCS, and with
+    one `frame: sky` plus an anchor whose numbers are in the loading image's frame."""
+    sky = ("  frame: sky\n  sky: {ra_deg: 266.4, dec_deg: -29.0, size_arcsec: 1.08}\n"
+           if with_sky else "  frame: image\n")
+    text = ("format: pyql3-regions/1\nstyle: {color: green, line_width: 2, dash: false, "
+            "font_size: 12}\nregions:\n- type: circle\n  x: 10.0\n  y: 9.0\n  radius: 3.0\n" + sky)
+
+    circle, = RegionList.from_yaml(text)
+
+    assert (circle.x, circle.y, circle.radius) == (10.0, 9.0, 3.0)
+    if with_sky:
+        assert circle.frame == "sky"
+        assert circle.sky == SkyAnchor(ra_deg=266.4, dec_deg=-29.0, size_arcsec=1.08)
+        assert circle.sky.frame is None, "no frame: the loading image's own"
+    else:
+        assert circle.frame is None and circle.sky is None
+
+
+def test_an_image_frame_with_a_sky_block_is_a_choice():
+    """`frame: image` beside a sky block is the user's choice to keep the pixels (R40)."""
+    both = Circle(x=1.0, y=2.0, radius=3.0, frame="image",
+                  sky=SkyAnchor(ra_deg=266.4, dec_deg=-29.0))
+    restored, = reload([both])
+    assert restored.frame == "image"
 
 
 def test_the_frame_is_written_even_when_it_is_the_default():
@@ -268,6 +324,31 @@ def test_our_own_files_are_never_mistaken_for_ds9(label):
     """The ds9 sniff must not reject a valid file whose *labels* look like ds9 syntax."""
     restored, = reload([Text(x=1.0, y=2.0, text=label)])
     assert restored.text == label
+
+
+@pytest.mark.parametrize("text", [
+    'fk5;circle(266.4,34.0,1")\nfk5;box(266.4,34.0,2",1",0)\n',     # frame on each statement
+    "j2000\ncircle(266.4,34.0,0.0003)\n",                            # a frame word not in the old list
+    "circle(100,100,20)\nbox(50,50,10,4,0)\n",                       # no frame at all: image
+], ids=["semicolon", "j2000", "bare"])
+def test_headerless_ds9_files_are_recognised(text):
+    """ds9 loads all three; they went to the YAML reader and failed with "found str" (R78)."""
+    from pyql3.core.regions_model import looks_like_ds9
+
+    assert looks_like_ds9(text)
+    with pytest.raises(RegionFormatError, match="ds9"):
+        RegionList.from_yaml(text)
+
+
+def test_a_broken_native_file_with_a_leading_comment_is_reported_as_yaml():
+    """Ours have a `format:` key on some line, not necessarily the first (review M4)."""
+    from pyql3.core.regions_model import looks_like_ds9
+
+    text = ("# my regions\nformat: pyql3-regions/1\nregions:\n"
+            "- {type: circle, x: 1, y: 2, radius: 3, text: circle (r=3)\n")
+    assert not looks_like_ds9(text)
+    with pytest.raises(RegionFormatError, match="not valid YAML"):
+        RegionList.from_yaml(text)
 
 
 def test_a_ds9_file_without_the_ds9_header_is_still_recognised():

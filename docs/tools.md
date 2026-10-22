@@ -413,7 +413,7 @@ A region's `text` is drawn beside it. With a large catalogue that becomes a grea
 The native format is readable YAML that can be edited by hand:
 
 ```yaml
-format: pyql3-regions/1
+format: pyql3-regions/2
 written_by: QuickLook 3 v3.0.19
 style:
   color: green
@@ -438,11 +438,16 @@ regions:
   dash: true
 ```
 
+Region files written by this version are format 2, which needs this version of QuickLook 3 or a
+newer one to open; an older one says the file is from a newer version. Format 1 files from older
+versions open here as before. To pass regions to an older version, or to anything else, export
+them as ds9 `.reg` (**Region ➔ Export ds9 Regions…**), which opens anywhere.
+
 The **`style:` block is ds9's `global` line**: it records the formatting the file was written with,
 and each region writes only what it does differently — the box above is red and dashed, the circle
 takes the file's green. Nothing about a region's appearance is left to whichever defaults the
 program happens to have when the file is read, and editing the one block restyles every region that
-did not override it.
+did not override it. Saving regions loaded from such a file writes its `style:` block back.
 
 Geometry is stored in **pixels**, and when the image has a WCS the sky position is recorded
 alongside it — so the file holds every region in **both frames at once**, with `frame:` naming the
@@ -457,17 +462,26 @@ one that was meant:
   sky:
     ra_deg: 266.4171407868465
     dec_deg: -29.00776633506410
+    frame: fk5         # the frame of those two numbers: the image's own, by its ds9 name
     size_arcsec: 0.105
 ```
 
 `frame: sky` means the same thing it does in ds9: the region is placed from its RA/Dec, so a set
 drawn on one dither lands on the same stars in the next, and a box keeps its orientation on the sky
 if the field is rotated. `frame: image` keeps the stored pixels instead, which is what something
-fixed to the detector wants.
+fixed to the detector wants; each region is placed by its own `frame:`, and a re-save keeps it. That
+holds for a region that also has a `sky:` block, which is what saving with a WCS writes; a
+`frame: image` on a region with no `sky:` block is what any region saved without a WCS gets, and
+it follows the sky once the file is saved with one. A region moved on an image with no WCS loses
+its old sky position when it is saved, so the next load puts it where it was moved to. A region
+kept on its pixels with `frame: image` also loses that setting when it is moved on an image with
+no WCS, since the file then has no `sky:` block to keep it beside; set it again after the next save
+with a WCS.
 
 **Loading a file whose two frames disagree asks which to use** — that is, a file drawn on a
-different pointing of the same field. The question names the difference ("3 region(s) sit up to
-20.4 pixel(s) apart in the two frames") and defaults to the frame the file was saved with. It is
+different pointing of the same field. The question is about the `frame: sky` regions only, names
+the difference ("3 region(s) sit up to 20.4 pixel(s) apart in the two frames") and defaults to the
+frame the file was saved with. It is
 not asked when the two agree, which is every file loaded back onto the image it was drawn on: those
 regions come back exactly where they were. `--regions` at startup never asks; it takes the frame
 the file was saved with.
@@ -482,7 +496,9 @@ Anything that cannot be carried across, in either direction, is listed in a summ
 dropped in silence.
 
 On the way in, every frame ds9 writes is read: `image`, `physical`, and the sky frames `icrs`,
-`fk5`/`j2000`, `fk4`/`b1950`, `galactic` and `ecliptic`. A sky-frame file needs the image to have a
+`fk5`/`j2000`, `fk4`/`b1950`, `galactic` and `ecliptic`, whether the frame is on a line of its own
+or written into a statement (`fk5;circle(...)`), and a file without ds9's header line is recognised
+too. A sky-frame file needs the image to have a
 WCS covering the two axes on display — with one, positions in any of those frames land on the right
 pixel, in decimal degrees or sexagesimal. `physical` is read as image coordinates: the two differ
 only for a file cut out of a larger one with IRAF `LTV`/`LTM` keywords, and that shift is not

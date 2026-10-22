@@ -36,6 +36,9 @@ IMAGE_AXES = (0, 1)
 #: rather than to floating-point equality.
 SUB_PIXEL = 1e-3
 
+#: ds9's header line, for files written out by hand here.
+DS9_HEADER_LINE = "# Region file format: DS9 version 4.1\n"
+
 
 def osiris_wcs():
     wcs = WCS(naxis=3)
@@ -483,6 +486,14 @@ def test_our_frame_table_matches_the_librarys():
     assert _SKY_FRAMES == theirs
 
 
+def test_a_sky_anchor_can_name_every_frame_a_wcs_can_have():
+    """`regions_model` lists the anchor frames itself, since it imports no astropy."""
+    from pyql3.core.regions_model import ANCHOR_FRAMES
+    from pyql3.core.sky import DS9_FRAME_NAMES
+
+    assert sorted(ANCHOR_FRAMES) == sorted(DS9_FRAME_NAMES.values())
+
+
 @pytest.mark.parametrize("ds9_name,frame_attribute,lon,lat", SKY_FRAMES)
 def test_every_sky_frame_places_shapes_and_arrows_on_the_same_pixel(ds9_name, frame_attribute,
                                                                     lon, lat):
@@ -552,10 +563,15 @@ def test_a_sexagesimal_galactic_position_is_degrees_not_hours():
     ("15i", 15.0),               # image pixels
 ])
 def test_an_arrow_length_carries_its_unit(written, pixels):
-    """`15"` read as 15 degrees is an arrow 3600 times too long."""
-    wcs = image_wcs()        # 0.36 arcsec/pixel
+    """`15"` read as 15 degrees is an arrow 3600 times too long.
+
+    The tail is the WCS's reference point, where the pixels are 0.36" in every direction. A
+    length is measured along the arrow where it starts (`BUGS.md` R37), so a tail far from the
+    tangent point, where the projection stretches the pixels, would test the projection instead.
+    """
+    wcs = image_wcs()        # 0.36 arcsec/pixel at the reference point
     regions, report = from_ds9(
-        f"fk5\n# vector(266.41680000,-29.00780000,{written},45) vector=1\n",
+        f"icrs\n# vector(266.40000000,34.00000000,{written},45) vector=1\n",
         wcs=wcs, axis_indices=IMAGE_AXES)
 
     arrow, = regions
@@ -575,6 +591,178 @@ def test_an_arrow_in_a_frame_we_cannot_place_is_reported():
 
     assert len(regions) == 0
     assert any("wcsa" in item for item in report.skipped), report.summary()
+
+
+def _statement_line_file(form, ra, dec):
+    """One circle and one vector at (ra, dec), with the `fk5` frame given in `form`."""
+    circle = f'circle({ra:.9f},{dec:.9f},1")'
+    vector = f'# vector({ra:.9f},{dec:.9f},2",45) vector=1'
+    return {
+        "fk5; # vector": f"fk5; {circle}\nfk5; {vector}\n",
+        "after fk5;circle": f"fk5;{circle}\n{vector}\n",
+        "fk5 # comment": f"fk5 # from ds9\n{circle}\n{vector}\n",
+    }[form]
+
+
+@pytest.mark.parametrize("form", ["fk5; # vector", "after fk5;circle", "fk5 # comment"])
+def test_a_vector_follows_a_frame_given_on_a_statement_line(form):
+    """ds9 and `regions` apply a frame given inside `fk5;circle(...)` or before a comment (R47)."""
+    wcs = image_wcs()
+    ra, dec = CelestialMap(wcs, *IMAGE_AXES).to_sky(40.0, 30.0)
+
+    regions, report = from_ds9(DS9_HEADER_LINE + _statement_line_file(form, ra, dec), wcs=wcs,
+                               axis_indices=IMAGE_AXES)
+
+    found = shapes_by_type(regions)
+    assert set(found) == {"Circle", "Arrow"}, report.summary()
+    assert (found["Arrow"].x, found["Arrow"].y) == pytest.approx(
+        (found["Circle"].x, found["Circle"].y), abs=SUB_PIXEL)
+    assert not report.skipped, report.summary()
+
+
+def test_a_label_behind_a_frame_word_is_read():
+    """`fk5 # text(...)` is a frame and then a label, not a frame and a comment."""
+    wcs = image_wcs()
+    ra, dec = CelestialMap(wcs, *IMAGE_AXES).to_sky(40.0, 30.0)
+
+    regions, report = from_ds9(f"fk5 # text({ra:.9f},{dec:.9f}) text={{knot}}\n", wcs=wcs,
+                               axis_indices=IMAGE_AXES)
+
+    label, = regions
+    assert label.text == "knot"
+    assert (label.x, label.y) == pytest.approx((40.0, 30.0), abs=0.1)
+    assert not report.skipped, report.summary()
+
+
+@pytest.mark.parametrize("frame", ["detector", "amplifier", "linear"])
+def test_a_detector_frame_arrow_is_refused(frame):
+    """These numbers are not pixels of this image, so reading them as such placed it at random."""
+    regions, report = from_ds9(f"{frame}\n# vector(41,31,10,45) vector=1\n", wcs=image_wcs(),
+                               axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 0
+    assert any(frame in item and "arrow" in item for item in report.skipped), report.summary()
+
+
+def test_image_frame_arrows_on_a_mismatched_cube_are_flagged():
+    """An image-frame vector means FITS axes 1 and 2 as much as a circle does (R47)."""
+    regions, report = from_ds9("image\n# vector(11,21,5,0) vector=1\n", wcs=osiris_wcs(),
+                               axis_indices=OSIRIS_AXES)
+
+    assert len(regions) == 1
+    assert any("may not line up" in note for note in report.notes), report.summary()
+
+
+def test_a_vector_takes_the_global_line_like_a_shape():
+    """ds9 writes per-region properties only where they differ from `global` (R64)."""
+    text = (f"{DS9_HEADER_LINE}global color=red width=3 dash=1\nimage\ncircle(11,11,3)\n"
+            "# vector(21,21,10,45) vector=1\n# vector(31,31,10,45) vector=1 color=cyan width=1\n")
+
+    found = from_ds9(text, axis_indices=IMAGE_AXES)[0].regions
+    circle, arrow, own = found
+    assert (arrow.color, arrow.line_width, arrow.dash) == (circle.color, circle.line_width,
+                                                           circle.dash) == ("red", 3, True)
+    assert (own.color, own.line_width) == ("cyan", 1), "a vector's own properties still win"
+
+
+def test_an_exported_arrow_states_its_width():
+    """Under a library `global width=3`, an arrow of width 2 with no `width=` is drawn at 3 (R64)."""
+    text, _ = to_ds9(RegionList(regions=[Circle(x=1.0, y=1.0, radius=2.0, line_width=3),
+                                         Arrow(x=5.0, y=5.0, length=4.0, angle=0.0)]),
+                     axis_indices=IMAGE_AXES)
+
+    line, = [ln for ln in text.splitlines() if "vector(" in ln]
+    assert "width=2" in line, text
+    arrow = shapes_by_type(from_ds9(text, axis_indices=IMAGE_AXES)[0])["Arrow"]
+    assert arrow.line_width == 2
+
+
+def test_an_exported_arrow_does_not_take_a_shapes_label():
+    """With one labelled shape the library writes `global ... text={c}`, which ds9 applies to the
+    vector lines after it, so an unlabelled arrow states `text={}` (review I2)."""
+    text, _ = to_ds9(RegionList(regions=[Circle(x=1.0, y=1.0, radius=2.0, text="c"),
+                                         Arrow(x=5.0, y=5.0, length=4.0, angle=0.0),
+                                         Arrow(x=9.0, y=9.0, length=4.0, angle=0.0,
+                                               text="labelled", font_size=20)]),
+                     axis_indices=IMAGE_AXES)
+
+    plain, labelled = [ln for ln in text.splitlines() if "vector(" in ln]
+    assert "text={}" in plain, text
+    assert 'font="helvetica 20 normal roman"' in labelled, text
+    back = [r for r in from_ds9(text, axis_indices=IMAGE_AXES)[0] if isinstance(r, Arrow)]
+    assert [(arrow.text, arrow.font_size) for arrow in back] == [("", 12), ("labelled", 20)]
+
+
+def test_global_lines_add_to_each_other_for_arrows_as_for_shapes():
+    """`regions` merges successive `global` lines; the arrow defaults must too (review I2)."""
+    text = ("global color=red width=3\nglobal dash=1\nimage\ncircle(11,11,3)\n"
+            "# vector(21,21,10,45) vector=1\n")
+
+    circle, arrow = from_ds9(text, axis_indices=IMAGE_AXES)[0].regions
+    assert (arrow.color, arrow.line_width, arrow.dash) == (circle.color, circle.line_width,
+                                                           circle.dash) == ("red", 3, True)
+
+
+def test_a_frame_ds9_cannot_name_is_named_in_the_report():
+    """An FK4-no-E-terms WCS has no ds9 frame word; the arrow's tail does have a sky position
+    (review M5)."""
+    wcs = image_wcs()
+    wcs.wcs.radesys, wcs.wcs.equinox = "FK4-NO-E", 1950.0
+    _, report = to_ds9(RegionList(regions=[Arrow(x=5.0, y=5.0, length=4.0, angle=0.0)]),
+                       wcs=wcs, axis_indices=IMAGE_AXES, frame="sky")
+
+    assert any("fk4noeterms" in item.lower() for item in report.skipped), report.summary()
+    assert not any("no sky position" in item for item in report.skipped), report.summary()
+
+
+def test_a_newline_in_a_label_does_not_split_the_line():
+    """A label with a newline split its line in two, and ds9 rejects such a file whole (R79)."""
+    regions = [Circle(x=10.0, y=10.0, radius=3.0, text="two\nlines"),
+               Text(x=20.0, y=20.0, text="tilted\r\nlabel", angle=30.0),
+               Arrow(x=5.0, y=5.0, length=6.0, angle=10.0, text="an\rarrow")]
+
+    text, out_report = to_ds9(RegionList(regions=regions), axis_indices=IMAGE_AXES)
+    back, in_report = from_ds9(text, axis_indices=IMAGE_AXES)
+
+    labels = sorted(region.text for region in back)
+    assert labels == ["an arrow", "tilted label", "two lines"], text
+    assert not in_report.skipped, in_report.summary()
+    assert any("newline" in note for note in out_report.notes), out_report.summary()
+
+
+def test_attributes_ds9_cannot_carry_are_reported():
+    """The Report exists to announce what the export loses; it said nothing about these (R48)."""
+    regions = [Circle(x=10.0, y=10.0, radius=3.0, z_range=(120, 180)),
+               Box(x=20.0, y=20.0, width=4.0, height=2.0, visible=False),
+               Circle(x=30.0, y=30.0, radius=3.0, text="Brg", font_size=20),
+               Text(x=40.0, y=40.0, text="rotated", angle=30.0, tag="labels"),
+               Text(x=50.0, y=50.0, text="big", font_size=20)]
+
+    text, report = to_ds9(RegionList(regions=regions), axis_indices=IMAGE_AXES)
+
+    skipped = " | ".join(report.skipped)
+    assert "channel range" in skipped and "region 0" in skipped, report.summary()
+    assert "hidden" in skipped and "region 1" in skipped, report.summary()
+    assert "font size" in skipped and "region 2" in skipped, report.summary()
+    assert "region 3" not in skipped, "a rotated label's tag is written, not lost"
+    assert "region 4" not in skipped, "a text region's font size is written, not lost"
+
+    back = from_ds9(text, axis_indices=IMAGE_AXES)[0]
+    rotated, = [r for r in back if isinstance(r, Text) and r.text == "rotated"]
+    big, = [r for r in back if isinstance(r, Text) and r.text == "big"]
+    assert rotated.tag == "labels"
+    assert big.font_size == 20, text
+
+
+def test_an_excluded_region_is_reported():
+    """ds9's `-circle(...)` excludes the area; it was imported as an ordinary circle in silence."""
+    regions, report = from_ds9("image\n-circle(41,31,5)\ncircle(11,11,3)\n",
+                               axis_indices=IMAGE_AXES)
+
+    assert len(regions) == 2, "imported as an ordinary region, which the user may still want"
+    assert any("region 0" in item and "exclu" in item for item in report.skipped), \
+        report.summary()
+    assert not any("region 1" in item for item in report.skipped), report.summary()
 
 
 def test_an_unreadable_vector_is_reported_rather_than_vanishing():
@@ -630,6 +818,123 @@ def test_an_arrow_survives_a_sky_round_trip_on_a_rotated_field(rotation):
     assert arrow.angle == pytest.approx(135.0, abs=1e-2)
     assert arrow.text == "outflow"
     assert not out_report.skipped and not in_report.skipped
+
+
+#: Sgr A*, in ICRS.
+SGR_A_STAR = SkyCoord(266.41683708 * u.deg, -29.00781056 * u.deg)
+
+
+def framed_wcs(frame):
+    """A 36 mas/px WCS in `frame`, pointed at Sgr A* with it on 0-based pixel (49, 49)."""
+    wcs = WCS(naxis=2)
+    if frame == "galactic":
+        wcs.wcs.ctype = ['GLON-TAN', 'GLAT-TAN']
+        here = SGR_A_STAR.galactic
+        wcs.wcs.crval = [here.l.deg, here.b.deg]
+    else:
+        wcs.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+        here = getattr(SGR_A_STAR, frame)
+        wcs.wcs.crval = [here.ra.deg, here.dec.deg]
+        if frame != "icrs":
+            wcs.wcs.radesys = frame.upper()
+            wcs.wcs.equinox = 2000.0 if frame == "fk5" else 1950.0
+    wcs.wcs.cdelt, wcs.wcs.crpix = [-1e-5, 1e-5], [50, 50]
+    return wcs
+
+
+@pytest.mark.parametrize("frame", ["icrs", "fk5", "fk4", "galactic"])
+def test_an_arrow_only_sky_export_declares_the_wcs_frame(frame):
+    """With no shape for the library to write, the frame line was a literal `icrs` (R17)."""
+    from pyql3.core.ds9_regions import _SKY_FRAMES
+
+    wcs = framed_wcs(frame)
+    regions = [Arrow(x=49.0, y=49.0, length=10.0, angle=30.0),
+               Text(x=49.0, y=49.0, text="tilted", angle=20.0)]
+
+    text, out_report = to_ds9(RegionList(regions=regions), wcs=wcs, axis_indices=IMAGE_AXES,
+                              frame="sky")
+    library, _ = to_ds9(RegionList(regions=[Circle(x=49.0, y=49.0, radius=3.0)]), wcs=wcs,
+                        axis_indices=IMAGE_AXES, frame="sky")
+
+    def frame_line(written):
+        line, = [ln for ln in written.splitlines() if ln in _SKY_FRAMES or ln == "image"]
+        return line
+
+    ours, theirs = frame_line(text), frame_line(library)
+    assert _SKY_FRAMES[ours] == _SKY_FRAMES[theirs], (ours, theirs)
+
+    back, in_report = from_ds9(text, wcs=wcs, axis_indices=IMAGE_AXES)
+    assert len(back) == 2, in_report.summary()
+    for region in back:
+        assert (region.x, region.y) == pytest.approx((49.0, 49.0), abs=SUB_PIXEL), text
+    assert not out_report.skipped and not in_report.skipped
+
+
+def non_square_wcs():
+    """0.36" x 0.72" pixels (aspect 1:2), unrotated."""
+    wcs = image_wcs()
+    wcs.wcs.cdelt = [-1e-4, 2e-4]
+    return wcs
+
+
+def test_an_arrow_points_the_same_way_on_the_sky_with_non_square_pixels():
+    """A 2 x 1 rectangle probe's principal axis is not the arrow once pixels are 1:2 (R37)."""
+    from pyql3.core.regions_io import placed_on_image, with_sky_anchors
+
+    wcs = non_square_wcs()
+    mapping = CelestialMap(wcs, *IMAGE_AXES)
+    arrow = Arrow(x=30.0, y=20.0, length=10.0, angle=45.0)
+
+    text, _ = to_ds9(RegionList(regions=[arrow]), wcs=wcs, axis_indices=IMAGE_AXES, frame="sky")
+    line, = [ln for ln in text.splitlines() if "vector(" in ln]
+    length_deg, written = (float(field) for field in line.split("(")[1].split(")")[0].split(",")[2:])
+
+    tail, head = (SkyCoord(*mapping.to_sky(*point), unit="deg") for point in
+                  ((arrow.x, arrow.y), arrow.end))
+    assert written == pytest.approx((tail.position_angle(head).deg + 90.0) % 360.0, abs=0.01)
+    assert length_deg * 3600.0 == pytest.approx(tail.separation(head).arcsec, rel=1e-4)
+
+    back, report = from_ds9(text, wcs=wcs, axis_indices=IMAGE_AXES)
+    restored, = back
+    assert restored.angle == pytest.approx(45.0, abs=0.01)
+    assert restored.length == pytest.approx(10.0, abs=1e-3)
+    assert not report.skipped, report.summary()
+
+    def refuse(offer):
+        raise AssertionError(f"asked on its own image: {offer.summary()}")
+
+    for region in (arrow, Box(x=30.0, y=20.0, width=6.0, height=3.0, angle=45.0)):
+        placed, _ = placed_on_image(with_sky_anchors([region], wcs=wcs), wcs=wcs,
+                                    choose_frame=refuse)
+        assert placed[0].angle == pytest.approx(45.0, abs=0.01), type(region).__name__
+
+
+def test_a_swapped_display_writes_the_same_sky_regions():
+    """X = Dec, Y = RA is a reflection: a direction t there is 90 - t in the default (R38)."""
+    wcs = osiris_wcs()
+    default = [Box(x=30.0, y=12.0, width=10.0, height=3.0, angle=25.0),
+               Arrow(x=30.0, y=12.0, length=8.0, angle=25.0)]
+    swapped = [Box(x=12.0, y=30.0, width=10.0, height=3.0, angle=65.0),
+               Arrow(x=12.0, y=30.0, length=8.0, angle=65.0)]
+
+    a, _ = to_ds9(RegionList(regions=default), wcs=wcs, axis_indices=OSIRIS_AXES, frame="sky")
+    b, _ = to_ds9(RegionList(regions=swapped), wcs=wcs, axis_indices=(1, 2), frame="sky")
+
+    def shape_lines(text):
+        return [ln for ln in text.splitlines() if "box(" in ln or "vector(" in ln]
+
+    def numbers(line):
+        return [float(field) for field in line.split("(")[1].split(")")[0].split(",")]
+
+    for one, other in zip(shape_lines(a), shape_lines(b), strict=True):
+        assert numbers(one) == pytest.approx(numbers(other), abs=1e-6), (one, other)
+
+    back, report = from_ds9(a, wcs=wcs, axis_indices=(1, 2))
+    found = shapes_by_type(back)
+    assert found["Box"].angle == pytest.approx(65.0, abs=1e-3)
+    assert found["Arrow"].angle == pytest.approx(65.0, abs=1e-3)
+    assert (found["Arrow"].x, found["Arrow"].y) == pytest.approx((12.0, 30.0), abs=SUB_PIXEL)
+    assert not report.skipped, report.summary()
 
 
 def test_image_frame_regions_on_a_mismatched_cube_are_flagged():

@@ -236,6 +236,9 @@ class RegionLayer(QObject):
     def __init__(self, image_viewer, parent=None):
         super().__init__(parent)
         self.viewer = image_viewer
+        #: The `style:` block of the region file last loaded, written back when the regions are
+        #: saved (`BUGS.md` R77). None for regions not read from a native file.
+        self.style = None
         self._entries = []
         #: id(region) -> entry, so a lookup is not a scan. See `_entry_for`.
         self._by_id = {}

@@ -16,13 +16,48 @@ thing to display, and has no sky position). `CelestialMap` resolves that corresp
 using `wcs.wcs.lng` / `wcs.wcs.lat` — astropy's own record of which axes are longitude and
 latitude — rather than sniffing `CTYPE` strings.
 
-Nothing here knows about ds9 or about regions; `ds9_regions` builds on it.
+**The WCS's world coordinates are in the WCS's own celestial frame**, which is not always ICRS:
+an OSIRIS cube declares `RADESYS = 'FK5'`, older data FK4, and some images are galactic.
+`CelestialMap.frame` is that frame, and `skycoord` builds a coordinate in it, so a position can be
+converted to another image's frame rather than having its numbers read there as if they were the
+same thing (`BUGS.md` R10).
+
+Nothing here knows about regions; `ds9_regions` builds on it. The one piece of ds9 here is the
+table of its sky frame names, because a region file records the frame by that name.
 """
 
 import math
 
+import astropy.units as u
 import numpy as np
-from astropy.wcs.utils import proj_plane_pixel_scales, skycoord_to_pixel
+from astropy.coordinates import SkyCoord
+from astropy.wcs.utils import proj_plane_pixel_scales, skycoord_to_pixel, wcs_to_celestial_frame
+
+#: ds9's sky frame names, mapped to the astropy frame each one means. This mirrors the `regions`
+#: package's own `regions.io.ds9.core.ds9_frame_map` and must keep mirroring it: a hand-parsed
+#: arrow and a library-parsed circle written on the same coordinates have to land on the same
+#: pixel, which `tests/test_ds9_regions.py::test_our_frame_table_matches_the_librarys` checks.
+DS9_SKY_FRAMES = {
+    "icrs": "icrs",
+    "fk5": "fk5",
+    "j2000": "fk5",
+    "fk4": "fk4",
+    "b1950": "fk4",
+    "galactic": "galactic",
+    "ecliptic": "barycentricmeanecliptic",
+}
+
+#: The inverse: one ds9 name for each astropy frame, the first listed above (`icrs`, `fk5`, `fk4`,
+#: `galactic`, `ecliptic`).
+DS9_FRAME_NAMES = {}
+for _name, _frame in DS9_SKY_FRAMES.items():
+    DS9_FRAME_NAMES.setdefault(_frame, _name)
+del _name, _frame
+
+#: How far, in pixels, the direction and length methods step along a direction. Small enough that
+#: the projection is linear over it; large enough to be resolved in degrees: at 36 mas per pixel
+#: the step is 1e-7 degrees, against a rounding error near 1e-13 degrees in a coordinate of 266.
+DIRECTION_STEP = 0.01
 
 
 class CelestialMap:
@@ -43,6 +78,8 @@ class CelestialMap:
         self.wcs2d = None
         self.swapped = False
         self.reason = ""
+        #: The WCS's celestial frame as an astropy frame, or None when unusable or unrecognised.
+        self.frame = None
 
         self._build()
 
@@ -75,9 +112,32 @@ class CelestialMap:
         # orig X is the latitude axis when the AXIS combos have them the other way round.
         self.swapped = (self.x_axis == lat)
 
+        try:
+            self.frame = wcs_to_celestial_frame(self.wcs2d)
+        except Exception:                   # a celestial axis type astropy has no frame for
+            self.frame = None
+
     @property
     def usable(self):
         return self.wcs2d is not None
+
+    @property
+    def ds9_frame(self):
+        """The ds9 name of the WCS's celestial frame (`icrs`, `fk5`, `fk4`, `galactic`,
+        `ecliptic`), or None when the frame is unknown or has no ds9 name.
+
+        Chosen by the kind of frame, as the `regions` package chooses the name it writes: an FK5
+        WCS with an equinox other than J2000 is still called `fk5`.
+        """
+        if self.frame is None:
+            return None
+        return DS9_FRAME_NAMES.get(self.frame.name)
+
+    def skycoord(self, lon_deg, lat_deg):
+        """A `SkyCoord` for the WCS's own world coordinates, in the WCS's frame, or None."""
+        if self.frame is None:
+            return None
+        return SkyCoord(float(lon_deg), float(lat_deg), unit="deg", frame=self.frame)
 
     # ------------------------------------------------------- orig <-> sub-WCS pixels
 
@@ -138,6 +198,98 @@ class CelestialMap:
             # raising, which is the trap this module exists to contain.
             return None
         return self.from_wcs_pixels(px, py)
+
+    # ------------------------------------------------------------ directions and lengths
+
+    def to_wcs_angle(self, theta):
+        """An angle measured from orig +X, measured instead from `wcs2d`'s pixel +X.
+
+        Exchanging the two axes is a reflection about the diagonal, under which a direction θ
+        becomes 90 - θ (`BUGS.md` R38). Only a shape handed to the `regions` package in `wcs2d`
+        pixels needs this; the direction methods below work in orig coordinates throughout.
+        """
+        theta = float(theta)
+        return (90.0 - theta) % 360.0 if self.swapped else theta
+
+    def from_wcs_angle(self, theta):
+        """The inverse of `to_wcs_angle`, which is the same reflection."""
+        return self.to_wcs_angle(theta)
+
+    def direction_to_sky(self, x, y, angle_deg):
+        """The ds9 sky angle of a direction leaving orig `(x, y)` at `angle_deg` CCW from +X.
+
+        That is the position angle (east of north, in the WCS's own frame) of a point a short step
+        along the direction, plus 90 degrees, which is how ds9 measures an angle in a sky frame.
+        The direction itself is mapped, not a shape: a rectangle probe returned the principal
+        axis of the mapped rectangle, which is not the direction once the pixels are not square
+        (`BUGS.md` R37). None if either point has no sky position.
+        """
+        pair = self._step_along(x, y, angle_deg)
+        if pair is None:
+            return None
+        tail, ahead = pair
+        return (float(tail.position_angle(ahead).deg) + 90.0) % 360.0
+
+    def direction_from_sky(self, coord, sky_angle_deg):
+        """The inverse of `direction_to_sky`: an orig angle CCW from +X, or None.
+
+        `coord` is where the direction starts, as a `SkyCoord` in any frame; the angle is measured
+        in that frame, as ds9 measures it in the frame a file declares.
+        """
+        moved = self._step_from(coord, sky_angle_deg)
+        if moved is None:
+            return None
+        (x0, y0), (x1, y1) = moved[0], moved[1]
+        return math.degrees(math.atan2(y1 - y0, x1 - x0)) % 360.0
+
+    def length_to_sky(self, x, y, angle_deg, pixels):
+        """`pixels` along the direction `angle_deg` from orig `(x, y)`, as an `Angle` on the sky.
+
+        Scaled from the separation over a short step in that direction, so with unequal pixel
+        scales a length depends on which way it points. None if there is no sky position.
+        """
+        pair = self._step_along(x, y, angle_deg)
+        if pair is None:
+            return None
+        tail, ahead = pair
+        return tail.separation(ahead) * (float(pixels) / DIRECTION_STEP)
+
+    def length_from_sky(self, coord, sky_angle_deg, angle):
+        """The inverse of `length_to_sky`: an `Angle` along a sky direction, in orig pixels."""
+        moved = self._step_from(coord, sky_angle_deg)
+        if moved is None:
+            return None
+        (x0, y0), (x1, y1) = moved[0], moved[1]
+        step = moved[2]
+        return float((angle / step).decompose()) * math.hypot(x1 - x0, y1 - y0)
+
+    def _step_along(self, x, y, angle_deg):
+        """`(tail, ahead)` as `SkyCoord`s in the WCS's frame, `DIRECTION_STEP` px apart, or None."""
+        if self.frame is None:
+            return None
+        radians = math.radians(float(angle_deg))
+        tail = self.to_sky(x, y)
+        ahead = self.to_sky(float(x) + DIRECTION_STEP * math.cos(radians),
+                            float(y) + DIRECTION_STEP * math.sin(radians))
+        if tail is None or ahead is None:
+            return None
+        return self.skycoord(*tail), self.skycoord(*ahead)
+
+    def _step_from(self, coord, sky_angle_deg):
+        """`(start, ahead, step)`: orig positions of `coord` and of a point a short step from it
+        along the ds9 sky angle, and that step as an `Angle`; or None."""
+        scale = self.pixel_scale_arcsec()
+        if coord is None or scale is None:
+            return None
+        step = DIRECTION_STEP * scale * u.arcsec
+        start = self.from_skycoord(coord)
+        ahead = self.from_skycoord(
+            coord.directional_offset_by((float(sky_angle_deg) - 90.0) * u.deg, step))
+        if start is None or ahead is None:
+            return None
+        return start, ahead, step
+
+    # ---------------------------------------------------------------------- scales
 
     def pixel_scale_arcsec(self):
         """Arcseconds per pixel, or None. The mean of the two axes if they differ slightly."""

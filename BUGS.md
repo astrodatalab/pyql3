@@ -2960,7 +2960,7 @@ half-integer box positions.
 
 ## R10. Sky-anchor conversions read the WCS's own coordinates as ICRS, so a file saved on a galactic image cannot be loaded back
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/sky.py` (`CelestialMap.frame`, `ds9_frame`, `skycoord`, `DS9_SKY_FRAMES`), `pyql3/core/regions_model.py` (`SkyAnchor.frame`, `ANCHOR_FRAMES`; `FORMAT_VERSION = 2`, because readers of format 1, cb555d8 and the releases v3.0.20 to v3.0.23, refuse the new `sky: frame:` field with one error per region, and refuse a newer major version with a message that says to upgrade or export ds9; format 1 files are read as before), `pyql3/core/regions_io.py` (`sky_anchor_for` records the frame; `_from_sky_anchor` builds the anchor in it and places it with `from_skycoord`; `placed_on_image` counts a failed conversion as stranded), `pyql3/core/ds9_regions.py` (`sky_angle_to_pixel` takes a `SkyCoord`), `pyql3/gui/main_window.py` (`load_regions_from` reports any loader exception, which also covers `--regions`), covered by `test_a_file_saved_on_a_galactic_image_loads_back`, `test_an_fk4_image_keeps_a_box_angle`, `test_an_fk5_anchor_lands_on_the_same_star_on_an_icrs_image`, `test_real_osiris_cube_has_an_fk5_frame`, `test_any_loader_failure_is_reported_not_raised` (`tests/test_region_ui.py`), `test_sky_anchor_frame_round_trips`, `test_a_written_file_declares_format_version_2`, `test_a_version_1_file_reads_as_before` (`tests/test_regions_model.py`), `test_a_sky_anchor_can_name_every_frame_a_wcs_can_have` (`tests/test_ds9_regions.py`)
 - **Severity:** high — a file the program wrote itself raises out of the loader, and the frame offset it ignores applies to every OSIRIS cube
 - **Files:** `pyql3/core/ds9_regions.py:409-413`, `pyql3/core/regions_io.py:185-210`, `pyql3/core/regions_io.py:237-245`, `pyql3/core/regions_io.py:302-320`, `pyql3/core/regions_model.py:134-147`, `pyql3/gui/main_window.py:1023-1032`
 - **Related:** M21 fixed the same assumption for hand-parsed ds9 arrows (`_arrow_from_match` converts the tail to ICRS first); the native file's sky anchors still make it.
@@ -3397,7 +3397,7 @@ Route every opener through one helper, `_open_tool(attr, factory)`, which reuses
 
 ## R17. A ds9 export containing only arrows or rotated labels declares `icrs` whatever frame the WCS is in
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/ds9_regions.py` (`to_ds9` declares `CelestialMap.ds9_frame` when no library shape is written; `_ds9_position` refuses a frame ds9 has no name for, and `_unplaced_reason` names that frame in the Report), covered by `tests/test_ds9_regions.py::test_an_arrow_only_sky_export_declares_the_wcs_frame` , `::test_a_frame_ds9_cannot_name_is_named_in_the_report` and `tests/test_region_ui.py::test_sizes_are_kept_on_a_frame_astropy_does_not_recognise` (box and arrow sizes fall back to the mean pixel scale when astropy has no frame for the WCS)
 - **Severity:** medium — the arrows are misplaced in ds9 and in our own reader with nothing reported; about 1 px for every OSIRIS cube, thousands of pixels for FK4
 - **Files:** `pyql3/core/ds9_regions.py:198-203`, `pyql3/core/ds9_regions.py:416-423`
 - **Related:** M21 (sky frames of hand-written arrows), on the write side this time.
@@ -4679,7 +4679,7 @@ it is shown.
 
 ## R37. With non-square pixels, arrow and box angles are converted to the sky wrongly, and a save and load on the same image changes them
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/sky.py` (`CelestialMap.direction_to_sky`, `direction_from_sky`, `length_to_sky`, `length_from_sky`: a direction is mapped by stepping along it, not through a probe rectangle), `pyql3/core/ds9_regions.py` (`pixel_angle_to_sky` / `sky_angle_to_pixel` wrap them; arrow lengths are measured along the arrow on export and import), `pyql3/core/regions_io.py` (anchor angles, arrow lengths and box sides are measured along their own directions), covered by `tests/test_ds9_regions.py::test_an_arrow_points_the_same_way_on_the_sky_with_non_square_pixels` and `tests/test_coords.py::test_direction_round_trip_on_a_rotated_non_square_wcs`
 - **Severity:** medium — wrong by tens of degrees for IFUs with rectangular spaxels; OSIRIS and NIRSpec cubes have square pixels and are unaffected
 - **Files:** `pyql3/core/ds9_regions.py:387-413`, `pyql3/core/ds9_regions.py:371-377`, `pyql3/core/ds9_regions.py:654`, `pyql3/core/regions_io.py:226-245`, `pyql3/core/regions_io.py:308-317`, `pyql3/core/sky.py:142-165`
 
@@ -4753,7 +4753,7 @@ Use that for arrows and for the anchor angle of boxes. Leave the library to conv
 
 ## R38. With the display axes swapped (X = DEC, Y = RA), box and arrow angles are passed to and from the WCS unconverted, so they come out mirrored about the diagonal
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/sky.py` (`CelestialMap.to_wcs_angle` / `from_wcs_angle`), `pyql3/core/ds9_regions.py` (`_with_wcs_pixels` reflects a box angle for the library, the sky box import reflects it back; arrows and anchor angles go through the direction methods in orig coordinates), covered by `tests/test_ds9_regions.py::test_a_swapped_display_writes_the_same_sky_regions` and `tests/test_coords.py::test_direction_round_trip_on_a_rotated_non_square_wcs[x=dec]`
 - **Severity:** medium — wrong orientation in ds9 and on import, but only after the user picks a non-default AXIS mapping
 - **Files:** `pyql3/core/sky.py:75-90`, `pyql3/core/ds9_regions.py:304-314`, `pyql3/core/ds9_regions.py:377`, `pyql3/core/ds9_regions.py:404`, `pyql3/core/ds9_regions.py:654`, `pyql3/core/ds9_regions.py:770-774`, `pyql3/core/regions_io.py:244`, `pyql3/core/regions_io.py:314-317`
 
@@ -4810,7 +4810,7 @@ When `mapping.swapped`, convert angles as θ → (90 − θ) mod 360 on the way 
 
 ## R39. A box or arrow at angle 0 can come back at 359.99999999999994, which counts as moved and puts the frame question on its own image
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/regions_io.py` (`_same_geometry` / `_same_values` compare angles modulo 360), covered by `tests/test_region_ui.py::test_an_angle_zero_box_is_not_questioned_on_its_own_image`
 - **Severity:** medium — a pointless question, with a note that the file was drawn on another pointing, for about 8% of field rotations at the default angle
 - **Files:** `pyql3/core/regions_io.py:213-223`, `pyql3/core/regions_io.py:237-245`, `pyql3/core/ds9_regions.py:413`
 
@@ -4856,7 +4856,7 @@ In `_same_geometry`, compare `angle` fields modulo 360: `abs((a - b + 180) % 360
 
 ## R40. A region's `frame: image` is ignored when its file is loaded and is rewritten to `frame: sky` when it is saved
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/regions_model.py` (`Region.frame` defaults to None, "not chosen", written as `image`; `frame: image` on a region with no sky block reads back as None, as every earlier build wrote it for any region saved without a WCS), `pyql3/core/regions_io.py` (`with_sky_anchors` makes None `sky` and keeps an explicit `image`; `placed_on_image` places each region by its own frame and asks only about `frame: sky` regions, `_regions_to_move`), covered by `tests/test_region_ui.py::test_a_frame_image_region_keeps_its_pixels_in_a_mixed_file`, `::test_resaving_keeps_frame_image`, `::test_an_old_image_frame_without_a_sky_block_follows_the_sky_after_a_save`, `::test_every_written_region_states_its_frame`, and `tests/test_regions_model.py::test_defaults_are_left_out_of_the_file`, `::test_an_image_frame_with_a_sky_block_is_a_choice`
 - **Severity:** medium — the documented way to keep a detector-fixed region on its pixels does not work
 - **Files:** `pyql3/core/regions_io.py:165-182`, `pyql3/core/regions_io.py:156-157`, `pyql3/core/regions_io.py:274-299`
 
@@ -4909,7 +4909,7 @@ print([(r["text"], r["frame"]) for r in yaml.safe_load(open(os.path.join(d, "b.y
 
 ## R41. An anchor that cannot be recomputed is saved again, so moving a region on an image without a WCS is undone on the next load with one
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/regions_model.py` (`Region.anchor_geometry`, set when a file is read), `pyql3/core/regions_io.py` (set when an anchor is recorded or placed; `with_sky_anchors` drops an anchor it cannot recompute when the geometry has changed, `_anchor_is_stale`, and leaves the frame unchosen; `save_regions(record=True)` / `record_saved` copy what a save wrote back onto the regions on screen), `pyql3/gui/main_window.py` (`_write_regions` records), `pyql3/gui/dialogs/region_properties.py` (`apply` writes a field only when its box was changed, so a rounded angle does not make the anchor stale; Phase 9's R33 version of the dialog, which replaces this one on merge, does the same for every field), covered by `tests/test_region_ui.py::test_a_region_moved_on_an_image_without_a_wcs_keeps_its_new_pixels`, `::test_every_way_of_moving_a_region_makes_its_old_anchor_stale` (a drag, a properties Apply, and an Apply undone by Cancel), `::test_a_region_moved_without_a_wcs_follows_the_sky_once_saved_with_one`, `::test_a_region_moved_without_a_wcs_follows_the_sky_on_a_later_save_in_the_same_session`, `::test_a_second_save_keeps_the_anchor_the_first_one_recorded`, `::test_a_colour_only_apply_leaves_the_geometry_alone` and `::test_a_sky_anchor_is_kept_when_this_image_cannot_make_a_new_one`. Edits mutate the region in place, so the comparison at save time sees every drag, properties change and Region List edit without a change to `region_layer.py`.
 - **Severity:** medium — the user's edit is silently reverted, and the report blames the pointing
 - **Files:** `pyql3/core/regions_io.py:274-299`, `pyql3/core/regions_io.py:128-162`
 
@@ -5287,7 +5287,7 @@ armed as `place_at`, as the text tool already does through `_on_scene_clicked`.
 
 ## R47. The vector reader tracks the frame only from bare frame lines, so arrows after `fk5;circle(...)` or `fk5 # ...` are read as pixels, and `fk5; # vector(...)` is dropped
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/ds9_regions.py` (`_extract_vectors` splits lines into statements with `_statements`, takes a frame word followed by a comment, reads `fk5; # vector(...)` and `fk5 # text(...)`, and counts image-frame arrows toward the axis note; `_FRAME_RE` is built from `regions_model.DS9_FRAME_WORDS`, which adds `detector`, `amplifier` and `linear`), covered by `tests/test_ds9_regions.py::test_a_vector_follows_a_frame_given_on_a_statement_line`, `::test_a_detector_frame_arrow_is_refused`, `::test_image_frame_arrows_on_a_mismatched_cube_are_flagged` and `::test_a_label_behind_a_frame_word_is_read`
 - **Severity:** medium — arrows are placed off the image or lost with nothing in the Report; mostly hand-written or third-party files
 - **Files:** `pyql3/core/ds9_regions.py:578-609`, `pyql3/core/ds9_regions.py:63-77`, `pyql3/core/ds9_regions.py:655-661`, `pyql3/core/ds9_regions.py:460-475`
 - **Related:** M21, which records `detector` vectors as refused rather than read as pixels; M20, whose `physical` rewrite already splits lines on `;`.
@@ -5350,7 +5350,7 @@ In `_extract_vectors`, split each line on `;` as `_normalize_pixel_frames` does,
 
 ## R48. ds9 export drops `z_range`, `visible: false`, a rotated label's tag and label font sizes, and import drops exclusion, all with an empty Report
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/ds9_regions.py` (`_report_unwritten` adds one `skipped` entry per kind: channel ranges, hidden regions, label font sizes of shapes other than text and arrows; `_visual_and_meta` gives a `Text` a font name, weight and style so the library writes its `font=`, which it omitted for every unrotated label; arrows write `font=`; `_rotated_text_lines` writes `tag=`; `from_ds9` reports each `include = 0` region by index and imports it as ordinary), covered by `tests/test_ds9_regions.py::test_attributes_ds9_cannot_carry_are_reported`, `::test_an_excluded_region_is_reported` and `::test_an_exported_arrow_does_not_take_a_shapes_label`
 - **Severity:** low — the native file keeps everything, but the Report that exists to announce these losses says nothing
 - **Files:** `pyql3/core/ds9_regions.py:248-289`, `pyql3/core/ds9_regions.py:317-337`, `pyql3/core/ds9_regions.py:340-384`, `pyql3/core/ds9_regions.py:846-873`
 - **Related:** M20 (losses that bypassed the Report); TODO_regions.md:338-339 planned for exactly these to be reported.
@@ -6249,7 +6249,7 @@ in aggregate mode (with `interactive_limit` lowered).
 
 ## R64. Hand-parsed vectors ignore ds9's `global` line, and an exported arrow of width 2 omits `width=` under a library `global` line that sets another width
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/ds9_regions.py` (`_extract_vectors` merges successive `global` lines into an arrow's default colour, width and dash; `_arrow_lines` always writes `text=` (`text={}` when unlabelled, since the library's `global` line carries the label of a single labelled shape), `width=` and `dash=`), covered by `tests/test_ds9_regions.py::test_a_vector_takes_the_global_line_like_a_shape`, `::test_an_exported_arrow_states_its_width`, `::test_an_exported_arrow_does_not_take_a_shapes_label` and `::test_global_lines_add_to_each_other_for_arrows_as_for_shapes`
 - **Severity:** low — line colour and width only, but arrows and shapes from the same file are drawn differently
 - **Files:** `pyql3/core/ds9_regions.py:730-754`, `pyql3/core/ds9_regions.py:358-359`
 
@@ -6543,9 +6543,9 @@ dialogs and the region layer.
 | R74 | `pyql3/services/cli_install.py:61-76`, `:196-201` | ✅ FIXED — `pyql3/services/cli_install.py`, covered by `test_plan_refuses_a_translocated_bundle`. Reasoned and simulated, not reproduced on a real system. macOS App Translocation runs a quarantined, unmoved bundle from a read-only `/private/var/folders/.../AppTranslocation/<UUID>/d/QuickLook3.app`. That path is not under any `MOUNT_ROOTS` entry, so `on_temporary_volume` is False, `plan()` accepts it, and the launcher's `exec` line names a path that is gone after reboot. | Also refuse when the resolved bundle path contains `/AppTranslocation/`, with the same "copy it to /Applications first" message. |
 | R75 | `pyql3/gui/tools/plot_catalog.py:986-987`, `:1102` | ✅ FIXED — `plot_catalog.py` (`_plot_markers` re-applies the message while the guard is suppressing), covered by `test_the_label_ceiling_message_survives_a_style_change`, `test_the_ceiling_message_does_not_cover_a_catalog_with_nothing_on_the_image`. The label-ceiling message ("10 labels in view — more than the 3 that can be drawn at once", with the limit lowered to 3) is replaced by the plain status line on the next `update_plot`, such as a marker-size change, while the labels remain refused; the user is left with a ticked *Labels* box, no labels and no explanation. `LabelDensityGuard.allows` reports only changes of verdict, so the message is not written again. | After `update_plot` writes its status, re-apply the ceiling message when `self._label_guard.suppressing` is still true. |
 | R76 | `pyql3/gui/tools/region_list.py:257-259` | ✅ FIXED — `pyql3/gui/tools/region_list.py`, covered by `tests/test_region_ui.py::test_region_list_delete_all_asks_first`, `::test_a_region_list_with_no_window_still_asks_before_deleting_all`. The Region List's **Delete All** button calls `layer.clear()` straight away, with no confirmation. **Region ➔ Delete All Regions** and the toolbar's clear button both ask first (`pyql3/gui/main_window.py:1199-1210`), and there is no undo. | Have `delete_all()` call the window's `delete_all_regions()` (as the toolbar does), or ask the same `QMessageBox.question` itself. |
-| R77 | `pyql3/core/regions_io.py:248-271`, `pyql3/gui/main_window.py:1035` | `load_regions` returns the file's `style:` block, but the window keeps only the regions and `save_regions` takes no style. A file with `style: {color: red, line_width: 1}` is re-saved with the default block (green, 2), and `color: red` and `line_width: 1` are written on every region, so editing the block no longer restyles them. | Keep the loaded style with the layer and pass it through `save_regions` as `RegionList.style`. |
-| R78 | `pyql3/core/regions_model.py:458-472` | `looks_like_ds9` needs ds9's header line, or a line that is exactly one of five frame words. Headerless files that ds9 accepts — `fk5;circle(...)` lines, a `j2000`/`fk4`/`b1950`/`ecliptic` frame line, or bare `circle(...)` lines — go to the YAML reader and fail with "should be a mapping with 'format' and 'regions' keys, found str". | Recognise any `_FRAME_RE` frame word, including inside `;`-separated statements, and a shape call in text that does not parse as a YAML mapping. |
-| R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
+| R77 | `pyql3/core/regions_io.py:248-271`, `pyql3/gui/main_window.py:1035` | ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (`RegionLayer.style`), `pyql3/gui/main_window.py` (`load_regions_from` keeps it, `_write_regions` passes it), `pyql3/core/regions_io.py` (`save_regions(style=...)`), covered by `tests/test_region_ui.py::test_resaving_keeps_the_style_block`. `load_regions` returns the file's `style:` block, but the window keeps only the regions and `save_regions` takes no style. A file with `style: {color: red, line_width: 1}` is re-saved with the default block (green, 2), and `color: red` and `line_width: 1` are written on every region, so editing the block no longer restyles them. | Keep the loaded style with the layer and pass it through `save_regions` as `RegionList.style`. |
+| R78 | `pyql3/core/regions_model.py:458-472` | ✅ FIXED — `pyql3/core/regions_model.py` (`looks_like_ds9`, `DS9_FRAME_WORDS`; a broken native file with a `format:` line on any line is still reported as YAML), covered by `tests/test_regions_model.py::test_headerless_ds9_files_are_recognised` and `::test_a_broken_native_file_with_a_leading_comment_is_reported_as_yaml`. `looks_like_ds9` needs ds9's header line, or a line that is exactly one of five frame words. Headerless files that ds9 accepts — `fk5;circle(...)` lines, a `j2000`/`fk4`/`b1950`/`ecliptic` frame line, or bare `circle(...)` lines — go to the YAML reader and fail with "should be a mapping with 'format' and 'regions' keys, found str". | Recognise any `_FRAME_RE` frame word, including inside `;`-separated statements, and a shape call in text that does not parse as a YAML mapping. |
+| R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | ✅ FIXED — `pyql3/core/ds9_regions.py` (`_one_line` in `_escape_braces`, `_visual_and_meta` and the text shape; `to_ds9` notes each label changed), covered by `tests/test_ds9_regions.py::test_a_newline_in_a_label_does_not_split_the_line`. A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
 | R80 | `pyql3/gui/tools/depth_plot.py:549-562` (`_circular_mask`), called from `_cut_region` `:524` and the background box `:1665` | ✅ FIXED — `pyql3/core/coords.py` (`circle_index_mask`), `pyql3/gui/tools/depth_plot.py` (`_circular_mask` takes the ROI and its clipped slices; `_cut_region`, the rectangle path and `region_background_level` use it), covered by `tests/test_depth_plot.py::test_a_circle_off_the_image_masks_the_drawn_circle` and `tests/test_coords.py::test_circle_index_mask_keeps_the_drawn_circle_off_the_edge`. With Shape set to Circle, a cut (Horizontal/Vertical Cut through the aperture) or a background box that hangs off the image builds its circular mask from the box *after* `coords.box_index_slices` has clipped it to the image. The mask is centred on the clipped box and its radius is half the clipped box's shorter side, so it measures a smaller circle shifted toward the image interior instead of the part of the drawn circle that is on the image. Pre-existing; found in the Phase 1 review (2026-10-21), and reachable more often since R19 made an off-edge box measure its on-image part. | Build the mask from the unclamped circle (the drawn box's centre and radius, in the clipped box's index frame) and intersect it with the image, so the pixels kept are the drawn circle's on-image pixels. |
 | R84 | `pyql3/gui/viewers/image_viewer.py` (`apply_z_range`, reached from `show_current_plane`) | ✅ FIXED — `pyql3/gui/viewers/image_viewer.py`, `pyql3/gui/viewers/region_layer.py`, covered by `test_an_unparsable_z_field_does_not_leave_a_stale_plane`, `test_the_z_fields_refuse_letters_when_typed`, `test_an_unparsable_collapse_range_shows_the_regions_of_every_channel`. An unparsable Z Min or Z Max ("abc") present during `set_data` or any redisplay in Z Range mode makes `apply_z_range` stop at "Collapsed: Invalid Range" after `_give_imageview_the_cube()` has already loaded the cube, so channel 0 stays painted with the previous image's levels and `display_data` is left as the full cube copy that `apply_axis_mapping` made, not the plane on screen. Measured: Sum over 4-8 of a cube whose channel k holds k + 100 (530.0, levels 530-531); Z Min set to "abc" and the cube reloaded ×10: the screen shows channel 0 (1000.0) at levels 530-531. No `plane_changed` is emitted, while `display_changed` is. Found in the Phase 2 review (2026-10-21). | Put a `QIntValidator` on Z Min, Z Max and the Boxcar field so an unparsable value cannot be entered, or fall back to the full range with a message in `lbl_slice_info`. |
 | R86 | `pyql3/gui/tools/plot_catalog.py:1030-1033` (`_clear_text_items`), `:1283-1285` (`tear_down`) | ✅ FIXED — `_clear_text_items` takes every label off the scene and then empties `self.text_items`, and `tear_down` does the same to `scatter_item` and `highlight_item` (`setattr(self, attr, None)`), so the last Python reference to each `QGraphicsItem` is dropped rather than retired — `M18`'s pattern. `tear_down` then calls `_release_retired()`, whose `gc.collect()` frees them in whatever order their reference cycles are walked (`M31`). Both run only from `tear_down`; a catalog reload reuses the two scatter items and the label pool. Pre-existing; found in the Phase 3 review (2026-10-21). | Route the labels and both scatter items through `_retire_items` into `_retired`, which `tear_down` already releases with `_release_retired()`; as in `BaseToolDialog._drop_retired_rois`, `shiboken6.delete` each still-valid item before the `gc.collect()`. |
@@ -6565,7 +6565,7 @@ High
 - [x] R7 Depth Plot not recomputed on load, flip, rotation or remap — plan Task 12
 - [x] R8 Catalog markers not re-placed when the displayed image changes — plan Task 13
 - [x] R9 Statistics and Peak Fit sample interpolated values, zeros off the image — plan Task 4
-- [ ] R10 Sky anchors assume ICRS (galactic reload raises, FK4 angles, FK5/ICRS offset) — plan Task 35
+- [x] R10 Sky anchors assume ICRS (galactic reload raises, FK4 angles, FK5/ICRS offset) — plan Task 35
 
 Medium
 - [x] R11 Auto-load retries never cancelled — plan Task 5
@@ -6574,7 +6574,7 @@ Medium
 - [x] R14 Statistics, Photometry, Peak Fit, Strehl never refresh; cuts miss Boxcar/Range — plan Task 11
 - [x] R15 Escape hides a tool without its teardown — plan Task 9
 - [x] R16 Tool dialogs fall outside `TOOL_DIALOG_ATTRS` — plan Task 10
-- [ ] R17 Arrow-only ds9 export declares `icrs` whatever the WCS frame — plan Task 35
+- [x] R17 Arrow-only ds9 export declares `icrs` whatever the WCS frame — plan Task 35
 - [ ] R18 Photometry sky wrong at edges and with NaN; inverted annulus freezes — plan Task 24
 - [x] R19 Depth Plot rectangle clamping measures shifted or edge pixels — plan Task 4
 - [x] R20 Region-mode background over-subtracts where aperture pixels are NaN — plan Task 22
@@ -6594,20 +6594,20 @@ Medium
 - [x] R34 Region List Delete can remove the wrong region — plan Task 32
 - [x] R35 Aggregate-mode labels never come back after a pan — plan Task 33
 - [x] R36 Channel-range visibility ignores Collapse Region mode — plan Task 15
-- [ ] R37 Non-square pixels: region angles wrong and not round-trip stable — plan Task 36
-- [ ] R38 Swapped display axes: box and arrow angles not converted — plan Task 36
-- [ ] R39 Angle 0 vs 360 makes a file look moved on its own image — plan Task 37
-- [ ] R40 Per-region `frame: image` ignored on load, overwritten on save — plan Task 37
-- [ ] R41 A stale sky anchor is kept and undoes later moves — plan Task 37
+- [x] R37 Non-square pixels: region angles wrong and not round-trip stable — plan Task 36
+- [x] R38 Swapped display axes: box and arrow angles not converted — plan Task 36
+- [x] R39 Angle 0 vs 360 makes a file look moved on its own image — plan Task 37
+- [x] R40 Per-region `frame: image` ignored on load, overwritten on save — plan Task 37
+- [x] R41 A stale sky anchor is kept and undoes later moves — plan Task 37
 - [ ] R42 Header Editor writes rows back by keyword name — plan Task 26
 - [x] R43 Restarting a watch loses seen-but-unannounced files — plan Task 19
 - [x] R44 A shape's caption stays behind when the shape is dragged — plan Task 33
 - [x] R45 View rotation ignored by Zoom To and label culling — plan Task 15
 - [x] R46 Region drawing mode cannot be cancelled — plan Task 34
-- [ ] R47 ds9 vector frame tracking misses common forms — plan Task 38
+- [x] R47 ds9 vector frame tracking misses common forms — plan Task 38
 
 Low
-- [ ] R48 ds9 conversion drops information with an empty Report — plan Task 39
+- [x] R48 ds9 conversion drops information with an empty Report — plan Task 39
 - [x] R49 File → Exit closes only the current window — plan Task 40
 - [x] R50 Catalog labels return with Show All off — plan Task 13
 - [x] R51 Show Region Labels off: new labels shown, text regions vanish — plan Task 33
@@ -6623,7 +6623,7 @@ Low
 - [x] R61 Catalog RA/Dec passed by position on a Dec-first 2-D image — plan Task 13
 - [x] R62 A `SkyCoord` catalog column leaves the X/Y selectors dead — plan Task 29
 - [x] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
-- [ ] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
+- [x] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
 
 Added after the review (R81–R83 from a NIFS reference cube, R84 from the Phase 2 review, R85 from Task 9, R86–R87 from the Phase 3 review, R88 from Task 20, R89 from Task 21)
 - [x] R81 Non-OSIRIS cube without celestial axis types opens with wavelength on X — plan Task 20
@@ -6649,8 +6649,8 @@ Minor items (table)
 - [x] R74 App Translocation path baked into the launcher (reasoned, not reproduced) — plan Task 42
 - [x] R75 Catalog label-ceiling message overwritten — plan Task 30
 - [x] R76 Region List Delete All has no confirmation — plan Task 32
-- [ ] R77 Region `style:` block not preserved on re-save — plan Task 37
-- [ ] R78 Headerless ds9 files not detected — plan Task 38
-- [ ] R79 A newline in a label breaks the `.reg` line — plan Task 38
+- [x] R77 Region `style:` block not preserved on re-save — plan Task 37
+- [x] R78 Headerless ds9 files not detected — plan Task 38
+- [x] R79 A newline in a label breaks the `.reg` line — plan Task 38
 - [x] R80 Circle-shaped box off the image masks around the clipped box — plan Task 23
 - [ ] R91 Cut Total is 0.0, not NaN, for an all-NaN column (Depth Plot cuts, Cuts tool) — plan: unassigned

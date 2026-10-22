@@ -314,7 +314,24 @@ ds9-style annotations — circle, box, arrow, text — drawn over the image, sav
 - **A native file holds both frames, and `frame:` is always written.** The geometry is pixels and
   the `sky` block is degrees, so a file saved with a WCS carries every region twice; `frame:` says
   which is meant and is written even at its default (`regions_model.ALWAYS_WRITTEN`) so that
-  "absent" never has to be read as "pixels".
+  "absent" never has to be read as "pixels". `Region.frame` defaults to None, "not chosen", which
+  is written as `image`; on reading, `frame: image` on a region with **no** `sky` block is None
+  again, since there is nothing for it to choose between and every earlier build wrote it for
+  every region saved without a WCS. `frame: image` beside a `sky` block is a choice and is kept.
+  `with_sky_anchors` makes None `sky` when it records an anchor and never overrides an explicit
+  `image`, and each region is placed on load by its own `frame:` (`BUGS.md` R40). The cost: a
+  hand-written `frame: image` on a region with no `sky` block does not survive a save with a WCS;
+  to pin a region to the detector, the file needs `frame: image` on a region that has a `sky`
+  block, which is what a save with a WCS writes. `Region.anchor_geometry` (never written) is the
+  geometry the anchor was recorded with or placed from; a save that cannot recompute an anchor
+  keeps the old one only while the region still has that geometry, and otherwise drops it and
+  leaves the frame unchosen, so an edit made on an image without a WCS is not undone by the old
+  anchor and the next save with a WCS anchors the region where it now is (R41). The window saves
+  with `save_regions(record=True)`, which copies each written anchor, frame and
+  `anchor_geometry` back onto the regions on screen (`regions_io.record_saved`), so the next save
+  compares against the last one. The properties dialog writes a geometry field only when its box
+  was changed, because the boxes show rounded values. The window keeps the loaded file's `style:`
+  block as `RegionLayer.style` and saves with it (R77).
 - **The file records its own formatting in a `style:` block** — ds9's `global` line, in YAML. Every
   file states the colour, line width, dashing and font size that an omitted key means
   (`STYLE_FIELDS`, `default_style()`), and a region writes only what differs. Two reasons it is not
@@ -330,7 +347,15 @@ ds9-style annotations — circle, box, arrow, text — drawn over the image, sav
   is stale the moment a region moves); a re-placement landing within `SAME_PLACE` of the stored
   pixels keeps the *stored* numbers, so loading onto the image a file was drawn on is exact rather
   than drifting by a WCS round trip per cycle; and `_from_sky_anchor()` is the inverse of
-  `sky_anchor_for()` and has to stay that way.
+  `sky_anchor_for()` and has to stay that way. The anchor's numbers are in the WCS's own celestial
+  frame, which the anchor names (`SkyAnchor.frame`, ds9's name for `CelestialMap.frame`): FK5 for
+  an OSIRIS cube, (l, b) for a galactic image. `_from_sky_anchor()` builds a `SkyCoord` in that
+  frame and places it with `CelestialMap.from_skycoord()`, never reads the numbers as ICRS or as
+  the loading image's frame (`BUGS.md` R10). An anchor with no frame, from an older file, is read
+  in the loading image's frame. That field is why the format is `pyql3-regions/2`
+  (`regions_model.FORMAT_VERSION`): format 1 readers refuse an unknown field one error per region,
+  but refuse a newer major version with a message to upgrade or export ds9. Format 1 files are
+  still read; raise the version again for any field an older reader would refuse.
 - **When the two frames disagree, the user picks** — as ds9 asks. `load_regions(choose_frame=...)`
   takes the hook, `MainWindow.choose_region_frame` is it, and it is passed **only when `announce`**
   is set: a `--regions` startup takes the file's own frame rather than stopping on a modal. The
@@ -458,6 +483,16 @@ Do not "simplify" the writer past any of these:
   rules; `CelestialMap.from_skycoord()` does the frame conversion, through the same
   `skycoord_to_pixel` the library uses, which is what keeps the two paths on one pixel.
   `_SKY_FRAMES` mirrors `regions.io.ds9.core.ds9_frame_map` and a test asserts they stay equal.
+  The reader also follows the frame and the `global` line as the library does for shapes: it
+  splits a line into its `;`-separated statements, takes a frame word followed by a comment
+  (`fk5 # ...`), reads `fk5; # vector(...)`, refuses `detector`/`amplifier`/`linear`, and gives an
+  arrow the `global` line's colour, width and dash (`BUGS.md` R47, R64). `_FRAME_RE` and
+  `looks_like_ds9` share `regions_model.DS9_FRAME_WORDS`. On the way out, a vector line always
+  states `text=` (`text={}` when it has no label), `width=` and `dash=`, and a labelled one
+  `font=`, because ds9 applies the library's `global` line to it, and that line carries whatever
+  every shape shares, a label included when there is one labelled shape. A newline in a label or
+  tag is written as a space, because it would end the region's line (R79). A `Text` is given a
+  font name, weight and style for the library, which writes `font=` only when a name is set.
 - **What the library refuses, it announces with `warnings.warn`** — invisible to a GUI user, and
   shown once per process, so the second attempt at a bad file is silent. `_parse_shapes()` catches
   those warnings into the `Report`; do not let a parse run outside it. A `#`-prefixed annotation
@@ -470,8 +505,13 @@ Do not "simplify" the writer past any of these:
   silence.
 - **In a sky frame ds9 measures angles from the sky axes**, so a box or arrow angle is not the
   image-frame angle: they differ by the field rotation. `pixel_angle_to_sky()` /
-  `sky_angle_to_pixel()` convert, and a rotated field is the only case where the difference
-  shows — check any change against `check_rotated.fits` in the ladder, not a north-up frame.
+  `sky_angle_to_pixel()` convert, and on square pixels a rotated field is the only case where the
+  difference shows — check any change against `check_rotated.fits` in the ladder, not a north-up
+  frame. They map the direction itself, in orig coordinates (`CelestialMap.direction_to_sky` /
+  `direction_from_sky`, and `length_to_sky` / `length_from_sky` for an arrow's length), not a
+  probe rectangle, whose angle on the sky is not the direction once the pixels are not square
+  (`BUGS.md` R37). A box handed to `regions` in `wcs2d` pixels has its angle reflected with
+  `CelestialMap.to_wcs_angle` when the display swaps the celestial axes (R38).
 
 The ladder that established this is generated by
 `agent_tests/probes/make_ds9_check_ladder.py` (scratch, not part of the suite); re-run it in ds9

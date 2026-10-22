@@ -27,7 +27,7 @@ authoritative while `frame == "image"`.
 ### The file format
 
 ```yaml
-format: pyql3-regions/1
+format: pyql3-regions/2
 regions:
   - type: circle
     x: 31.5
@@ -41,15 +41,21 @@ Reading is `yaml.safe_load` only — a region file is data, and `yaml.load` on d
 elsewhere constructs arbitrary Python objects.
 """
 
-from dataclasses import MISSING, dataclass, fields
+import re
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 
 import yaml
 
 #: Format marker written into every file. The number is a *major* version: a file whose major
 #: version we do not know is refused rather than half-read.
+#:
+#: Version 2 adds `frame:` inside the `sky` block (`BUGS.md` R10). Version 1 readers (cb555d8 and
+#: releases v3.0.20 to v3.0.23) refuse an unknown field one line per region; given version 2 they
+#: say the file is from a newer version and suggest a ds9 `.reg` export instead. Version 1 files are
+#: read here as they always were: an anchor with no `frame:` is in the loading image's frame.
 FORMAT_NAME = "pyql3-regions"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 FORMAT = f"{FORMAT_NAME}/{FORMAT_VERSION}"
 
 #: Order the shared attributes are written in, after `type` and the geometry.
@@ -58,8 +64,14 @@ COMMON_ORDER = ("text", "color", "line_width", "dash", "font_size", "tag", "visi
 
 VALID_FRAMES = ("image", "sky")
 
+#: The celestial frames a `SkyAnchor` can name, by their ds9 names. These are the names
+#: `sky.DS9_FRAME_NAMES` gives a WCS's own frame; this module imports no astropy, so they are
+#: listed here and `tests/test_ds9_regions.py` holds the two lists equal.
+ANCHOR_FRAMES = ("icrs", "fk5", "fk4", "galactic", "ecliptic")
+
 #: Written to the file even when left at its default, because reading it back is a decision the
-#: user may be asked to make and "absent" is a bad way to say "pixels".
+#: user may be asked to make and "absent" is a bad way to say "pixels". A frame never chosen
+#: (`None`) is written as `image`, which is what every earlier build wrote for it.
 ALWAYS_WRITTEN = ("frame",)
 
 #: The formatting a file records for itself, in the `style:` block — ds9's `global` line by
@@ -138,6 +150,11 @@ class SkyAnchor:
     `size_arcsec` / `size2_arcsec` hold whatever sizes the shape has — a circle's radius, a
     box's width and height, an arrow's length — and `angle_deg` its orientation east of north.
     A shape without sizes leaves them unset.
+
+    `frame` is the ds9 name of the celestial frame `ra_deg` and `dec_deg` are in: the frame of
+    the WCS the anchor was made with, so for a galactic image they are (l, b). None, which is
+    what a file written before the field existed gives, means the frame of whichever image the
+    file is loaded on.
     """
 
     ra_deg: float
@@ -145,9 +162,12 @@ class SkyAnchor:
     size_arcsec: float | None = None
     size2_arcsec: float | None = None
     angle_deg: float | None = None
+    frame: str | None = None
 
     def to_dict(self):
         data = {"ra_deg": float(self.ra_deg), "dec_deg": float(self.dec_deg)}
+        if self.frame is not None:
+            data["frame"] = self.frame
         for name in ("size_arcsec", "size2_arcsec", "angle_deg"):
             value = getattr(self, name)
             if value is not None:
@@ -160,9 +180,16 @@ class SkyAnchor:
             problems.append(f"{where}: sky must be a mapping, found {type(data).__name__}")
             return None
 
-        unknown = set(data) - {"ra_deg", "dec_deg", "size_arcsec", "size2_arcsec", "angle_deg"}
+        unknown = set(data) - {"ra_deg", "dec_deg", "size_arcsec", "size2_arcsec", "angle_deg",
+                               "frame"}
         if unknown:
             problems.append(f"{where}: unknown sky field(s) {sorted(unknown)}")
+            return None
+
+        frame = data.get("frame")
+        if frame is not None and frame not in ANCHOR_FRAMES:
+            problems.append(f"{where}: sky frame must be one of {list(ANCHOR_FRAMES)}, "
+                            f"found {frame!r}")
             return None
 
         for required in ("ra_deg", "dec_deg"):
@@ -175,7 +202,9 @@ class SkyAnchor:
                 problems.append(f"{where}: sky {optional} must be a number")
                 return None
 
-        return cls(**{k: (float(v) if v is not None else None) for k, v in data.items()})
+        return cls(frame=frame,
+                   **{k: (float(v) if v is not None else None) for k, v in data.items()
+                      if k != "frame"})
 
 
 @dataclass(kw_only=True)
@@ -204,9 +233,17 @@ class Region:
     font_size: int = 12
     tag: str = ""
     visible: bool = True
-    frame: str = "image"
+    #: `"sky"`, `"image"`, or None for "not chosen": a region drawn here, which becomes `"sky"`
+    #: when a save records a sky anchor for it (`regions_io.with_sky_anchors`). An explicit
+    #: `"image"` is kept through every save (`BUGS.md` R40). None is written as `image`, and
+    #: `image` on a region with no sky block reads back as None.
+    frame: str | None = None
     z_range: tuple | None = None
     sky: SkyAnchor | None = None
+    #: The geometry (`geometry_of`) that `sky` was recorded with or placed from, or None when
+    #: that is not known. Set when a file is read and when a save records an anchor; never
+    #: written. Not compared, so a region read back still equals the one that was saved.
+    anchor_geometry: tuple | None = field(default=None, compare=False, repr=False)
 
     def to_dict(self, style=None):
         """A plain dict for YAML, omitting anything left at its default.
@@ -217,7 +254,8 @@ class Region:
 
         `frame` is written even when it is the default: the geometry above it is pixels and the
         `sky` block below it is degrees, so a file can hold a region in both frames at once, and
-        which of the two is meant should never have to be inferred from a missing key.
+        which of the two is meant should never have to be inferred from a missing key. A frame
+        nobody chose is written as `image`; see `_common_from_dict` for how that reads back.
         """
         data = {"type": self.TYPE}
         for name in self.GEOMETRY:
@@ -231,6 +269,8 @@ class Region:
                 continue
             if name == "sky":
                 data[name] = value.to_dict()
+            elif name == "frame":
+                data[name] = value or "image"
             elif name == "z_range":
                 data[name] = _InlineList([int(value[0]), int(value[1])])
             else:
@@ -304,6 +344,11 @@ class Text(Region):
 
 #: Every shape, by the name used in the file.
 REGION_TYPES = {cls.TYPE: cls for cls in (Circle, Box, Arrow, Text)}
+
+
+def geometry_of(region):
+    """A region's geometry fields as a tuple of floats, in `GEOMETRY` order."""
+    return tuple(float(getattr(region, name)) for name in region.GEOMETRY)
 
 
 def sizes_of(region):
@@ -454,22 +499,41 @@ class RegionList:
 _DS9_SHAPES = ("circle(", "box(", "ellipse(", "polygon(", "point(", "line(", "vector(",
                "text(", "annulus(")
 
+#: Every coordinate-system word ds9 accepts, as a regular expression. `ds9_regions` builds its
+#: frame matching from this too, so recognising a file and reading it agree on the words.
+DS9_FRAME_WORDS = (r"image|physical|fk4|b1950|fk5|j2000|icrs|galactic|ecliptic|detector|"
+                   r"amplifier|linear|wcs[a-z]?")
+
+#: A statement that is only a frame word, optionally followed by a comment.
+_DS9_FRAME_STATEMENT_RE = re.compile(rf"^\s*({DS9_FRAME_WORDS})\s*(#.*)?$", re.IGNORECASE)
+
 
 def looks_like_ds9(text):
     """True for something that is plainly a ds9 `.reg` file.
 
-    Either the header ds9 writes, or a coordinate-system line followed by a shape call. Both
-    are cheap to spot and neither can occur in our own format, where every shape is a YAML
-    mapping.
+    The header ds9 writes; or a shape call together with a coordinate-system statement, on a line
+    of its own or among `;`-separated statements (`fk5;circle(...)`); or shape calls in text that
+    is not a YAML mapping, which is what a headerless file with no frame line is (`BUGS.md` R78).
+    None of these can occur in our own format, where every shape is a YAML mapping and a file is
+    a mapping with a `format:` key.
     """
     lowered = text.lower()
     if "region file format: ds9" in lowered:
         return True
 
-    has_frame_line = any(line.strip() in ("image", "physical", "fk5", "icrs", "galactic")
-                         for line in lowered.splitlines())
-    has_shape = any(shape in lowered.replace(" ", "") for shape in _DS9_SHAPES)
-    return has_frame_line and has_shape
+    if not any(shape in lowered.replace(" ", "") for shape in _DS9_SHAPES):
+        return False
+
+    for line in lowered.splitlines():
+        if any(_DS9_FRAME_STATEMENT_RE.match(segment) for segment in line.split(";")):
+            return True
+
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError:
+        # Ours have a `format:` key on a line of its own; a broken one is reported as YAML.
+        return re.search(r"(?m)^format\s*:", lowered) is None
+    return not isinstance(parsed, dict)
 
 
 def _check_format_marker(marker, where):
@@ -599,7 +663,12 @@ def _region_from_dict(entry, index, problems, style=None):
         problems.append(f"{where}: a text region needs a non-empty 'text'")
         return None
 
-    return cls(**values)
+    region = cls(**values)
+    if region.sky is not None:
+        # The anchor was saved with these pixels. A region edited after this no longer matches
+        # it, which is how a save that cannot recompute the anchor knows not to keep it (R41).
+        region.anchor_geometry = geometry_of(region)
+    return region
 
 
 def _common_from_dict(entry, cls, where, problems):
@@ -654,6 +723,13 @@ def _common_from_dict(entry, cls, where, problems):
         if sky is None:
             return None
         values["sky"] = sky
+
+    if values.get("frame") == "image" and "sky" not in values:
+        # With no sky block there is nothing for the frame to choose between: `frame: image` there
+        # is what every build writes for a frame nobody chose, and what earlier builds wrote for
+        # every region saved without a WCS. Read as a choice, it would keep such a region on its
+        # pixels after its next save with a WCS, which earlier builds did not do (`BUGS.md` R40).
+        del values["frame"]
 
     # Only what the file actually specified is returned. Filling in the class defaults here
     # would clobber geometry the caller has already parsed — `angle` has a default, so it

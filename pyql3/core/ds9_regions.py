@@ -35,7 +35,6 @@ from regions import (
     LinePixelRegion,
     PixCoord,
     RectanglePixelRegion,
-    RectangleSkyRegion,
     Regions,
     TextPixelRegion,
 )
@@ -44,11 +43,13 @@ from pyql3.core.regions_model import (
     Arrow,
     Box,
     Circle,
+    DS9_FRAME_WORDS,
     RegionFormatError,
     RegionList,
     Text,
+    default_style,
 )
-from pyql3.core.sky import CelestialMap
+from pyql3.core.sky import DS9_SKY_FRAMES, CelestialMap
 
 #: ds9's own header line. `regions` writes its own variant, which ds9 also accepts.
 DS9_HEADER = "# Region file format: DS9 version 4.1"
@@ -71,24 +72,26 @@ _VECTOR_RE = re.compile(
 #: reported: `regions` treats `# vector(...)` as a comment, so it would otherwise just vanish.
 _VECTOR_LOOSE_RE = re.compile(r"^\s*(?:\#\s*)?vector\s*\(", re.IGNORECASE)
 
-#: A coordinate-system line, which applies to everything after it.
-_FRAME_RE = re.compile(
-    r"^\s*(image|physical|fk4|b1950|fk5|j2000|icrs|galactic|ecliptic|wcs[a-z]?)\s*$",
-    re.IGNORECASE)
+#: A coordinate-system statement, which applies to everything after it: the frame word alone or
+#: followed by a comment (`fk5 # from ds9`), on a line of its own or as one of several statements
+#: separated by `;`. The words are `regions_model.DS9_FRAME_WORDS`, so recognising a file and
+#: reading it agree; `detector`, `amplifier` and `linear` are among them so that an arrow given in
+#: one is refused rather than read as pixels of this image (`BUGS.md` R47).
+_FRAME_RE = re.compile(rf"^\s*({DS9_FRAME_WORDS})\s*(#.*)?$", re.IGNORECASE)
 
-#: ds9's sky frames, mapped to the astropy frame each one means. This mirrors the library's own
-#: `regions.io.ds9.core.ds9_frame_map` and must keep mirroring it: a hand-parsed arrow and a
-#: library-parsed circle written on the same coordinates have to land on the same pixel, which
-#: `tests/test_ds9_regions.py::test_our_frame_table_matches_the_librarys` holds them to.
-_SKY_FRAMES = {
-    "icrs": "icrs",
-    "fk5": "fk5",
-    "j2000": "fk5",
-    "fk4": "fk4",
-    "b1950": "fk4",
-    "galactic": "galactic",
-    "ecliptic": "barycentricmeanecliptic",
-}
+#: ds9's `# text(...)` label statement.
+_TEXT_STATEMENT_RE = re.compile(r"^\s*\#\s*text\s*\(", re.IGNORECASE)
+
+#: ds9's `global` line, whose properties apply to every region after it that does not set its own.
+_GLOBAL_RE = re.compile(r"^\s*global\b(?P<properties>.*)$", re.IGNORECASE)
+
+#: The properties of a `global` line that a hand-parsed arrow takes as its defaults, as the
+#: library's shapes do (`BUGS.md` R64).
+_GLOBAL_ARROW_ATTRIBUTES = ("color", "line_width", "dash")
+
+#: ds9's sky frames, mapped to the astropy frame each one means. Kept in `sky`, which also names
+#: a WCS's own frame from it; see `DS9_SKY_FRAMES` there for why it has to match the library.
+_SKY_FRAMES = DS9_SKY_FRAMES
 
 #: Frames whose numbers are pixels of the image on display.
 _PIXEL_FRAMES = ("image", "physical")
@@ -120,6 +123,8 @@ _TAG_PROPERTY_RE = re.compile(r"tag\s*=\s*\{([^}]*)\}")
 _COLOR_PROPERTY_RE = re.compile(r"color\s*=\s*(\S+)")
 _WIDTH_PROPERTY_RE = re.compile(r"width\s*=\s*(\d+)")
 _DASH_PROPERTY_RE = re.compile(r"dash\s*=\s*(\d+)")
+#: The size in ds9's `font="helvetica 12 normal roman"`.
+_FONT_SIZE_PROPERTY_RE = re.compile(r'font\s*=\s*"[^"\d]*(\d+)')
 _TEXTANGLE_RE = re.compile(r"textangle\s*=\s*([-+0-9.eE]+)")
 
 
@@ -180,6 +185,10 @@ def to_ds9(region_list, wcs=None, axis_indices=(0, 1), frame="auto", written_by=
 
     shapes, arrows, rotated_text = [], [], []
     for index, region in enumerate(region_list):
+        if _has_line_break(region.text) or _has_line_break(region.tag):
+            report.notes.append(
+                f"region {index}: a newline in its label or tag was written as a space, because "
+                "ds9 reads one region per line")
         if isinstance(region, Arrow):
             arrows.append(region)
             continue
@@ -192,6 +201,8 @@ def to_ds9(region_list, wcs=None, axis_indices=(0, 1), frame="auto", written_by=
         if shape is not None:
             shapes.append(shape)
 
+    _report_unwritten(list(region_list), report)
+
     if use_sky:
         shapes = _to_sky_shapes(shapes, mapping, report)
 
@@ -199,8 +210,9 @@ def to_ds9(region_list, wcs=None, axis_indices=(0, 1), frame="auto", written_by=
         lines = Regions(shapes).serialize(format="ds9").splitlines()
     else:
         # Nothing for the library to write, but the frame still has to be declared for the
-        # hand-written lines that follow.
-        lines = [DS9_HEADER, "icrs" if use_sky else "image"]
+        # hand-written lines that follow, and their numbers are in the WCS's own frame — the
+        # name the library would have written for a shape on it (`BUGS.md` R17).
+        lines = [DS9_HEADER, (mapping.ds9_frame or "icrs") if use_sky else "image"]
 
     provenance = _provenance_line(written_by)
     if provenance:
@@ -211,6 +223,31 @@ def to_ds9(region_list, wcs=None, axis_indices=(0, 1), frame="auto", written_by=
     lines += _arrow_lines(arrows, use_sky, mapping, report)
 
     return "\n".join(lines) + "\n", report
+
+
+def _report_unwritten(regions, report):
+    """One `skipped` entry for each kind of attribute a ds9 file has no place for (`BUGS.md` R48).
+
+    The regions are still written; what they lose is named, with the regions it applies to.
+    """
+    default_font = default_style()["font_size"]
+    kinds = (
+        ("a channel range, which ds9 regions do not have; written for every channel",
+         lambda region: region.z_range is not None),
+        ("hidden, which ds9 regions cannot be; written visible",
+         lambda region: not region.visible),
+        ("a label font size, which ds9 is given for text regions and arrows only; it reads "
+         f"back as {default_font}",
+         lambda region: (not isinstance(region, (Text, Arrow)) and bool(region.text)
+                         and region.font_size != default_font)),
+    )
+    for description, applies in kinds:
+        indices = [index for index, region in enumerate(regions) if applies(region)]
+        if indices:
+            named = ", ".join(f"region {index}" for index in indices[:_MAX_SUMMARY_ITEMS])
+            if len(indices) > _MAX_SUMMARY_ITEMS:
+                named += f" and {len(indices) - _MAX_SUMMARY_ITEMS} more"
+            report.skipped.append(f"{named}: {description}")
 
 
 def _choose_sky(frame, mapping, matches_ds9_axes, report):
@@ -258,7 +295,7 @@ def _to_regions_shape(region, index, report):
     if isinstance(region, Text):
         # The label is the shape here, so it goes in `text` rather than in meta.
         meta.pop("text", None)
-        return TextPixelRegion(centre, region.text, visual=visual, meta=meta)
+        return TextPixelRegion(centre, _one_line(region.text), visual=visual, meta=meta)
 
     report.skipped.append(f"region {index}: {type(region).__name__} has no ds9 equivalent")
     return None
@@ -280,12 +317,17 @@ def _visual_and_meta(region):
         visual["linestyle"] = "dashed"
     if isinstance(region, Text):
         visual["fontsize"] = region.font_size
+        # `regions` writes `font=` only when a font name is set, so without these the size was
+        # dropped from every unrotated label (review of Phase 10, I3).
+        visual["fontname"] = "helvetica"
+        visual["fontweight"] = "normal"
+        visual["fontstyle"] = "normal"
 
     meta = {}
     if region.text:
-        meta["text"] = region.text
+        meta["text"] = _one_line(region.text)
     if region.tag:
-        meta["tag"] = [region.tag]
+        meta["tag"] = [_one_line(region.tag)]
     return visual, meta
 
 
@@ -302,15 +344,19 @@ def _to_sky_shapes(shapes, mapping, report):
 
 
 def _with_wcs_pixels(shape, mapping):
-    """Return `shape` with its centre expressed in the celestial WCS's own axis order.
+    """Return `shape` with its centre and angle expressed in the celestial WCS's own axis order.
 
-    Only differs from the original when the AXIS combos have X on the latitude axis.
+    Only differs from the original when the AXIS combos have X on the latitude axis. Exchanging
+    the axes is a reflection, so a box's angle changes too; its width and height do not
+    (`BUGS.md` R38).
     """
     if not mapping.swapped:
         return shape
     px, py = mapping.to_wcs_pixels(shape.center.x, shape.center.y)
     moved = shape.copy()
     moved.center = PixCoord(px, py)
+    if isinstance(moved, RectanglePixelRegion):
+        moved.angle = mapping.to_wcs_angle(shape.angle.to_value(u.deg)) * u.deg
     return moved
 
 
@@ -326,13 +372,16 @@ def _rotated_text_lines(rotated_text, use_sky, mapping, report):
     for region in rotated_text:
         placed = _ds9_position(region.x, region.y, use_sky, mapping)
         if placed is None:
-            report.skipped.append(f"text {region.text!r}: no sky position for its rotation")
+            report.skipped.append(f"text {region.text!r}: {_unplaced_reason(mapping, use_sky)}")
             continue
         angle = region.angle % 360.0
         properties = [f"text={{{_escape_braces(region.text)}}}", f"textangle={angle:g}"]
         if region.color:
             properties.append(f"color={region.color}")
         properties.append(f'font="helvetica {int(region.font_size)} normal roman"')
+        if region.tag:
+            # Written by hand here, so the tag is too, as the library writes it for a shape.
+            properties.append(f"tag={{{_escape_braces(region.tag)}}}")
         lines.append(f"# text({placed[0]},{placed[1]}) " + " ".join(properties))
     return lines
 
@@ -351,30 +400,34 @@ def _arrow_lines(arrows, use_sky, mapping, report):
     lines = []
     for arrow in arrows:
         properties = ["vector=1"]
+        # Always stated, even when empty: with a single labelled shape the library writes its
+        # label on the `global` line, and ds9 would give it to this arrow too. A label's size is
+        # stated for the same reason, since that line can also carry `font=`.
+        properties.append(f"text={{{_escape_braces(arrow.text)}}}")
         if arrow.text:
-            properties.append(f"text={{{_escape_braces(arrow.text)}}}")
+            properties.append(f'font="helvetica {int(arrow.font_size)} normal roman"')
         if arrow.color:
             properties.append(f"color={arrow.color}")
-        if arrow.line_width != 2:
-            properties.append(f"width={int(arrow.line_width)}")
-        if arrow.dash:
-            properties.append("dash=1")
+        # Always stated: ds9 applies the library's `global` line to a vector too, and that line
+        # carries the shapes' width and dash, not the arrow's (`BUGS.md` R64).
+        properties.append(f"width={int(arrow.line_width)}")
+        properties.append(f"dash={1 if arrow.dash else 0}")
         if arrow.tag:
             properties.append(f"tag={{{_escape_braces(arrow.tag)}}}")
 
         placed = _ds9_position(arrow.x, arrow.y, use_sky, mapping)
         if placed is None:
             label = f" {arrow.text!r}" if arrow.text else ""
-            report.skipped.append(f"an arrow{label}: its tail has no sky position")
+            report.skipped.append(f"an arrow{label}: {_unplaced_reason(mapping, use_sky)}")
             continue
 
         if use_sky:
-            length = mapping.pixels_to_arcsec(arrow.length)
-            if length is None:
+            length = mapping.length_to_sky(arrow.x, arrow.y, arrow.angle, arrow.length)
+            angle = pixel_angle_to_sky(mapping, arrow.x, arrow.y, arrow.angle)
+            if length is None or angle is None:
                 report.skipped.append("an arrow whose length could not be put on the sky")
                 continue
-            length_text = f"{length / 3600.0:.8f}"
-            angle = pixel_angle_to_sky(mapping, arrow.x, arrow.y, arrow.angle)
+            length_text = f"{length.deg:.8f}"
         else:
             length_text = f"{arrow.length:.8f}"
             angle = arrow.angle % 360.0
@@ -385,32 +438,30 @@ def _arrow_lines(arrows, use_sky, mapping, report):
 
 
 def pixel_angle_to_sky(mapping, x, y, angle_deg):
-    """A direction measured from the image axes, expressed as ds9 wants it in a sky frame.
+    """A direction measured from the orig axes at `(x, y)`, as ds9 wants it in a sky frame.
 
     In a sky frame ds9 measures an angle from the *sky* axes, so it differs from the image-frame
     angle by the field rotation — 45° becomes 75° on an image rotated 30°, and is unchanged on an
     unrotated one. Confirmed in ds9 on a rotated field: a vector given a sky angle lands along a
     box given the same one, so both use that convention.
 
-    Rather than reimplement it, the conversion is borrowed from the library's own box handling,
-    which is the tested implementation: a throwaway rectangle is rotated by `angle_deg`, put on
-    the sky, and its angle read back.
-
-    The probe's dimensions do not matter — the result is identical from 100 pixels down to 1e-6,
-    because the library takes the rotation from the local WCS derivative rather than from the
-    rectangle's corners. Any residual offset from a naive `angle ± rotation` is the real local
-    field rotation of the projection away from the reference pixel.
+    The direction itself is mapped (`CelestialMap.direction_to_sky`). This used to rotate a 2 x 1
+    rectangle and read back the library's angle for it, which is the rectangle's principal axis
+    on the sky: the direction only while the pixels are square (`BUGS.md` R37), and an angle in
+    the WCS's pixel axes rather than orig ones when the display swaps them (R38). None if there
+    is no sky position.
     """
-    probe = RectanglePixelRegion(PixCoord(*mapping.to_wcs_pixels(x, y)),
-                                 2.0, 1.0, float(angle_deg) * u.deg)
-    return float(probe.to_sky(mapping.wcs2d).angle.to_value(u.deg)) % 360.0
+    return mapping.direction_to_sky(x, y, angle_deg)
 
 
-def sky_angle_to_pixel(mapping, ra_deg, dec_deg, angle_deg):
-    """The inverse of `pixel_angle_to_sky`, by the same borrowed conversion."""
-    probe = RectangleSkyRegion(SkyCoord(float(ra_deg) * u.deg, float(dec_deg) * u.deg),
-                               2.0 * u.arcsec, 1.0 * u.arcsec, float(angle_deg) * u.deg)
-    return float(probe.to_pixel(mapping.wcs2d).angle.to_value(u.deg)) % 360.0
+def sky_angle_to_pixel(mapping, coord, angle_deg):
+    """The inverse of `pixel_angle_to_sky`: an orig angle, or None.
+
+    `coord` is the `SkyCoord` the angle is measured at, in whatever frame it was given: bare
+    numbers would be read as ICRS, which put a galactic position off the projection and a B1950
+    one 0.7 degrees away, where north points differently (`BUGS.md` R10).
+    """
+    return mapping.direction_from_sky(coord, angle_deg)
 
 
 def _ds9_position(x, y, use_sky, mapping):
@@ -418,14 +469,35 @@ def _ds9_position(x, y, use_sky, mapping):
     if not use_sky:
         return (f"{x + 1:.8f}", f"{y + 1:.8f}")
     sky = mapping.to_sky(x, y)
-    if sky is None:
+    if sky is None or mapping.ds9_frame is None:
+        # Numbers in a frame ds9 has no name for could not be declared in the file.
         return None
     return (f"{sky[0]:.8f}", f"{sky[1]:.8f}")
 
 
+def _unplaced_reason(mapping, use_sky):
+    """Why `_ds9_position` gave nothing for a hand-written line, in words for the Report."""
+    if use_sky and mapping.usable and mapping.ds9_frame is None:
+        name = mapping.frame.name if mapping.frame is not None else "not recognised"
+        return f"the WCS's celestial frame ({name}) has no ds9 name to declare it by"
+    return "its position has no sky coordinates"
+
+
 def _escape_braces(text):
-    """ds9 delimits property values with braces, so a brace inside one has to go."""
-    return str(text).replace("{", "(").replace("}", ")")
+    """ds9 delimits property values with braces, so a brace inside one has to go.
+
+    So does a newline, which would end the region's line in the middle of its label.
+    """
+    return _one_line(text).replace("{", "(").replace("}", ")")
+
+
+def _one_line(text):
+    """`text` with every newline and carriage return replaced by a space (`BUGS.md` R79)."""
+    return re.sub(r"\r\n|\r|\n", " ", str(text))
+
+
+def _has_line_break(text):
+    return "\n" in str(text) or "\r" in str(text)
 
 
 def _provenance_line(written_by):
@@ -453,14 +525,20 @@ def from_ds9(text, wcs=None, axis_indices=(0, 1), where="region file"):
 
     text = _normalize_pixel_frames(text, report)
     _report_annotations(text, report)
-    arrows, remaining = _extract_vectors(text, mapping, report)
+    arrows, remaining, pixel_frame_arrows = _extract_vectors(text, mapping, report)
     parsed = _parse_shapes(remaining, report, where)
 
     regions = []
-    pixel_frame_count = 0
+    # Image-frame arrows mean FITS axes 1 and 2 as much as image-frame shapes do (R47).
+    pixel_frame_count = pixel_frame_arrows
     for index, shape in enumerate(parsed):
         if not _was_sky(shape):
             pixel_frame_count += 1
+        if (getattr(shape, "meta", None) or {}).get("include", 1) == 0:
+            # ds9's leading `-`, which `regions` records as `include = 0` (`BUGS.md` R48).
+            report.skipped.append(
+                f"region {index}: excluded in ds9 (a leading '-'), which QuickLook 3 does not "
+                "have; imported as an ordinary region")
         region = _from_regions_shape(shape, index, mapping, report)
         if region is not None:
             regions.append(region)
@@ -504,7 +582,8 @@ def _normalize_pixel_frames(text, report):
         for position, segment in enumerate(segments):
             match = _FRAME_RE.match(segment)
             if match and match.group(1).lower() == "physical":
-                segments[position] = "image"
+                segments[position] = re.sub("physical", "image", segment, count=1,
+                                            flags=re.IGNORECASE)
                 rewritten += 1
         lines[index] = ";".join(segments)
 
@@ -576,40 +655,94 @@ def _report_annotations(text, report):
 
 
 def _extract_vectors(text, mapping, report):
-    """Pull `vector(...)` lines out of `text`, returning `(arrows, text_without_them)`.
+    """Pull `vector(...)` statements out of `text`.
+
+    Returns `(arrows, text_without_them, how many arrows were in an image frame)`.
 
     Done on the raw text because `regions` discards vectors without a word, and because the
     un-prefixed form is a syntax error to ds9 that we nevertheless want to accept on the way in
     — people hand-edit these files.
+
+    The frame and the `global` line are followed the way ds9 and `regions` follow them for
+    shapes (`BUGS.md` R47, R64): each line is split into its `;`-separated statements, a frame
+    word followed by a comment still sets the frame, and `fk5; # vector(...)` is a frame and then
+    a vector. The latest `global` line gives an arrow its colour, width and dash where its own
+    line does not.
     """
     arrows = []
     kept = []
     frame = "image"
+    base = {}
+    pixel_frame_arrows = 0
 
     for number, line in enumerate(text.splitlines(), start=1):
-        frame_match = _FRAME_RE.match(line)
-        if frame_match:
-            frame = frame_match.group(1).lower()
-            kept.append(line)
-            continue
-
-        match = _VECTOR_RE.match(line)
-        if not match:
-            if _VECTOR_LOOSE_RE.match(line):
-                report.skipped.append(
-                    f"line {number}: a vector whose fields could not be read ({line.strip()})")
+        statements = []
+        for segment in _statements(line):
+            global_match = _GLOBAL_RE.match(segment)
+            if global_match:
+                found = _attributes_from_properties(global_match.group("properties"))
+                # Merged, as `regions` merges successive `global` lines for its shapes.
+                base.update({name: found[name] for name in _GLOBAL_ARROW_ATTRIBUTES
+                             if name in found})
+                statements.append(segment)
                 continue
-            kept.append(line)
-            continue
 
-        arrow = _arrow_from_match(match, frame, mapping, number, report)
-        if arrow is not None:
-            arrows.append(arrow)
+            frame_match = _FRAME_RE.match(segment)
+            if frame_match:
+                frame = frame_match.group(1).lower()
+                comment = frame_match.group(2) or ""
+                if _TEXT_STATEMENT_RE.match(comment):
+                    # `fk5 # text(...)`: a label, which the library reads as a statement of its
+                    # own but not behind a frame word.
+                    statements += [frame_match.group(1), comment]
+                    continue
+                if not _VECTOR_LOOSE_RE.match(comment):
+                    # A plain comment, which says nothing about the frame.
+                    statements.append(segment)
+                    continue
+                # `fk5 # vector(...)`: the frame, then a statement behind ds9's `#`.
+                statements.append(frame_match.group(1))
+                segment = comment
 
-    return arrows, "\n".join(kept)
+            match = _VECTOR_RE.match(segment)
+            if match is None:
+                if _VECTOR_LOOSE_RE.match(segment):
+                    report.skipped.append(
+                        f"line {number}: a vector whose fields could not be read "
+                        f"({segment.strip()})")
+                else:
+                    statements.append(segment)
+                continue
+
+            arrow = _arrow_from_match(match, frame, mapping, number, report, base)
+            if arrow is not None:
+                arrows.append(arrow)
+                if frame in _PIXEL_FRAMES:
+                    pixel_frame_arrows += 1
+
+        if statements:
+            kept.append(";".join(statements))
+
+    return arrows, "\n".join(kept), pixel_frame_arrows
 
 
-def _arrow_from_match(match, frame, mapping, line_number, report):
+def _statements(line):
+    """`line` split at the `;` between ds9 statements, not at one inside a `{...}` value."""
+    parts = []
+    depth = start = 0
+    for position, character in enumerate(line):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth = max(0, depth - 1)
+        elif character == ";" and depth == 0:
+            parts.append(line[start:position])
+            start = position + 1
+    parts.append(line[start:])
+    return parts
+
+
+def _arrow_from_match(match, frame, mapping, line_number, report, base=None):
     x_text, y_text, length_text, angle_text = (match.group(i).strip() for i in range(1, 5))
     properties = match.group("properties") or ""
 
@@ -640,18 +773,17 @@ def _arrow_from_match(match, frame, mapping, line_number, report):
             return None
         x, y = placed
 
-        length = _length_in_pixels(length_text, frame, mapping)
-        if length is None or length <= 0:
+        # A sky-frame angle is measured from the sky axes, so on a rotated field it is not the
+        # image-frame angle (see `sky_angle_to_pixel`). It is measured in the frame the file
+        # wrote the tail in, and so is the length, which with unequal pixel scales depends on
+        # the direction it points.
+        angle = sky_angle_to_pixel(mapping, tail, angle_raw)
+        length = _length_in_pixels(length_text, frame, mapping, tail, angle_raw)
+        if angle is None or length is None or length <= 0:
             report.skipped.append(
                 f"line {line_number}: an arrow whose length could not be converted to pixels "
                 f"({length_text})")
             return None
-
-        # A sky-frame angle is measured from the sky axes, so on a rotated field it is not the
-        # image-frame angle. The conversion is the library's own (see `sky_angle_to_pixel`), and
-        # it wants the tail as RA/Dec whatever frame the file wrote it in.
-        icrs = tail.icrs
-        angle = sky_angle_to_pixel(mapping, icrs.ra.deg, icrs.dec.deg, angle_raw)
     elif frame not in _PIXEL_FRAMES:
         # `wcsa`, `detector`, ... — the library refuses these for shapes, and guessing that the
         # numbers are pixels would put the arrow somewhere arbitrary.
@@ -675,8 +807,9 @@ def _arrow_from_match(match, frame, mapping, line_number, report):
         report.skipped.append(f"line {line_number}: an arrow of zero length")
         return None
 
-    return Arrow(x=x, y=y, length=length, angle=angle % 360.0,
-                 **_attributes_from_properties(properties))
+    attributes = dict(base or {})
+    attributes.update(_attributes_from_properties(properties))
+    return Arrow(x=x, y=y, length=length, angle=angle % 360.0, **attributes)
 
 
 def _as_float(text):
@@ -705,13 +838,16 @@ def _sky_tail(x_text, y_text, frame):
         return None
 
 
-def _length_in_pixels(text, frame, mapping):
+def _length_in_pixels(text, frame, mapping, tail=None, sky_angle=None):
     """A ds9 `length` field as pixels, or None if it cannot be converted.
 
     ds9 puts the unit in the value: `15"` is fifteen arcseconds, `15'` fifteen arcminutes, `15d`
     fifteen degrees, `15p`/`15i` fifteen pixels. A bare number means degrees in a sky frame and
     pixels in a pixel frame — which is why reading a sky arrow's `15"` as a bare degree value
     made it 3600 times too long.
+
+    An angular length is measured along the arrow, from `tail` at `sky_angle`, when those are
+    given (`BUGS.md` R37); otherwise it is scaled by the mean pixel scale.
     """
     text = str(text).strip()
     if not text:
@@ -724,7 +860,10 @@ def _length_in_pixels(text, frame, mapping):
 
     if suffix in ("p", "i") or (not suffix and frame in _PIXEL_FRAMES):
         return value
-    return mapping.arcsec_to_pixels(value * _ARCSEC_PER.get(suffix, 3600.0))
+    arcsec = value * _ARCSEC_PER.get(suffix, 3600.0)
+    if tail is not None:
+        return mapping.length_from_sky(tail, sky_angle, arcsec * u.arcsec)
+    return mapping.arcsec_to_pixels(arcsec)
 
 
 def _attributes_from_properties(properties):
@@ -751,6 +890,10 @@ def _attributes_from_properties(properties):
     if dash_match:
         attributes["dash"] = dash_match.group(1) != "0"
 
+    font_match = _FONT_SIZE_PROPERTY_RE.search(properties)
+    if font_match:
+        attributes["font_size"] = max(1, int(font_match.group(1)))
+
     return attributes
 
 
@@ -769,9 +912,13 @@ def _from_regions_shape(shape, index, mapping, report):
 
     if isinstance(pixel, RectanglePixelRegion):
         centre = to_orig(pixel.center)
+        angle = float(pixel.angle.to_value(u.deg))
+        if _was_sky(shape):
+            # Measured from the WCS's pixel axes, which are orig's the other way round when the
+            # display swaps them (`BUGS.md` R38).
+            angle = mapping.from_wcs_angle(angle)
         return Box(x=centre[0], y=centre[1], width=float(pixel.width),
-                   height=float(pixel.height),
-                   angle=float(pixel.angle.to_value(u.deg)) % 360.0, **attributes)
+                   height=float(pixel.height), angle=angle % 360.0, **attributes)
 
     if isinstance(pixel, TextPixelRegion):
         centre = to_orig(pixel.center)

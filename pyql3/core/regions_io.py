@@ -20,20 +20,22 @@ is not something to discover by eye.
 """
 
 import math
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from astropy.coordinates import SkyCoord
 
 from pyql3.core.ds9_regions import Report, from_ds9, pixel_angle_to_sky, sky_angle_to_pixel, to_ds9
 from pyql3.core.regions_model import (
-    COMMON_ORDER,
     Arrow,
     Box,
     Circle,
     RegionList,
     SkyAnchor,
+    geometry_of,
     looks_like_ds9,
 )
-from pyql3.core.sky import CelestialMap
+from pyql3.core.sky import DS9_SKY_FRAMES, CelestialMap
 
 #: Suffix that selects the ds9 format on save. Everything else is written as native YAML.
 DS9_SUFFIXES = (".reg",)
@@ -64,7 +66,8 @@ class FrameChoice:
     regions: int
     #: The largest of those differences, in pixels.
     furthest: float
-    #: The frame the file was saved with, which is the sensible default.
+    #: The frame the file was saved with, which is the sensible default. Only `frame: sky`
+    #: regions are ever offered, so this is `"sky"`.
     saved: str = "sky"
 
     def summary(self):
@@ -83,9 +86,10 @@ def load_regions(path, wcs=None, axis_indices=(0, 1), frame="auto", choose_frame
 
     A native file written with a WCS holds each region **in both frames** — pixels and RA/Dec —
     and on a different pointing the two disagree. `frame` settles it: `"image"` or `"sky"` chooses
-    outright, and `"auto"` asks `choose_frame(FrameChoice)` for the answer, falling back to what
-    each region was saved as when there is no one to ask. The question is only put when the two
-    frames would actually place something differently.
+    outright, and `"auto"` places each region by its own `frame:`, asking `choose_frame(FrameChoice)`
+    about the `frame: sky` ones and placing them from the sky when there is no one to ask. A
+    `frame: image` region keeps its pixels and is not part of the question. The question is only
+    put when the two frames would actually place a `frame: sky` region differently.
     """
     path = Path(path)
     text = path.read_text(encoding="utf-8")
@@ -128,7 +132,10 @@ def placed_on_image(regions, wcs=None, axis_indices=(0, 1), frame="auto", choose
     for index, region in enumerate(regions):
         if region.sky is None:
             continue
-        on_image, shift = _from_sky_anchor(region, mapping)
+        try:
+            on_image, shift = _from_sky_anchor(region, mapping)
+        except Exception:       # a conversion astropy or wcslib refuses; the pixels still stand
+            on_image, shift = None, 0.0
         if on_image is None:
             stranded += 1
         elif not _same_geometry(on_image, region):
@@ -145,41 +152,43 @@ def placed_on_image(regions, wcs=None, axis_indices=(0, 1), frame="auto", choose
         # round trip's worth of floating point each time.
         return list(regions), report
 
-    chosen = _chosen_frame(frame, choose_frame, regions, candidates, anchored)
-    if chosen == "image":
+    moving = _regions_to_move(frame, choose_frame, regions, candidates)
+    kept = [shift for index, (_, shift) in candidates.items() if index not in moving]
+    if kept:
         report.notes.append(
-            f"{len(candidates)} region(s) were kept at their saved pixel coordinates, which this "
-            f"image puts up to {max(shift for _, shift in candidates.values()):.1f} pixel(s) from "
-            "their saved sky positions")
+            f"{len(kept)} region(s) were kept at their saved pixel coordinates, which this "
+            f"image puts up to {max(kept):.1f} pixel(s) from their saved sky positions")
+    if not moving:
         return list(regions), report
 
-    placed = [candidates[index][0] if index in candidates else region
+    placed = [moving[index][0] if index in moving else region
               for index, region in enumerate(regions)]
     report.notes.append(
-        f"{len(candidates)} region(s) were placed from their sky positions rather than their "
-        f"stored pixels, moving up to {max(shift for _, shift in candidates.values()):.1f} "
+        f"{len(moving)} region(s) were placed from their sky positions rather than their "
+        f"stored pixels, moving up to {max(shift for _, shift in moving.values()):.1f} "
         "pixel(s): this file was drawn on an image pointed differently from this one")
     return placed, report
 
 
-def _chosen_frame(frame, choose_frame, regions, candidates, anchored):
-    """Which frame to place the regions in: what was asked for, what the user says, or the file's.
+def _regions_to_move(frame, choose_frame, regions, candidates):
+    """The candidates to place from their sky positions, as a subset of `candidates`.
 
-    With no one to ask — a command-line load, a test, anything headless — the file's own `frame:`
-    stands, so a script never blocks and never surprises.
+    `frame="sky"` moves them all. Otherwise each region goes by its own `frame:` (`BUGS.md` R40):
+    a `frame: image` region, or one whose frame was never chosen, keeps its pixels, and the user is
+    asked only about the `frame: sky` ones. With no one to ask — a command-line load, a test,
+    anything headless — the file's own `frame:` stands, so a script never blocks.
     """
-    if frame in ("image", "sky"):
-        return frame
+    if frame == "sky":
+        return dict(candidates)
 
-    saved = "sky" if any(region.frame == "sky" for region in anchored) else "image"
-    if choose_frame is None:
-        return saved
+    following = {index: candidate for index, candidate in candidates.items()
+                 if regions[index].frame == "sky"}
+    if not following or choose_frame is None:
+        return following
 
-    offer = FrameChoice(regions=len(candidates),
-                        furthest=max(shift for _, shift in candidates.values()),
-                        saved=saved)
-    answer = choose_frame(offer)
-    return answer if answer in ("image", "sky") else saved
+    offer = FrameChoice(regions=len(following),
+                        furthest=max(shift for _, shift in following.values()))
+    return {} if choose_frame(offer) == "image" else following
 
 
 def _from_sky_anchor(region, mapping):
@@ -190,37 +199,93 @@ def _from_sky_anchor(region, mapping):
     stored in pixels.
     """
     anchor = region.sky
-    placed = mapping.from_sky(anchor.ra_deg, anchor.dec_deg)
+    if _in_this_frame(anchor, mapping):
+        # The numbers are this WCS's own world coordinates, so they are placed as they are: no
+        # conversion, and no `SkyCoord` to build unless an angle needs one, which for a large
+        # set of circles is most of the cost of loading.
+        coord = None
+        placed = mapping.from_sky(anchor.ra_deg, anchor.dec_deg)
+    else:
+        coord = _anchor_coord(anchor, mapping)
+        placed = mapping.from_skycoord(coord)
     if placed is None:
         return None, 0.0
 
     x, y = placed
     values = {"x": x, "y": y}
+    if isinstance(region, (Box, Arrow)) and coord is None:
+        coord = _anchor_coord(anchor, mapping)
 
     if isinstance(region, Circle):
         _set_size(values, "radius", anchor.size_arcsec, mapping)
     elif isinstance(region, Box):
-        _set_size(values, "width", anchor.size_arcsec, mapping)
-        _set_size(values, "height", anchor.size2_arcsec, mapping)
-        _set_angle(values, anchor, mapping)
+        _set_angle(values, coord, anchor, mapping)
+        angle = values.get("angle", region.angle)
+        _set_length(values, "width", angle, anchor.size_arcsec, mapping)
+        _set_length(values, "height", angle + 90.0, anchor.size2_arcsec, mapping)
     elif isinstance(region, Arrow):
-        _set_size(values, "length", anchor.size_arcsec, mapping)
-        _set_angle(values, anchor, mapping)
+        _set_angle(values, coord, anchor, mapping)
+        _set_length(values, "length", values.get("angle", region.angle), anchor.size_arcsec,
+                    mapping)
 
-    return replace(region, **values), math.hypot(x - region.x, y - region.y)
+    moved = replace(region, **values)
+    # Placed from the anchor, so this is the geometry the anchor goes with (R41).
+    moved.anchor_geometry = geometry_of(moved)
+    return moved, math.hypot(x - region.x, y - region.y)
+
+
+def _in_this_frame(anchor, mapping):
+    """True when the anchor's numbers are in this WCS's own frame: it names that frame, or none."""
+    return anchor.frame is None or anchor.frame == mapping.ds9_frame
+
+
+def _anchor_coord(anchor, mapping):
+    """The anchor's position as a `SkyCoord` in the frame its numbers are in, or None.
+
+    An anchor in this image's own frame, or one that names no frame, is built in the WCS's frame
+    exactly, so loading a file back onto its own image converts nothing (`BUGS.md` R10). Any other
+    frame is the ds9 frame of that name, which `from_skycoord` converts into this WCS's frame.
+    """
+    if _in_this_frame(anchor, mapping):
+        return mapping.skycoord(anchor.ra_deg, anchor.dec_deg)
+    return SkyCoord(float(anchor.ra_deg), float(anchor.dec_deg), unit="deg",
+                    frame=DS9_SKY_FRAMES[anchor.frame])
 
 
 def _same_geometry(one, other):
     """True when two versions of a region sit within `SAME_PLACE` of each other.
 
-    Compares the geometry fields — whatever a region has beyond the shared styling — so it is a
-    circle's radius and a box's angle as well as the position, and a new shape needs nothing added
-    here.
+    Compares the geometry fields (`GEOMETRY`), so it is a circle's radius and a box's angle as
+    well as the position, and a new shape needs nothing added here.
     """
-    names = [field.name for field in fields(one) if field.name not in COMMON_ORDER]
-    return all(math.isclose(float(getattr(one, name)), float(getattr(other, name)),
-                            abs_tol=SAME_PLACE)
-               for name in names)
+    return _same_values(type(one).GEOMETRY, geometry_of(one), geometry_of(other))
+
+
+def _same_values(names, values, others):
+    """True when two geometry tuples agree within `SAME_PLACE`, angles as directions.
+
+    An angle is compared modulo 360: a WCS round trip that ends in `% 360` turns -6e-15 into
+    359.99999999999994, which is the same direction as 0 and not 360 degrees from it
+    (`BUGS.md` R39).
+    """
+    for name, value, other in zip(names, values, others, strict=True):
+        if name == "angle":
+            difference = abs((value - other + 180.0) % 360.0 - 180.0)
+        else:
+            difference = abs(value - other)
+        if not difference <= SAME_PLACE:
+            return False
+    return True
+
+
+def _anchor_is_stale(region):
+    """True when a region has been edited since its sky anchor was recorded or placed (R41).
+
+    A region whose pairing is not known (`anchor_geometry` None) is taken to be unedited.
+    """
+    if region.anchor_geometry is None:
+        return False
+    return not _same_values(region.GEOMETRY, region.anchor_geometry, geometry_of(region))
 
 
 def _set_size(values, name, arcsec, mapping):
@@ -234,19 +299,38 @@ def _set_size(values, name, arcsec, mapping):
         values[name] = float(pixels)
 
 
-def _set_angle(values, anchor, mapping):
-    """A direction recorded against the sky, as an image angle here — zero included.
+def _set_length(values, name, angle, arcsec, mapping):
+    """A length recorded in arcseconds along the orig direction `angle`, as pixels on this image.
+
+    Measured along the direction at the region's new position, because with unequal pixel scales
+    a length in pixels depends on which way it points (`BUGS.md` R37). As in `_set_size`, a length
+    that cannot be converted leaves the stored pixel value standing.
+    """
+    if arcsec is None:
+        return
+    per_pixel = mapping.length_to_sky(values["x"], values["y"], angle, 1.0)
+    if per_pixel is None or per_pixel.arcsec <= 0:
+        # No direction to measure along (a frame astropy does not recognise): the mean scale.
+        _set_size(values, name, arcsec, mapping)
+        return
+    values[name] = float(arcsec) / float(per_pixel.arcsec)
+
+
+def _set_angle(values, coord, anchor, mapping):
+    """A direction recorded against the sky at `coord`, as an image angle here — zero included.
 
     A field rotated differently from the one the region was drawn on turns the region with it,
     which is the whole point of recording the angle against the sky rather than the axes.
     """
-    if anchor.angle_deg is not None:
-        values["angle"] = sky_angle_to_pixel(mapping, anchor.ra_deg, anchor.dec_deg,
-                                             anchor.angle_deg) % 360.0
+    if anchor.angle_deg is None:
+        return
+    angle = sky_angle_to_pixel(mapping, coord, anchor.angle_deg)
+    if angle is not None:
+        values["angle"] = angle % 360.0
 
 
 def save_regions(path, regions, wcs=None, axis_indices=(0, 1), written_by="", source="",
-                 frame="auto"):
+                 frame="auto", style=None, record=False):
     """Write `regions` to `path`, choosing the format from its suffix. Returns `Report | None`.
 
     A `.reg` suffix writes ds9 format — `frame` then selects image or sky coordinates, and the
@@ -256,6 +340,14 @@ def save_regions(path, regions, wcs=None, axis_indices=(0, 1), written_by="", so
     `frame` means the same thing to both formats: `"sky"` writes positions that follow the field,
     `"image"` writes pixels of this file, and `"auto"` — the default — writes sky wherever it can,
     which for the native format is wherever the plane on display has sky coordinates at all.
+
+    `style` is the native file's `style:` block — the one the regions were loaded with, so a
+    re-saved file keeps it (`BUGS.md` R77). None writes the built-in defaults.
+
+    `record=True` copies what a native save wrote — each region's sky anchor, frame and
+    `anchor_geometry` — back onto the regions passed in, once the file is written (`record_saved`).
+    The window asks for it, so a later save compares each region with the anchor its last save
+    recorded rather than the one it was loaded with. Without it the regions are left alone.
     """
     path = Path(path)
     regions = list(regions)
@@ -266,36 +358,64 @@ def save_regions(path, regions, wcs=None, axis_indices=(0, 1), written_by="", so
         path.write_text(text, encoding="utf-8")
         return report
 
-    RegionList(regions=with_sky_anchors(regions, wcs=wcs, axis_indices=axis_indices, frame=frame),
-               written_by=written_by, source=source).save(path)
+    written = with_sky_anchors(regions, wcs=wcs, axis_indices=axis_indices, frame=frame)
+    RegionList(regions=written, written_by=written_by, source=source, style=style).save(path)
+    if record:
+        record_saved(regions, written)
     return None
+
+
+def record_saved(regions, written):
+    """Give each region the sky anchor, frame and `anchor_geometry` its saved copy was written with.
+
+    `written` is what `with_sky_anchors(regions, ...)` returned, in the same order. Without this, a
+    region dragged and then saved with a WCS kept the anchor it was loaded with, so a second save
+    on a plane with no sky axes counted it as moved and dropped the anchor the first save had
+    recorded correctly.
+    """
+    for region, copy in zip(regions, written, strict=True):
+        if copy is region:
+            continue
+        region.sky = copy.sky
+        region.frame = copy.frame
+        region.anchor_geometry = copy.anchor_geometry
 
 
 def with_sky_anchors(regions, wcs=None, axis_indices=(0, 1), frame="auto"):
     """Copies of `regions` carrying their sky position, where the WCS allows one.
 
-    The anchor is what makes a file meaningful on another frame of the same field, and unless
-    `frame="image"` the copies are marked `frame: sky` so that loading them somewhere else puts
-    them back on the sky rather than on the old pixels. A plane with no sky coordinates at all
-    (wavelength against declination, say) simply yields the originals unchanged.
+    The anchor is what makes a file meaningful on another frame of the same field. A region whose
+    frame was never chosen is marked `frame: sky` when it gets one, so that loading it somewhere
+    else puts it back on the sky rather than on the old pixels; an explicit `frame: image` is kept
+    (`BUGS.md` R40), and `frame="image"` or `"sky"` marks them all. A plane with no sky coordinates at
+    all (wavelength against declination, say) records no new anchors.
 
     **The anchor is recomputed, not preserved.** What the user sees and drags is the pixel
     geometry, so an anchor carried in from a file is stale the moment a region is moved; writing
-    it back would put the region somewhere it has not been since. The stored one is kept only when
-    this image cannot produce a new one.
+    it back would put the region somewhere it has not been since. A stored one is kept only when
+    this image cannot produce a new one *and* the region has not been edited since the anchor was
+    recorded (`anchor_geometry`); an edited region loses it, and its frame becomes unchosen
+    (written `frame: image`), so its new pixels are what the next load uses and the next save
+    with a WCS anchors it there (R41).
     """
     mapping = CelestialMap(wcs, *axis_indices)
-    if not mapping.usable:
-        return list(regions)
 
     anchored = []
     for region in regions:
-        anchor = sky_anchor_for(region, mapping)
-        if anchor is None:
+        anchor = sky_anchor_for(region, mapping) if mapping.usable else None
+        if anchor is not None:
+            if frame in ("image", "sky"):
+                chosen = frame
+            else:
+                chosen = "image" if region.frame == "image" else "sky"
+            anchored.append(replace(region, sky=anchor, frame=chosen,
+                                    anchor_geometry=geometry_of(region)))
+        elif region.sky is not None and _anchor_is_stale(region):
+            # Not "image": that would pin the region to the detector for good, which nobody
+            # asked for. With no sky block it is written `frame: image` and read back as unchosen.
+            anchored.append(replace(region, sky=None, frame=None, anchor_geometry=None))
+        else:
             anchored.append(region)
-            continue
-        anchored.append(replace(region, sky=anchor,
-                                frame="image" if frame == "image" else "sky"))
     return anchored
 
 
@@ -309,15 +429,29 @@ def sky_anchor_for(region, mapping):
     if isinstance(region, Circle):
         size = mapping.pixels_to_arcsec(region.radius)
     elif isinstance(region, Box):
-        size = mapping.pixels_to_arcsec(region.width)
-        size2 = mapping.pixels_to_arcsec(region.height)
+        # The width lies along the box's angle and the height across it, and each is measured on
+        # the sky in its own direction (`BUGS.md` R37).
+        size = _arcsec_along(mapping, region, region.angle, region.width)
+        size2 = _arcsec_along(mapping, region, region.angle + 90.0, region.height)
         angle = pixel_angle_to_sky(mapping, region.x, region.y, region.angle)
     elif isinstance(region, Arrow):
-        size = mapping.pixels_to_arcsec(region.length)
+        size = _arcsec_along(mapping, region, region.angle, region.length)
         angle = pixel_angle_to_sky(mapping, region.x, region.y, region.angle)
 
     return SkyAnchor(ra_deg=sky[0], dec_deg=sky[1], size_arcsec=size, size2_arcsec=size2,
-                     angle_deg=angle)
+                     angle_deg=angle, frame=mapping.ds9_frame)
+
+
+def _arcsec_along(mapping, region, angle, pixels):
+    """`pixels` along the orig direction `angle` from the region's centre, in arcseconds, or None.
+
+    Falls back to the mean pixel scale when there is no direction to measure along, which is the
+    case for a celestial frame astropy does not recognise.
+    """
+    length = mapping.length_to_sky(region.x, region.y, angle, pixels)
+    if length is None:
+        return mapping.pixels_to_arcsec(pixels)
+    return float(length.arcsec)
 
 
 def suggested_filename(source_path, suffix=".yml"):
