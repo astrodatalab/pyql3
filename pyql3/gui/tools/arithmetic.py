@@ -39,6 +39,7 @@ class ArithmeticDialog(QDialog):
         
         self.spin1 = QDoubleSpinBox()
         self.spin1.setRange(-1e10, 1e10)
+        self.spin1.setDecimals(10)  # Qt's default of 2 turns 0.0012 into 0.0
         self.spin1.setValue(0.0)
         
         vbox1.addWidget(self.rb1_active)
@@ -96,6 +97,7 @@ class ArithmeticDialog(QDialog):
         
         self.spin2 = QDoubleSpinBox()
         self.spin2.setRange(-1e10, 1e10)
+        self.spin2.setDecimals(10)  # Qt's default of 2 turns 0.0012 into 0.0
         self.spin2.setValue(0.0)
         
         vbox2.addWidget(self.rb2_active)
@@ -149,7 +151,8 @@ class ArithmeticDialog(QDialog):
         if bg_id == 0: # Active Image
             if self.image_viewer is None or getattr(self.image_viewer, 'raw_data', None) is None:
                 raise ValueError("No active image loaded in the viewer.")
-            return self.image_viewer.raw_data.copy(), self.image_viewer.header.copy() if hasattr(self.image_viewer, 'header') and self.image_viewer.header is not None else fits.Header(), "ActiveImage"
+            # Float, like the File operand: Active + Active on uint16 data wrapped around.
+            return self.image_viewer.raw_data.astype(float), self.image_viewer.header.copy() if hasattr(self.image_viewer, 'header') and self.image_viewer.header is not None else fits.Header(), "ActiveImage"
         elif bg_id == 1: # File
             path = txt_box.text()
             if not path:

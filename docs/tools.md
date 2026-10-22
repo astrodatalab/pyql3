@@ -190,13 +190,24 @@ $$f(x, y) = z_0 + A \exp\left( -\left[ a (x - x_0)^2 + 2b (x - x_0)(y - y_0) + c
 where:
 $$a = \frac{\cos^2\theta}{2\sigma_x^2} + \frac{\sin^2\theta}{2\sigma_y^2}$$
 
-$$b = -\frac{\sin 2\theta}{4\sigma_x^2} + \frac{\sin 2\theta}{4\sigma_y^2}$$
+$$b = \frac{\sin 2\theta}{4\sigma_x^2} - \frac{\sin 2\theta}{4\sigma_y^2}$$
 
 $$c = \frac{\sin^2\theta}{2\sigma_x^2} + \frac{\cos^2\theta}{2\sigma_y^2}$$
 
-The Full-Width at Half-Maximum (FWHM) along major and minor axes is given by:
+The Full-Width at Half-Maximum (FWHM) along the two axes of the ellipse is given by:
 $$\text{FWHM}_x = 2 \sqrt{2 \ln 2} \cdot \sigma_x \approx 2.35482 \cdot \sigma_x$$
 $$\text{FWHM}_y = 2 \sqrt{2 \ln 2} \cdot \sigma_y \approx 2.35482 \cdot \sigma_y$$
+
+All three models share one rotation, with $\theta$ the reported **Angle (deg)**:
+
+$$x_{\text{rot}} = (x - x_0)\cos\theta + (y - y_0)\sin\theta, \qquad y_{\text{rot}} = -(x - x_0)\sin\theta + (y - y_0)\cos\theta$$
+
+so the Gaussian above is $\exp\left(-\frac{x_{\text{rot}}^2}{2\sigma_x^2} - \frac{y_{\text{rot}}^2}{2\sigma_y^2}\right)$ written out. The
+angle is measured counter-clockwise from the image's +X axis (the direction in which Center X
+increases) toward +Y, in the image's own pixel axes, so a view rotation does not change it.
+**FWHM X** is the width along the direction at that angle and **FWHM Y** the width perpendicular to
+it; neither is necessarily the major axis. When FWHM Y is the larger, the major axis lies at the
+angle plus 90°. An angle and the same angle ± 180° describe the same ellipse.
 
 #### B. 2D Lorentzian
 $$f(x, y) = z_0 + \frac{A}{1 + \left(\frac{x_{\text{rot}}}{\gamma_x}\right)^2 + \left(\frac{y_{\text{rot}}}{\gamma_y}\right)^2}$$
@@ -214,10 +225,11 @@ Fits are computed using non-linear Levenberg-Marquardt least-squares optimizatio
 The **Aperture Photometry** tool computes integrated stellar fluxes and background sky noise.
 
 ### Algorithm
-1. **Aperture Flux ($F_{\text{raw}}$)**: Sum of pixel intensities inside a circular aperture of radius $r_{\text{ap}}$.
-2. **Sky Background ($I_{\text{sky}}$)**: Median pixel intensity computed inside an annular sky region between inner radius $r_{\text{in}}$ and outer radius $r_{\text{out}}$.
+1. **Aperture Flux ($F_{\text{raw}}$)**: Sum of pixel intensities inside a circular aperture of radius $r_{\text{ap}}$. NaN pixels are left out of the sum.
+2. **Sky Background ($I_{\text{sky}}$)**: Median of the finite pixel values inside an annular sky region between inner radius $r_{\text{in}}$ and outer radius $r_{\text{out}}$. Pixels of the annulus that fall off the image are not used. The inner radius must be smaller than the outer one; otherwise the tool shows a message instead of numbers.
 3. **Net Subtracted Flux ($F_{\text{net}}$)**:
-   $$F_{\text{net}} = F_{\text{raw}} - \pi r_{\text{ap}}^2 \times I_{\text{sky}}$$
+   $$F_{\text{net}} = F_{\text{raw}} - A \times I_{\text{sky}}$$
+   where $A$ is the area of the aperture that overlaps finite data: $\pi r_{\text{ap}}^2$ for an aperture wholly on the image with no NaN pixels, and less at an edge or around a NaN pixel.
 
 ---
 
@@ -242,6 +254,8 @@ $$\text{Strehl} = \frac{\left( \frac{I_{\text{peak}}}{F_{\text{total}}} \right)_
 The **Datacube Arithmetic** tool performs element-wise scalar or cube-to-cube mathematical operations ($+$, $-$, $\times$, $\div$) between open datasets:
 
 $$D_{\text{result}}(x, y, z) = D_1(x, y, z) \odot D_2(x, y, z)$$
+
+Image operands are converted to 64-bit floating point first, so a sum of integer frames does not wrap around, and the result is saved with `BITPIX = -64` and no `BZERO`/`BSCALE`. The result window is titled with the expression, for example `(a001.fits / a002.fits)`.
 
 ---
 
@@ -331,6 +345,22 @@ also follow a view rotation. *Display Pixels* are used as given and are not mapp
 ## 8. FITS Header Editor
 
 The **Header Editor** allows astronomers to view, search, add, or modify FITS header cards across all HDU extensions in memory. Changes can be saved back to a new FITS file.
+
+Edits are kept in the editor, for each extension, until **Save Header**; switching the Extension
+combo does not apply them, and **Cancel** discards all of them. Each row is written back to its own
+card, so two cards with the same keyword stay separate, and a row that was not changed is not
+written at all. COMMENT and HISTORY text can be edited too. An undefined value is shown empty and
+stays undefined unless it is edited. Structural keywords (`SIMPLE`, `BITPIX`, `NAXISn`, ...) are not
+changed, and neither are `BSCALE`, `BZERO` and `BLANK` of an integer image whose stored integers
+QuickLook writes back. Saving the header keeps the data as stored on disk: integer images, scaled
+or with a `BLANK` value, are written back as the same integers with their `BSCALE`, `BZERO` and
+`BLANK`, and unsigned integers keep their `BZERO`; a tile-compressed image keeps its compression.
+The exception is lossy tile compression (quantised floating-point images, or HCOMPRESS with a
+scale): astropy compresses the data again on every save, so each save changes those pixel values
+slightly (`BUGS.md` R92). If such a file changed on disk after it was opened, the save is refused and nothing is written:
+reopen the file and make the change again. The edits then stay in the editor, unsaved, and are not
+applied to the header in memory. Edits are checked before any is written, so an edit FITS does not
+allow (a non-ASCII value, for example) is reported and none of the edits is applied.
 
 ---
 

@@ -821,10 +821,11 @@ class MainWindow(QMainWindow):
         try:
             self.fits_reader.load_from_memory(data, header)
             was_total_dn = self.image_viewer.disp_as_dn
-            self.image_viewer.set_data(data, header=header)
+            # The reader's header, which is the one the Header Editor edits and Save writes.
+            self.image_viewer.set_data(data, header=self.fits_reader.get_header())
             self.sync_unit_menu(was_total_dn)
-            filename = os.path.basename(title)
-            self.setWindowTitle(f"QuickLook 3 - {filename}")
+            # Not a path: `basename` of "(a001.fits / a002.fits)" is " a002.fits)" (R69).
+            self.setWindowTitle(f"QuickLook 3 - {title}")
             
             # Update extension combobox
             extensions = self.fits_reader.get_image_extensions()

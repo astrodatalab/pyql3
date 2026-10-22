@@ -705,6 +705,516 @@ def test_header_editor_only_reports_structural_keywords_the_user_changed(qapp, t
         reader.close()
 
 
+def test_load_from_memory_keeps_one_header(qapp, tmp_path):
+    """BUGS.md R23: `load_from_memory` kept the caller's header as `self.header` while the
+    HDU held a normalised copy, so the reader held two headers that disagreed — the caller's
+    still said BITPIX 16 and BZERO 32768 over float data."""
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+
+    header = fits.Header([('BITPIX', 16), ('NAXIS', 2), ('NAXIS1', 5), ('NAXIS2', 4),
+                          ('BZERO', 32768), ('BSCALE', 1), ('BLANK', -32768),
+                          ('OBJECT', 'before')])
+    reader = FitsReader()
+    try:
+        reader.load_from_memory(np.full((4, 5), 20000.0), header)
+        assert reader.get_header() is reader.hdul[0].header
+        assert reader.get_header()['BITPIX'] == -64 and 'BZERO' not in reader.get_header()
+        # BLANK is defined only for integer data (Phase 7 review m5).
+        assert 'BLANK' not in reader.get_header()
+
+        dialog = HeaderEditorDialog(reader)
+        for row in range(dialog.table.rowCount()):
+            if dialog.table.item(row, 0).text() == 'OBJECT':
+                dialog.table.item(row, 1).setText('after')
+        assert dialog.apply_table_edits(ext=dialog.current_ext)
+        assert reader.get_header()['OBJECT'] == 'after'
+
+        path = str(tmp_path / "result.fits")
+        reader.save(path)
+        assert fits.getheader(path)['OBJECT'] == 'after'
+    finally:
+        reader.close()
+
+
+def _header_editor_file(tmp_path):
+    """A primary header with duplicate keywords, an undefined value, HISTORY, COMMENT and a
+    blank card (R42), and an image extension."""
+    header = fits.Header([('OBJECT', 'GC'), ('FILTER', 'Kn5', 'first card'),
+                          ('FILTER', 'Hbb', 'second card'), ('UNDEFKEY', None, 'no value'),
+                          ('OBSID', '123', 'a string that reads as a number')])
+    header.add_history('reduced with DRP v4')
+    header.add_comment('a comment')
+    header.append(('', 'blank text'), bottom=True)
+    path = str(tmp_path / "h.fits")
+    fits.HDUList([fits.PrimaryHDU(np.zeros((3, 3), np.float32), header=header),
+                  fits.ImageHDU(np.zeros((2, 2)), name='SCI')]).writeto(path)
+    return path
+
+
+def _editor_rows(dialog, keyword):
+    return [row for row in range(dialog.table.rowCount())
+            if dialog.table.item(row, 0).text() == keyword]
+
+
+def test_header_editor_round_trip_is_identity(qapp, tmp_path):
+    """BUGS.md R42: rows were written back by keyword, so applying an untouched table set both
+    FILTER cards to the second one's value and UNDEFKEY to 'None', and an edited HISTORY row
+    was dropped."""
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+
+    reader = FitsReader(_header_editor_file(tmp_path))
+    try:
+        before = reader.header.tostring()
+        dialog = HeaderEditorDialog(reader)
+        assert dialog.apply_table_edits(ext=0)
+        assert reader.header.tostring() == before
+        assert dialog._skipped_keywords == []
+
+        # An edit reaches the card it was made on, and only that card.
+        second_filter = _editor_rows(dialog, 'FILTER')[1]
+        dialog.table.item(second_filter, 1).setText('Jbb')
+        dialog.table.item(_editor_rows(dialog, 'HISTORY')[0], 1).setText('EDITED')
+        assert dialog.apply_table_edits(ext=0)
+        cards = reader.header.cards
+        assert [c.value for c in cards if c.keyword == 'FILTER'] == ['Kn5', 'Jbb']
+        assert [c.comment for c in cards if c.keyword == 'FILTER'] == ['first card',
+                                                                        'second card']
+        assert list(reader.header['HISTORY']) == ['EDITED']
+        assert list(reader.header['COMMENT']) == ['a comment']
+        assert reader.header.cards['UNDEFKEY'].value is fits.card.UNDEFINED
+        assert len(reader.header) == len(fits.Header.fromstring(before))
+
+        # A comment edited alone leaves the value as it was, its type included.
+        dialog.table.item(_editor_rows(dialog, 'UNDEFKEY')[0], 2).setText('still none')
+        dialog.table.item(_editor_rows(dialog, 'OBSID')[0], 2).setText('observation id')
+        assert dialog.apply_table_edits(ext=0)
+        assert reader.header.cards['UNDEFKEY'].value is fits.card.UNDEFINED
+        assert reader.header.comments['UNDEFKEY'] == 'still none'
+        assert reader.header['OBSID'] == '123'
+        assert reader.header.comments['OBSID'] == 'observation id'
+    finally:
+        reader.close()
+
+
+def test_a_refused_edit_writes_none_of_the_edits(qapp, tmp_path):
+    """Phase 7 review m2: an edit astropy refuses (a non-ASCII value) raised after the rows
+    before it had been written, so Cancel no longer discarded everything."""
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+
+    reader = FitsReader(_header_editor_file(tmp_path))
+    try:
+        before = reader.header.tostring()
+        dialog = HeaderEditorDialog(reader)
+        dialog.table.item(_editor_rows(dialog, 'OBJECT')[0], 1).setText('GC_field_A')
+        dialog.table.item(_editor_rows(dialog, 'FILTER')[1], 1).setText('\u0394')
+        with pytest.raises(ValueError, match='FILTER'):
+            dialog.apply_table_edits()
+        assert reader.header.tostring() == before
+    finally:
+        reader.close()
+
+
+def test_cancel_after_an_extension_switch_keeps_the_header(qapp, tmp_path):
+    """BUGS.md R42: switching the editor's extension wrote the table into the reader, so
+    Cancel kept the edit and the next save of any kind wrote it. Edits are held in the
+    dialog, per extension, until Save."""
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+
+    reader = FitsReader(_header_editor_file(tmp_path))
+    try:
+        primary, sci = reader.hdul[0].header.tostring(), reader.hdul[1].header.tostring()
+        dialog = HeaderEditorDialog(reader)
+        dialog.table.item(_editor_rows(dialog, 'OBJECT')[0], 1).setText('typo')
+        dialog.combo_ext.setCurrentIndex(dialog.combo_ext.findData(1))
+        assert reader.hdul[0].header.tostring() == primary
+        dialog.reject()
+        assert reader.hdul[0].header.tostring() == primary
+        assert reader.hdul[1].header.tostring() == sci
+
+        # Held, not lost: switching back shows the edit, and Save applies both extensions'.
+        dialog = HeaderEditorDialog(reader)
+        dialog.table.item(_editor_rows(dialog, 'OBJECT')[0], 1).setText('GC_field_A')
+        dialog.combo_ext.setCurrentIndex(dialog.combo_ext.findData(1))
+        dialog.table.item(_editor_rows(dialog, 'EXTNAME')[0], 1).setText('SCI2')
+        dialog.combo_ext.setCurrentIndex(dialog.combo_ext.findData(0))
+        assert dialog.table.item(_editor_rows(dialog, 'OBJECT')[0], 1).text() == 'GC_field_A'
+        assert reader.hdul[0].header['OBJECT'] == 'GC'
+        assert dialog.apply_table_edits()
+        assert reader.hdul[0].header['OBJECT'] == 'GC_field_A'
+        assert reader.hdul[1].header['EXTNAME'] == 'SCI2'
+    finally:
+        reader.close()
+
+
+SCALED_STORED = np.array([[0, 1, 2], [-32768, 100, 32767]], dtype=np.int16)
+
+
+def _write_scaled_int16(path):
+    """BITPIX 16 with BSCALE 0.5, BZERO 100 and BLANK, each with a comment, followed by other
+    cards, so the scaling cards have a position to keep. Holds 100, 100.5, 101, NaN, 150 and
+    16483.5."""
+    # Set on the header after the data, so astropy writes the stored integers with these
+    # cards as they are rather than rescaling.
+    hdu = fits.PrimaryHDU(SCALED_STORED)
+    hdu.header['BSCALE'] = (0.5, 'value = 0.5 * stored + 100')
+    hdu.header['BZERO'] = (100.0, 'offset')
+    hdu.header['BLANK'] = (-32768, 'undefined pixel')
+    hdu.header['OBJECT'] = 'GC'
+    hdu.header.add_history('written by the test')
+    hdu.writeto(path)
+    assert fits.getheader(path)['BSCALE'] == 0.5
+    return fits.getdata(path)
+
+
+def _write_unsigned(path):
+    """A float32 primary (the image displayed) with a uint32 DQ and a uint16 extension, as a
+    JWST cal or s3d file has: BZERO 2**31 and 2**15 make them unsigned."""
+    fits.HDUList([
+        fits.PrimaryHDU(np.ones((3, 4), np.float32)),
+        fits.ImageHDU(np.array([[3_000_000_000, 2151153665, 513, 0]] * 3, np.uint32), name='DQ'),
+        fits.ImageHDU(np.full((3, 4), 40000, np.uint16), name='COUNTS'),
+    ]).writeto(path)
+    with fits.open(path) as hdul:
+        return [hdul[1].data.copy(), hdul[2].data.copy()]
+
+
+def test_header_only_save_keeps_the_scaled_integer_encoding(tmp_path):
+    """BUGS.md R71: a header-only save rewrote BITPIX 16 data with BSCALE 0.5, BZERO 100 and
+    BLANK as BITPIX -32 and dropped the three keywords. They are written back in their own
+    places, with their comments, and the array the reader handed out is not changed."""
+    path = str(tmp_path / "scaled.fits")
+    values = _write_scaled_int16(path)
+    assert np.isnan(values[1, 0]) and values[1, 1] == 150.0
+    original = fits.getheader(path)
+
+    reader = FitsReader(path)
+    try:
+        shown = reader.get_data()
+        shown_before = shown.copy()
+        reader.update_header_card('OBJECT', 'GC_field_A')
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            reader.save()
+        assert np.array_equal(shown, shown_before, equal_nan=True)
+    finally:
+        reader.close()
+
+    saved = fits.getheader(path)
+    assert saved['BITPIX'] == 16
+    assert (saved['BSCALE'], saved['BZERO'], saved['BLANK']) == (0.5, 100.0, -32768)
+    assert saved['OBJECT'] == 'GC_field_A'
+    assert ([c.image for c in saved.cards if c.keyword != 'OBJECT']
+            == [c.image for c in original.cards if c.keyword != 'OBJECT'])
+    assert list(saved.keys()) == list(original.keys())
+    assert np.array_equal(fits.getdata(path, do_not_scale_image_data=True), SCALED_STORED)
+    assert np.array_equal(fits.getdata(path), values, equal_nan=True)
+
+
+@pytest.mark.parametrize("save_as", [False, True], ids=["save in place", "save as"])
+def test_a_save_keeps_unsigned_integer_extensions(tmp_path, save_as):
+    """Phase 7 review C1: opened with `scale_back=True`, a save wrote uint16 and uint32 HDUs
+    without their BZERO, so 40000 read back as 7232 and a JWST DQ flag 2151153665 as 3670017
+    -- in an extension that was never displayed."""
+    path = str(tmp_path / "cal.fits")
+    expected = _write_unsigned(path)
+    target = str(tmp_path / "copy.fits") if save_as else path
+
+    reader = FitsReader(path)
+    try:
+        reader.update_header_card('OBJECT', 'GC')
+        reader.save(target)
+    finally:
+        reader.close()
+
+    with fits.open(target) as hdul:
+        for ext, values in zip((1, 2), expected):
+            assert hdul[ext].header['BZERO'] == {1: 2**31, 2: 2**15}[ext]
+            assert hdul[ext].data.dtype == values.dtype
+            assert np.array_equal(hdul[ext].data, values)
+
+
+def test_a_save_keeps_identity_scaling_cards(tmp_path):
+    """Phase 7 review I1: OSIRIS cubes carry `BSCALE = 1` and `BZERO = 0` on float data, and
+    a save with nothing edited removed both."""
+    path = str(tmp_path / "osiris_like.fits")
+    hdu = fits.PrimaryHDU(np.arange(12, dtype=np.float32).reshape(3, 4))
+    hdu.header['BSCALE'] = (1, 'scale factor')
+    hdu.header['BZERO'] = (0, 'zero point')
+    hdu.header['OBJECT'] = 'GC'
+    hdu.writeto(path)
+    original = fits.getheader(path).tostring()
+
+    reader = FitsReader(path)
+    try:
+        reader.save()
+    finally:
+        reader.close()
+    assert fits.getheader(path).tostring() == original
+
+
+@pytest.mark.parametrize("kind", ["scaled int16", "unsigned", "identity scaling"])
+def test_an_untouched_save_is_byte_identical(tmp_path, kind):
+    path = str(tmp_path / "f.fits")
+    if kind == "scaled int16":
+        _write_scaled_int16(path)
+    elif kind == "unsigned":
+        _write_unsigned(path)
+    else:
+        hdu = fits.PrimaryHDU(np.arange(12, dtype=np.float32).reshape(3, 4))
+        hdu.header['BSCALE'], hdu.header['BZERO'] = (1, 'scale factor'), (0, 'zero point')
+        hdu.writeto(path)
+    with open(path, 'rb') as f:
+        before = f.read()
+
+    reader = FitsReader(path)
+    try:
+        reader.save()
+    finally:
+        reader.close()
+    with open(path, 'rb') as f:
+        assert f.read() == before
+
+
+def _write_integer_hdu(path, hdu, displayed):
+    """`hdu`'s integers and cards as the primary (the image a reader displays), or as an
+    extension behind a float primary, which is displayed instead."""
+    target = fits.PrimaryHDU(hdu.data) if displayed else fits.ImageHDU(hdu.data, name='QUAL')
+    # Set after construction: a header given to the constructor loses BSCALE and BZERO.
+    for keyword in ('BSCALE', 'BZERO', 'BLANK'):
+        if keyword in hdu.header:
+            target.header[keyword] = (hdu.header[keyword], hdu.header.comments[keyword])
+    hdus = [target] if displayed else [fits.PrimaryHDU(np.ones((3, 4), np.float32)), target]
+    fits.HDUList(hdus).writeto(path)
+    with fits.open(path) as hdul:
+        assert all(k in hdul[0 if displayed else 1].header for k in hdu.header
+                   if k in ('BSCALE', 'BZERO', 'BLANK'))
+
+
+def _blank_only_hdu(dtype):
+    """Integers with BLANK and no BSCALE/BZERO; three of the twelve pixels are BLANK."""
+    blank = {np.uint8: 255, np.int16: -32768, np.int32: -2147483648}[dtype]
+    stored = np.arange(12, dtype=dtype).reshape(3, 4)
+    stored[0, 1] = stored[2, 2] = stored[1, 3] = blank
+    hdu = fits.ImageHDU(stored)
+    hdu.header['BLANK'] = (blank, 'undefined pixel')
+    return hdu
+
+
+def _fine_scale_hdu(kind):
+    """Scaled integers whose physical values float32 cannot hold exactly (BUGS.md R71, Phase 7
+    re-review N2)."""
+    if kind == "int64":
+        stored = np.array([[2**53 + 1, 2**62 + 12345], [2**63 - 1, -2**63]], dtype=np.int64)
+        bscale, bzero = 0.5, 1.0
+    elif kind == "int16 BLANK":
+        # In range: rebuilt from float32, about one in six of these moves one step.
+        stored = np.random.default_rng(4).integers(-30000, 30000, (50, 50)).astype(np.int16)
+        stored[1, 1] = stored[7, 3] = -32768
+        hdu = fits.ImageHDU(stored)
+        hdu.header['BSCALE'], hdu.header['BZERO'] = (1e-4, 'scale'), (2000.0, 'zero')
+        hdu.header['BLANK'] = (-32768, 'undefined pixel')
+        return hdu
+    else:
+        stored = np.random.default_rng(3).integers(-32768, 32768, (50, 50)).astype(np.int16)
+        stored[0, 0], stored[0, 1] = -32768, 32767   # round outside int16 from float32
+        bscale, bzero = 1e-4, 2000.0
+    hdu = fits.ImageHDU(stored)
+    hdu.header['BSCALE'], hdu.header['BZERO'] = (bscale, 'scale'), (bzero, 'zero')
+    return hdu
+
+
+def _stored(path, ext):
+    with fits.open(path, do_not_scale_image_data=True) as hdul:
+        return hdul[ext].data.copy(), hdul[ext].header.tostring()
+
+
+@pytest.mark.parametrize("target", ["in place", "save as", "save as gz"])
+@pytest.mark.parametrize("displayed", [True, False], ids=["displayed", "extension"])
+@pytest.mark.parametrize("hdu_for", [
+    pytest.param(lambda: _blank_only_hdu(np.uint8), id="uint8 BLANK"),
+    pytest.param(lambda: _blank_only_hdu(np.int16), id="int16 BLANK"),
+    pytest.param(lambda: _blank_only_hdu(np.int32), id="int32 BLANK"),
+    pytest.param(lambda: _fine_scale_hdu("int16"), id="int16 BSCALE 1e-4"),
+    pytest.param(lambda: _fine_scale_hdu("int64"), id="scaled int64"),
+])
+def test_a_save_writes_the_stored_integers_back(tmp_path, hdu_for, displayed, target):
+    """Phase 7 re-review N1: astropy reads integers with BLANK and no scaling as float32 and
+    wrote the float32 bytes under the integer BITPIX, so every value was lost. N2: integers
+    rebuilt from astropy's float32 moved one step when BSCALE was finer than float32 holds,
+    fell back to BITPIX -32 outside the int16 range, and lost bits in int64."""
+    import gzip
+    path = str(tmp_path / "frame.fits")
+    _write_integer_hdu(path, hdu_for(), displayed)
+    ext = 0 if displayed else 1
+    stored, header = _stored(path, ext)
+    with open(path, 'rb') as f:
+        before = f.read()
+    out = {"in place": path, "save as": str(tmp_path / "copy.fits"),
+           "save as gz": str(tmp_path / "copy.fits.gz")}[target]
+
+    reader = FitsReader(path)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            reader.save(out)
+    finally:
+        reader.close()
+
+    opener = gzip.open if out.endswith('.gz') else open
+    with opener(out, 'rb') as f:
+        assert f.read() == before
+    after, after_header = _stored(out, ext)
+    assert after.dtype == stored.dtype and np.array_equal(after, stored)
+    assert after_header == header
+
+
+def test_an_edit_to_one_hdu_keeps_another_hdus_stored_integers(tmp_path):
+    """Save Header after an edit: the BLANK-only extension, never displayed, keeps its
+    integers (Phase 7 re-review N1)."""
+    path = str(tmp_path / "frame.fits")
+    _write_integer_hdu(path, _blank_only_hdu(np.int16), displayed=False)
+    stored, header = _stored(path, 1)
+    reader = FitsReader(path)
+    try:
+        reader.update_header_card('OBJECT', 'GC')
+        reader.save()
+    finally:
+        reader.close()
+    after, after_header = _stored(path, 1)
+    assert np.array_equal(after, stored) and after_header == header
+    assert fits.getheader(path)['OBJECT'] == 'GC'
+
+
+def _touch(path):
+    """Change the file's modification time: to the reader, a file changed on disk."""
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+
+
+@pytest.mark.parametrize("kind", ["int16 BLANK", "int16"], ids=["in range", "outside int16"])
+@pytest.mark.parametrize("in_place", [True, False], ids=["save", "save as"])
+def test_a_save_after_the_file_changed_on_disk_is_refused(tmp_path, kind, in_place):
+    """When the file on disk is no longer the one read, its stored integers cannot be read
+    back, and rebuilding them from astropy's float32 either moved values one step in silence
+    (Phase 7 re-review 2, m-2) or, outside int16, fell back to BITPIX -32 (N2). The save is
+    refused with the cause and the remedy (m-3), and nothing is written."""
+    path = str(tmp_path / "frame.fits")
+    _write_integer_hdu(path, _fine_scale_hdu(kind), displayed=True)
+    reader = FitsReader(path)
+    try:
+        shown = reader.get_data()
+        _touch(path)
+        with open(path, 'rb') as f:
+            before = f.read()
+        out = path if in_place else str(tmp_path / "copy.fits")
+        with pytest.raises(ValueError) as refused:
+            reader.save(out)
+        message = str(refused.value)
+        assert "frame.fits changed on disk since it was opened" in message
+        assert "Nothing was saved" in message and "Reopen" in message
+        assert in_place or not os.path.exists(out)
+        with open(path, 'rb') as f:
+            assert f.read() == before
+        assert reader.get_data() is shown and reader.hdul is not None
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("compression", [("GZIP_2", (16, 16)), ("RICE_1", None)],
+                         ids=["GZIP_2 16x16", "RICE_1"])
+@pytest.mark.parametrize("save_as", [False, True], ids=["save header", "save as"])
+def test_a_compressed_hdu_keeps_its_integers_and_compression(tmp_path, compression, save_as):
+    """Phase 7 re-review 2, I-1: a tile-compressed HDU's integers were rebuilt from float32, so
+    with BSCALE 1e-4 about one in five moved one step, and stored -32768/32767 made every save
+    fail. m-1: it was also rewritten as RICE_1 with one-row tiles."""
+    compression_type, tiles = compression
+    stored = np.random.default_rng(5).integers(-32768, 32768, (64, 80)).astype(np.int16)
+    stored[0, 0], stored[0, 1] = -32768, 32767
+    hdu = fits.CompImageHDU(stored, compression_type=compression_type, tile_shape=tiles)
+    hdu.header['BSCALE'], hdu.header['BZERO'] = (1e-4, 'scale'), (2000.0, 'zero')
+    path = str(tmp_path / "frame.fits")
+    fits.HDUList([fits.PrimaryHDU(np.ones((3, 4), np.float32)), hdu]).writeto(path)
+    tile_cards = ('ZCMPTYPE', 'ZTILE1', 'ZTILE2', 'ZQUANTIZ', 'ZDITHER0')
+
+    def compression_cards(p):
+        with fits.open(p, disable_image_compression=True) as hdul:
+            return {k: hdul[1].header.get(k) for k in tile_cards}
+
+    before = compression_cards(path)
+    assert before['ZCMPTYPE'] == compression_type
+    out = str(tmp_path / "copy.fits") if save_as else path
+    reader = FitsReader(path)
+    try:
+        reader.update_header_card('OBJECT', 'GC')
+        reader.save(out)
+    finally:
+        reader.close()
+
+    with fits.open(out, do_not_scale_image_data=True) as hdul:
+        assert isinstance(hdul[1], fits.CompImageHDU)
+        assert np.array_equal(hdul[1].data, stored)
+        assert (hdul[1].header['BSCALE'], hdul[1].header['BZERO']) == (1e-4, 2000.0)
+    assert compression_cards(out) == before
+
+
+def test_a_refused_save_header_leaves_the_header_and_keeps_the_edits(qapp, tmp_path,
+                                                                     monkeypatch):
+    """Phase 7 re-review 2, m-4: a refused Save Header left the edits applied to the reader's
+    header, so Cancel no longer discarded them and a later save would write them. The header is
+    restored and the edits stay held, unsaved, in the editor."""
+    from PySide6.QtWidgets import QMessageBox
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+    errors = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: errors.append(a[2])))
+    for name in ("information", "warning"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(
+            lambda *a, **k: pytest.fail(f"message box: {a[2]}")))
+
+    path = str(tmp_path / "frame.fits")
+    _write_integer_hdu(path, _fine_scale_hdu("int16 BLANK"), displayed=True)
+    fits.setval(path, 'OBJECT', value='GC', comment='target')
+    reader = FitsReader(path)
+    try:
+        header_before = reader.header.tostring()
+        dialog = HeaderEditorDialog(reader)
+        _touch(path)
+        row = _editor_rows(dialog, 'OBJECT')[0]
+        dialog.table.item(row, 1).setText('GC_field_A')
+        dialog.save_header()
+        assert len(errors) == 1 and "changed on disk" in errors[0]
+        assert reader.header.tostring() == header_before
+        assert dialog.table.item(row, 1).text() == 'GC_field_A'
+        assert dialog._held_edits == {0: {row: ('GC_field_A', 'target')}}
+        dialog.reject()
+        assert reader.header.tostring() == header_before
+    finally:
+        reader.close()
+
+
+def test_editing_the_scaling_of_a_scaled_extension_is_refused(qapp, tmp_path):
+    """Phase 7 re-review m-N3: the editor shows BSCALE, BZERO and BLANK of a scaled extension
+    that is not displayed, and an edit to them was dropped without a message at save. Such an
+    edit is refused and reported, as a structural keyword is."""
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+    path = str(tmp_path / "frame.fits")
+    _write_integer_hdu(path, _fine_scale_hdu("int16"), displayed=False)
+    reader = FitsReader(path)
+    try:
+        assert reader.update_header_card('BZERO', 5.0, ext=1) is False
+        dialog = HeaderEditorDialog(reader)
+        dialog.combo_ext.setCurrentIndex(dialog.combo_ext.findData(1))
+        dialog.table.item(_editor_rows(dialog, 'BZERO')[0], 2).setText('edited comment')
+        dialog.table.item(_editor_rows(dialog, 'BSCALE')[0], 1).setText('2.0')
+        assert dialog.apply_table_edits()
+        assert sorted(dialog._skipped_keywords) == ['BSCALE', 'BZERO']
+        assert reader.hdul[1].header['BSCALE'] == 1e-4
+        assert reader.hdul[1].header.comments['BZERO'] == 'zero'
+    finally:
+        reader.close()
+
+
 def test_reference_header_for_an_error_extension(s3d_like_fits, osiris_like_fits_with_noise,
                                                  tmp_path):
     """R25: an extension without a WCS of its own is given the header of the extension of the

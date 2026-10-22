@@ -233,6 +233,54 @@ def test_save_in_place_is_bit_identical(qapp, osiris_cube):
         check.close()
 
 
+def _scaled_int16_image(path):
+    """BITPIX 16 with BSCALE 0.5 and BZERO 100: the stored 10 is the value 105."""
+    hdu = fits.PrimaryHDU(np.full((6, 5), 10, dtype=np.int16))
+    hdu.header["BSCALE"], hdu.header["BZERO"] = 0.5, 100.0
+    hdu.writeto(path)
+
+
+def _uint16_image(path):
+    fits.PrimaryHDU(np.full((6, 5), 40000, dtype=np.uint16)).writeto(path)
+
+
+@pytest.mark.parametrize("write, value", [(_scaled_int16_image, 105.0),
+                                          (_uint16_image, 40000)],
+                         ids=["scaled int16", "uint16"])
+def test_save_header_leaves_the_viewers_raw_data_alone(qapp, tmp_path, monkeypatch, write,
+                                                       value):
+    """Phase 7 review C2: opened with `scale_back=True`, Save Header rewrote the HDU's array
+    in place, which is the viewer's `raw_data`: 105.0 became 5.0 and 40000 became 7232 in the
+    open window, and every later measurement read the shifted values."""
+    from PySide6.QtWidgets import QMessageBox
+    from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
+    from pyql3.gui.main_window import MainWindow
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    for name in ("warning", "critical"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(
+            lambda *a, **k: pytest.fail(f"message box: {a[2]}")))
+
+    path = str(tmp_path / "frame.fits")
+    write(path)
+    win = MainWindow()
+    assert win.load_fits(path)
+    assert np.all(win.image_viewer.raw_data == value)
+
+    def run_dialog(dialog):
+        dialog.save_header()                       # Save Header, answered Yes
+        return 0
+
+    monkeypatch.setattr(HeaderEditorDialog, "exec", run_dialog)
+    win.edit_header()
+
+    assert np.all(win.image_viewer.raw_data == value), win.image_viewer.raw_data[0, 0]
+    assert np.all(fits.getdata(path) == value)
+    win.close()
+
+
 # --------------------------------------------------- the guard actually guards
 
 

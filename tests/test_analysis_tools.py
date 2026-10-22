@@ -90,6 +90,66 @@ def test_photometry_circle_drawn_on_a_pixel_measures_that_pixel(qapp):
         dialog.close()
 
 
+def _photometry_at(dialog, item_center, r=3.0):
+    """Centre the aperture on an ImageItem coordinate and return the three labels' text."""
+    _draw_circle_on(dialog.roi, item_center, r)
+    dialog.update_photometry()
+    return dialog.lbl_flux.text(), dialog.lbl_sky.text(), dialog.lbl_total.text()
+
+
+def test_photometry_on_flat_sky_is_zero_everywhere(qapp):
+    """BUGS.md R18: on a flat sky of 10 the subtracted flux is 0 wherever the aperture is.
+    Off the image the annulus read zeros and the sky was scaled by the full aperture area,
+    and one NaN pixel made the raw flux NaN."""
+    sky = np.full((60, 80), 10.0)
+    viewer = _viewer_showing(qapp, sky)
+    dialog = PhotometryDialog(None, viewer)
+    try:
+        dialog.spin_aperture.setValue(3.0)
+        dialog.spin_inner.setValue(6.0)
+        dialog.spin_outer.setValue(15.0)
+        for where in ((40.0, 30.0), (1.0, 30.0), (0.5, 0.5)):
+            raw, bkg, subtracted = (float(t) for t in _photometry_at(dialog, where))
+            assert subtracted == pytest.approx(0.0, abs=1e-6), (where, raw, bkg)
+            assert raw > 0 and bkg == pytest.approx(raw, abs=1e-6), (where, raw, bkg)
+
+        with_nan = sky.copy()
+        with_nan[30, 40] = np.nan          # display (40, 30), inside the aperture
+        viewer.set_data(with_nan, None)
+        raw, bkg, subtracted = (float(t) for t in _photometry_at(dialog, (40.0, 30.0)))
+        assert np.isfinite(raw) and np.isfinite(bkg)
+        assert subtracted == pytest.approx(0.0, abs=1e-6), (raw, bkg)
+    finally:
+        dialog.close()
+
+
+def test_an_inverted_annulus_shows_a_message(qapp):
+    """An inner sky radius at or above the outer one used to raise out of the slot, and the
+    labels kept the previous numbers as if they were current (BUGS.md R18)."""
+    viewer = _viewer_showing(qapp, np.full((60, 80), 10.0))
+    dialog = PhotometryDialog(None, viewer)
+    try:
+        dialog.spin_aperture.setValue(3.0)
+        dialog.spin_inner.setValue(6.0)
+        dialog.spin_outer.setValue(15.0)
+        _photometry_at(dialog, (40.0, 30.0))
+        dialog.spin_inner.setValue(25.0)
+        shown = (dialog.lbl_flux.text(), dialog.lbl_sky.text(), dialog.lbl_total.text())
+        assert any("inner sky radius must be smaller than outer" in t for t in shown), shown
+        for text in shown:
+            with pytest.raises(ValueError):
+                float(text)
+
+        dialog.spin_inner.setValue(15.0)   # equal is inverted too
+        assert any("inner sky radius must be smaller than outer" in t for t in
+                   (dialog.lbl_flux.text(), dialog.lbl_sky.text(), dialog.lbl_total.text()))
+
+        dialog.spin_inner.setValue(6.0)
+        assert float(dialog.lbl_total.text()) == pytest.approx(0.0, abs=1e-6)
+    finally:
+        dialog.close()
+
+
 def test_strehl_aperture_is_centred_on_the_drawn_circle(qapp, monkeypatch):
     """`calculate_strehl` takes a numpy index; the circle's centre is an ImageItem coordinate."""
     from pyql3.gui.tools import strehl as strehl_module
@@ -112,6 +172,76 @@ def test_arithmetic_tool(loaded_viewer):
     """Test datacube arithmetic dialog initialization with open viewers."""
     dialog = ArithmeticDialog(image_viewer=loaded_viewer)
     dialog.close()
+
+
+def _arithmetic_on(qapp, path, monkeypatch):
+    """A window showing `path` and an Arithmetic dialog on it; any message box fails the test."""
+    from PySide6.QtWidgets import QMessageBox
+    from pyql3.gui.main_window import MainWindow
+
+    def no_dialog(*args, **kwargs):
+        raise AssertionError(f"unexpected message box: {args[1:]}")
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(no_dialog))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(no_dialog))
+    win = MainWindow()
+    win.load_fits(str(path))
+    return win, ArithmeticDialog(win, win.image_viewer)
+
+
+def test_arithmetic_keeps_precision_and_range(qapp, tmp_path, monkeypatch):
+    """BUGS.md R23 / M4: the Number operand kept two decimals, Active + Active added in the
+    file's integer type, and the result header still described the integer encoding."""
+    from astropy.io import fits
+    path = tmp_path / "raw.fits"
+    fits.PrimaryHDU(np.full((4, 5), 40000, dtype=np.uint16)).writeto(path)  # BITPIX 16, BZERO 32768
+    win, dialog = _arithmetic_on(qapp, path, monkeypatch)
+
+    for spin in (dialog.spin1, dialog.spin2):
+        spin.setValue(0.0012)
+        assert spin.value() == 0.0012
+    dialog.rb_div.setChecked(True)
+    dialog.calculate()
+    assert dialog.result_win.image_viewer.raw_data[0, 0] == pytest.approx(40000 / 0.0012)
+
+    dialog.rb2_active.setChecked(True)
+    dialog.rb_add.setChecked(True)
+    dialog.calculate()
+    result = dialog.result_win.image_viewer.raw_data
+    assert result[0, 0] == 80000, result.dtype
+
+    for header in (dialog.result_win.fits_reader.get_header(),
+                   dialog.result_win.fits_reader.hdul[0].header):
+        assert "BZERO" not in header and "BSCALE" not in header
+        assert header["BITPIX"] == -64
+    dialog.close()
+    win.close()
+
+
+def test_arithmetic_result_title_is_the_expression(qapp, tmp_path, monkeypatch):
+    """BUGS.md R69: `os.path.basename` of an expression kept only the text after its `/`, so
+    a quotient of two files was titled as if the window held the second file."""
+    from astropy.io import fits
+    paths = []
+    for name in ("a001.fits", "a002.fits"):
+        paths.append(tmp_path / name)
+        fits.PrimaryHDU(np.full((4, 5), 3.0, dtype=np.float32)).writeto(paths[-1])
+    win, dialog = _arithmetic_on(qapp, paths[0], monkeypatch)
+
+    dialog.rb1_file.setChecked(True)
+    dialog.txt1_file.setText(str(paths[0]))
+    dialog.rb2_file.setChecked(True)
+    dialog.txt2_file.setText(str(paths[1]))
+    dialog.rb_div.setChecked(True)
+    dialog.calculate()
+    assert dialog.result_win.windowTitle() == "QuickLook 3 - (a001.fits / a002.fits)"
+
+    dialog.rb1_active.setChecked(True)
+    dialog.rb2_num.setChecked(True)
+    dialog.spin2.setValue(2.0)
+    dialog.calculate()
+    assert dialog.result_win.windowTitle() == "QuickLook 3 - (ActiveImage / 2.0)"
+    dialog.close()
+    win.close()
 
 
 # --------------------------------------------------- whole-pixel sampling (BUGS.md R9)
@@ -241,6 +371,56 @@ def test_peak_fit_says_when_the_box_misses_the_image(qapp):
     assert dialog.value_labels["FWHM X"].text() == "N/A"
     assert "does not overlap the image" in dialog.lbl_status.text()
     dialog.close()
+
+
+def test_fit_models_agree_on_the_angle(qapp):
+    """BUGS.md R72: the Gaussian's cross term had the opposite sign to the Lorentzian and
+    Moffat rotations, so for one source the Gaussian reported a mirrored angle (-120 against
+    +120 and -60). The angle is counter-clockwise from +X, and FWHM X is the width along it."""
+    yy, xx = np.mgrid[0:60, 0:80]
+    theta = np.radians(30.0)
+    dx, dy = xx - 40.0, yy - 30.0
+    along = dx * np.cos(theta) + dy * np.sin(theta)
+    across = -dx * np.sin(theta) + dy * np.cos(theta)
+    img = 1000.0 * np.exp(-(along / 4.0) ** 2 / 2 - (across / 2.0) ** 2 / 2) + 10.0
+    dialog = GaussianFitDialog(None, _viewer_showing(qapp, img))
+    try:
+        dialog.roi.setPos([25.0, 15.0])
+        dialog.roi.setSize([30, 30])
+        major = {}
+        for model in ("Gaussian", "Lorentzian", "Moffat"):
+            dialog.combo_type.setCurrentText(model)
+            dialog.update_fit()
+            angle = float(dialog.value_labels["Angle (deg)"].text())
+            fwhm_x = float(dialog.value_labels["FWHM X"].text())
+            fwhm_y = float(dialog.value_labels["FWHM Y"].text())
+            # The major axis is along the angle when FWHM X is the larger width.
+            major[model] = angle if fwhm_x >= fwhm_y else angle + 90.0
+
+        def apart(a, b):
+            return abs((a - b + 90.0) % 180.0 - 90.0)
+
+        for model, direction in major.items():
+            assert apart(direction, major["Gaussian"]) < 1.0, major
+            assert apart(direction, 30.0) < 1.0, major
+    finally:
+        dialog.close()
+
+
+def test_peak_fit_surface_has_the_shape_of_the_data(qapp):
+    """Phase 7 review m6: the model surface was reshaped (ny, nx) from an (nx, ny) grid, so
+    the Display Peak Fit view of a non-square box showed it scrambled."""
+    dialog = GaussianFitDialog(None, _viewer_showing(qapp, _round_star(40.0)))
+    try:
+        dialog.roi.setPos([30.0, 22.0])
+        dialog.roi.setSize([20, 16])
+        dialog.update_fit()
+        raw, fit = dialog.last_raw_data, dialog.last_fit_data
+        assert raw.shape == (20, 16)
+        assert fit.shape == raw.shape
+        assert np.abs(fit - raw).max() < 0.01 * raw.max()
+    finally:
+        dialog.close()
 
 
 def test_peak_fit_box_is_drawn_over_the_pixels_it_measures(qapp):

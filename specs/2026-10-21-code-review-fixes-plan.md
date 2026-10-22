@@ -510,7 +510,7 @@ The open entries from earlier reviews (B8, B9, B11, B13, B14, B19, M2, M3, M5–
 - Test: `tests/test_fits_reader.py`
 
 **Interfaces:**
-- Produces: each table row remembers its card index; `apply_table_edits` writes back by index and only rows whose text changed; COMMENT and HISTORY rows are written back by index too; `Undefined` stays `Undefined` when unchanged; edits are held per extension in the dialog and applied to the reader only on Save. `FitsReader.load` opens with `scale_back=True`.
+- Produces: each table row remembers its card index; `apply_table_edits` writes back by index and only rows whose text changed; COMMENT and HISTORY rows are written back by index too; `Undefined` stays `Undefined` when unchanged; edits are held per extension in the dialog and applied to the reader only on Save. ~~`FitsReader.load` opens with `scale_back=True`.~~ Revised after the Phase 7 review: `scale_back=True` corrupted unsigned-integer HDUs and changed the viewer's `raw_data` on save. `FitsReader` records each integer HDU that astropy reads as floats (scaled, or with BLANK) and its BSCALE/BZERO/BLANK cards at open, and `save()` writes those HDUs back as the integers read from the unchanged file, with the cards in their places, refusing a save that cannot keep them; every other HDU is written by astropy as before.
 
 - [ ] **Step 1: Write the failing tests.** `::test_header_editor_round_trip_is_identity` and `::test_cancel_after_an_extension_switch_keeps_the_header` (R42), `::test_header_only_save_keeps_the_scaled_integer_encoding` (R71: BITPIX 16, BSCALE 0.5, BZERO 100, BLANK survive).
 - [ ] **Step 2: Run them and see them fail.**

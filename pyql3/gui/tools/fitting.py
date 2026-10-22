@@ -10,8 +10,11 @@ def gaussian_2d(xy, amplitude, xo, yo, wx, wy, theta, offset):
     x, y = xy
     xo = float(xo)
     yo = float(yo)    
+    # The expansion of (x_rot / wx)**2 / 2 + (y_rot / wy)**2 / 2 with the same rotation as
+    # `lorentzian_2d` and `moffat_2d`: theta counter-clockwise from +X, wx along theta.
+    # The opposite sign of b mirrored the reported angle (R72).
     a = (np.cos(theta)**2)/(2*wx**2) + (np.sin(theta)**2)/(2*wy**2)
-    b = -(np.sin(2*theta))/(4*wx**2) + (np.sin(2*theta))/(4*wy**2)
+    b = (np.sin(2*theta))/(4*wx**2) - (np.sin(2*theta))/(4*wy**2)
     c = (np.sin(theta)**2)/(2*wx**2) + (np.cos(theta)**2)/(2*wy**2)
     g = offset + amplitude*np.exp( - (a*((x-xo)**2) + 2*b*(x-xo)*(y-yo) + c*((y-yo)**2)))
     return g.ravel()
@@ -336,7 +339,8 @@ class GaussianFitDialog(BaseToolDialog):
             self.value_labels["Angle (deg)"].setText(f"{np.degrees(th):.1f}")
             self.value_labels["Background"].setText(f"{off:.4f}")
             
-            self.last_fit_data = func((x, y), *popt).reshape(ny, nx)
+            # The grid is (nx, ny), the shape of `data`.
+            self.last_fit_data = func((x, y), *popt).reshape(data.shape)
             
         except RuntimeError:
             for key in self.FIT_KEYS:

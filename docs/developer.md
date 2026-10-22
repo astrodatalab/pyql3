@@ -123,6 +123,27 @@ auto-load of a frame still arriving the window goes on acting on the file it dis
     new code: **never probe `hdu.data` to inspect an extension** — that reads it into
     memory. Test the header instead, as `FitsReader._is_displayable()` does.
 
+**A save writes integer images back as the integers the file stores.** astropy reads an integer
+image as floats when its integers are scaled (`BSCALE`/`BZERO` other than 1/0) or when it has a
+`BLANK` (whose pixels become NaN). For a scaled image it removes `BSCALE`, `BZERO` and `BLANK` from
+`hdu.header` and would write `BITPIX = -32` (R71 in `BUGS.md`); for one with `BLANK` and no scaling
+it keeps the integer `BITPIX` and would write the float32 bytes under it, which destroys every
+value. So `load()` records both kinds, with the three cards and their positions, before any data is
+read (`_integer_scaling_of`). `save()` reads those HDUs' integers from the file again with
+`do_not_scale_image_data=True` (`_stored_integers`) and writes them with the cards put back
+(`_encoded_for_writing`), so the stored integers are unchanged; rebuilding them from astropy's
+float32 is not exact for a fine `BSCALE`. A tile-compressed HDU is read the same way and rebuilt
+with its own compression type, tiling and quantisation settings. When the file on disk has changed
+since it was read, its integers cannot be read back, so such a save raises `ValueError` (the file
+changed on disk; reopen it) and writes nothing; the Header Editor then puts back the cards it had
+applied and keeps the edits, unsaved. The viewer's arrays are never modified. While
+an HDU is recorded, its `BSCALE`, `BZERO` and `BLANK` cannot be edited (`_keeps_keyword`). Every
+other HDU — float data, identity scaling without `BLANK`, and unsigned integers (`BZERO` = 2**15,
+2**31, 2**63), which astropy reads as `uint` arrays — is written by astropy as it is. Do not open
+with `scale_back=True` instead: it writes unsigned HDUs without `BZERO` (a JWST DQ flag 2151153665
+read back as 3670017), removes `BSCALE = 1`/`BZERO = 0` from OSIRIS cubes, and rescales the HDU's
+own array in place, which is the viewer's `raw_data`.
+
 !!! danger "Windows: an open file cannot be unlinked or replaced"
     Windows opens files without `FILE_SHARE_DELETE`, so while we hold a FITS file open **no
     one** — not us, not another process — can delete or rename over that path. Writing

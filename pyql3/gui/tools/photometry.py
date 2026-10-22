@@ -131,32 +131,52 @@ class PhotometryDialog(BaseToolDialog):
         self.roi_outer.setPos(item_cx - r_out, item_cy - r_out)
         self.roi_outer.setSize([r_out*2, r_out*2])
         
+        if r_in >= r_out:
+            self._show_message("inner sky radius must be smaller than outer")
+            return
+
         # Photutils expects (ny, nx) data where the 2nd axis is X and 1st axis is Y.
         # Since our data is (nx, ny), we MUST transpose it for aperture_photometry to map (cx, cy) correctly!
         data_for_phot = data.T
-        
+        # A NaN pixel is left out of the sum rather than making it NaN.
+        bad = ~np.isfinite(data_for_phot)
+
         positions = [(cx, cy)]
         aperture = CircularAperture(positions, r=r)
         annulus = CircularAnnulus(positions, r_in=r_in, r_out=r_out)
-        
-        phot_table = aperture_photometry(data_for_phot, aperture)
-        annulus_masks = annulus.to_mask(method='center')
-        
+
         try:
-            mask = annulus_masks[0]
-            annulus_data = mask.multiply(data_for_phot)
-            annulus_data_1d = annulus_data[mask.data > 0]
-            
-            bkg_median = np.nanmedian(annulus_data_1d)
-            bkg_sum = bkg_median * aperture.area
-            
-            raw_flux = phot_table['aperture_sum'][0]
-            final_flux = raw_flux - bkg_sum
-            
-            self.lbl_flux.setText(f"{raw_flux:.4f}")
-            self.lbl_sky.setText(f"{bkg_sum:.4f}")
-            self.lbl_total.setText(f"{final_flux:.4f}")
+            phot_table = aperture_photometry(data_for_phot, aperture, mask=bad)
+            # The area that was summed: the part of the aperture over finite data. Off the
+            # edge or around a NaN it is less than `aperture.area`, and the sky subtracted
+            # has to cover the same pixels as the flux.
+            area = float(aperture.area_overlap(data_for_phot, mask=bad)[0])
+            # `get_values` returns only the annulus pixels on the image, so pixels off the
+            # edge are not read as zeros.
+            annulus_values = annulus.to_mask(method='center')[0].get_values(data_for_phot)
+            annulus_values = annulus_values[np.isfinite(annulus_values)]
         except Exception:
-            self.lbl_flux.setText("Error")
-            self.lbl_sky.setText("Error")
-            self.lbl_total.setText("Error")
+            self._show_message("Error")
+            return
+        if not area > 0:
+            self._show_message("aperture does not overlap the image")
+            return
+        if annulus_values.size == 0:
+            self._show_message("sky annulus has no finite pixels")
+            return
+
+        bkg_median = np.median(annulus_values)
+        bkg_sum = bkg_median * area
+
+        raw_flux = phot_table['aperture_sum'][0]
+        final_flux = raw_flux - bkg_sum
+
+        self.lbl_flux.setText(f"{raw_flux:.4f}")
+        self.lbl_sky.setText(f"{bkg_sum:.4f}")
+        self.lbl_total.setText(f"{final_flux:.4f}")
+
+    def _show_message(self, text):
+        """Replace all three numbers, so none of them is left over from an earlier position."""
+        self.lbl_flux.setText(text)
+        self.lbl_sky.setText(text)
+        self.lbl_total.setText(text)

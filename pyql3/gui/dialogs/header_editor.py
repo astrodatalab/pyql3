@@ -5,6 +5,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QMessageBox, QLineEdit, QComboBox, QLabel
 )
 from PySide6.QtCore import Qt
+from astropy.io import fits
+
+from pyql3.core.fits_reader import FitsReader
 
 class HeaderEditorDialog(QDialog):
     def __init__(self, fits_reader, parent=None):
@@ -15,6 +18,11 @@ class HeaderEditorDialog(QDialog):
         # writing the table then would put this file's cards into that one.
         self._opened_on = (fits_reader.filepath, fits_reader.hdul)
         self.current_ext = getattr(fits_reader, 'current_ext', 0)
+        # Edits not yet written, per extension: {ext: {card index: (value, comment)}}.
+        # They reach the reader only on Save, so Cancel leaves every header as it was.
+        self._held_edits = {}
+        self._skipped_keywords = []
+        self._applied = []
         self.setWindowTitle("FITS Header Editor")
         self.resize(550, 450)
         
@@ -83,37 +91,57 @@ class HeaderEditorDialog(QDialog):
         return True
 
     def on_extension_changed(self, index):
-        # Save edits from table to previous extension header in memory before switching
-        if not self.apply_table_edits(ext=self.current_ext):
+        # The table's edits are kept in the dialog, not written to the reader: Cancel
+        # must leave every extension's header as it was (R42).
+        if self._refuse_if_file_changed():
             return
+        self._hold_table_edits()
         new_ext = self.combo_ext.currentData()
         if new_ext is not None:
             self.current_ext = new_ext
             self.search_bar.clear()
             self.populate_table(self.current_ext)
 
+    @staticmethod
+    def _value_text(value):
+        # An undefined value (`KEY =` with nothing after it) is shown empty: `str()` of
+        # astropy's Undefined is not something to put back in the file.
+        return "" if value is fits.card.UNDEFINED else str(value)
+
     def populate_table(self, ext=None):
+        """One row per card. Each row keeps its card's index and the text it was loaded
+        with, so a row is written back to its own card, and only if its text changed.
+        Edits held for `ext` from an earlier visit are shown again."""
         header = self.fits_reader.get_header(ext=ext)
         if header is None:
             self.table.setRowCount(0)
             return
-            
+
+        held = self._held_edits.get(ext, {})
         self.table.setRowCount(len(header))
-        row = 0
-        for keyword, value in header.items():
-            try:
-                comment = header.comments[keyword]
-            except (KeyError, IndexError):
-                comment = ""
-            
+        for index, card in enumerate(header.cards):
+            commentary = card.keyword in FitsReader.COMMENTARY_KEYWORDS
+            value_text = self._value_text(card.value)
+            comment_text = "" if commentary else str(card.comment)
+
             # Create uneditable item for keyword
-            kw_item = QTableWidgetItem(str(keyword))
-            kw_item.setFlags(kw_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  
-            
-            self.table.setItem(row, 0, kw_item)
-            self.table.setItem(row, 1, QTableWidgetItem(str(value)))
-            self.table.setItem(row, 2, QTableWidgetItem(str(comment)))
-            row += 1
+            kw_item = QTableWidgetItem(str(card.keyword))
+            kw_item.setFlags(kw_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            kw_item.setData(Qt.ItemDataRole.UserRole, index)
+            value_item = QTableWidgetItem(value_text)
+            value_item.setData(Qt.ItemDataRole.UserRole, value_text)
+            comment_item = QTableWidgetItem(comment_text)
+            comment_item.setData(Qt.ItemDataRole.UserRole, comment_text)
+            if commentary:
+                # COMMENT, HISTORY and blank cards have no comment field.
+                comment_item.setFlags(comment_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if index in held:
+                value_item.setText(held[index][0])
+                comment_item.setText(held[index][1])
+
+            self.table.setItem(index, 0, kw_item)
+            self.table.setItem(index, 1, value_item)
+            self.table.setItem(index, 2, comment_item)
 
     def filter_table(self, text):
         text = text.lower()
@@ -126,70 +154,149 @@ class HeaderEditorDialog(QDialog):
                     break
             self.table.setRowHidden(row, not match)
 
-    def apply_table_edits(self, ext=None):
-        """Write the table into the reader's header for `ext`.
-
-        Returns False, having written nothing, when the reader has moved to another
-        file since the editor opened.
-        """
-        self._skipped_keywords = []
-        if self._refuse_if_file_changed():
-            return False
-        header = self.fits_reader.get_header(ext=ext)
-        if header is None:
-            return True
-
+    def _hold_table_edits(self):
+        """Record the rows of the table whose text differs from what was loaded, as
+        `{card index: (value text, comment text)}` for the extension shown."""
+        edits = {}
         for row in range(self.table.rowCount()):
             keyword_item = self.table.item(row, 0)
             value_item = self.table.item(row, 1)
             comment_item = self.table.item(row, 2)
-            
-            if keyword_item and value_item:
-                keyword = keyword_item.text()
-                value = value_item.text()
-                
-                # Basic type conversion attempt
-                try:
-                    value = int(value)
-                except ValueError:
-                    try:
-                        value = float(value)
-                    except ValueError:
-                        if value.lower() in ('true', 't'):
-                            value = True
-                        elif value.lower() in ('false', 'f'):
-                            value = False
-                            
-                comment = comment_item.text() if comment_item else ""
-                
-                # Skip special keywords
-                if keyword in ('', 'COMMENT', 'HISTORY'):
-                    continue
+            if not (keyword_item and value_item and comment_item):
+                continue
+            shown = (value_item.text(), comment_item.text())
+            loaded = (value_item.data(Qt.ItemDataRole.UserRole),
+                      comment_item.data(Qt.ItemDataRole.UserRole))
+            if shown != loaded:
+                edits[keyword_item.data(Qt.ItemDataRole.UserRole)] = shown
+        if edits:
+            self._held_edits[self.current_ext] = edits
+        else:
+            self._held_edits.pop(self.current_ext, None)
 
-                # Structural keywords are refused by the reader. Only report one when
-                # its value actually differs from the header: the table lists every
-                # card, including SIMPLE/BITPIX/NAXISn, so reporting unconditionally
-                # would nag on every single save.
-                if not self.fits_reader.update_header_card(keyword, value, comment, ext=ext):
-                    if header.get(keyword) != value:
-                        self._skipped_keywords.append(keyword)
+    @staticmethod
+    def _parse_value(text):
+        # Basic type conversion attempt
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        if text.lower() in ('true', 't'):
+            return True
+        if text.lower() in ('false', 'f'):
+            return False
+        return text
+
+    def apply_table_edits(self, ext=None):
+        """Write the edits held in this dialog into the reader's headers: those of `ext`,
+        or of every extension when `ext` is None.
+
+        Each edit goes to the card it was made on, by index, and a row whose text was not
+        changed is not written at all. Returns False, having written nothing, when the
+        reader has moved to another file since the editor opened.
+        """
+        self._skipped_keywords = []
+        if self._refuse_if_file_changed():
+            return False
+        self._hold_table_edits()
+
+        targets = list(self._held_edits) if ext is None else [ext]
+        # Every edit is turned into a value and checked before any is written, so an edit
+        # astropy refuses (a non-ASCII value, say) leaves every header as it was, and Cancel
+        # still discards everything.
+        planned = []
+        for target in targets:
+            header = self.fits_reader.get_header(ext=target)
+            if header is None:
+                continue
+            for index, (value_text, comment_text) in sorted(
+                    self._held_edits.get(target, {}).items()):
+                card = header.cards[index]
+                # A row whose comment alone was edited keeps the card's value as it is:
+                # parsing its text again would turn the string '123' into an integer and
+                # an undefined value into ''.
+                if value_text == self._value_text(card.value):
+                    value = card.value
+                else:
+                    value = self._parse_value(value_text)
+                self._check_card(card.keyword, value, comment_text)
+                planned.append((target, index, card.keyword, value, value_text, comment_text))
+
+        refused = {}
+        # What each written card was, so a save that fails can put it back (`_unapply`).
+        self._applied = []
+        for target, index, keyword, value, value_text, comment_text in planned:
+            previous = self.fits_reader.get_header(ext=target).cards[index].image
+            # Structural keywords are refused by the reader, and only rows the user
+            # changed reach here, so each refusal is reported.
+            if self.fits_reader.update_header_card_at(index, value, comment_text, ext=target):
+                self._applied.append((target, index, previous, (value_text, comment_text)))
+            else:
+                self._skipped_keywords.append(keyword)
+                refused.setdefault(target, {})[index] = (value_text, comment_text)
+        for target in targets:
+            written = set(self._held_edits.get(target, {})) - set(refused.get(target, {}))
+            if refused.get(target):
+                self._held_edits[target] = refused[target]
+            else:
+                self._held_edits.pop(target, None)
+            if target == self.current_ext:
+                self._mark_table_as_loaded(written)
         return True
+
+    def _unapply(self):
+        """Undo the last `apply_table_edits`: put back the cards it wrote, and hold its edits
+        in the dialog again, unsaved, so they are neither in the reader's header nor lost."""
+        for target, index, previous, texts in reversed(self._applied):
+            header = self.fits_reader.get_header(ext=target)
+            del header[index]
+            header.insert(index, fits.Card.fromstring(previous), useblanks=False)
+            self._held_edits.setdefault(target, {})[index] = texts
+        self._applied = []
+        self.populate_table(self.current_ext)
+        self.filter_table(self.search_bar.text())
+
+    @staticmethod
+    def _check_card(keyword, value, comment):
+        """Raise ValueError, naming the keyword, if astropy would refuse this card."""
+        try:
+            if keyword in FitsReader.COMMENTARY_KEYWORDS:
+                card = fits.Card(keyword, value)
+            else:
+                card = fits.Card(keyword, value, comment)
+            card.verify('exception')
+            card.image
+        except Exception as exc:
+            raise ValueError(f"{keyword or 'blank card'}: {exc}") from exc
+
+    def _mark_table_as_loaded(self, indices):
+        """After a write, the table's text for these cards is what the header holds."""
+        for row in range(self.table.rowCount()):
+            keyword_item = self.table.item(row, 0)
+            if keyword_item and keyword_item.data(Qt.ItemDataRole.UserRole) in indices:
+                for col in (1, 2):
+                    item = self.table.item(row, col)
+                    item.setData(Qt.ItemDataRole.UserRole, item.text())
 
     def save_header(self):
         try:
-            # Apply current table edits to currently selected extension
-            if not self.apply_table_edits(ext=self.current_ext):
+            # Write the edits held for every extension, the one shown included.
+            if not self.apply_table_edits():
                 return
 
             if self._skipped_keywords:
                 QMessageBox.information(
                     self,
                     "Some keywords were not changed",
-                    "These keywords describe the file's structure and are managed by the "
-                    "FITS writer, so they were left alone:\n\n    "
+                    "These keywords describe the file's structure or how its data are "
+                    "stored, and are managed by the FITS writer, so they were left alone:\n\n    "
                     + ", ".join(sorted(set(self._skipped_keywords)))
-                    + "\n\nEditing them would either be discarded on write or make the "
-                    "file unreadable. All other changes were applied.",
+                    + "\n\nEditing them would either be discarded on write or change what "
+                    "the stored data mean. All other changes were applied.",
                 )
 
             if not self.fits_reader.filepath:
@@ -210,7 +317,18 @@ class HeaderEditorDialog(QDialog):
                     # The confirmation ran its own event loop; check again.
                     if self._refuse_if_file_changed():
                         return
-                    self.fits_reader.save()
+                    try:
+                        self.fits_reader.save()
+                    except Exception as e:
+                        # The edits were applied to the reader's header before the save; a
+                        # failed save must not leave them there, where Cancel would no longer
+                        # discard them and the next save of any kind would write them.
+                        self._unapply()
+                        QMessageBox.critical(
+                            self, "Error",
+                            f"Failed to save header: {e}\n\nThe edits were not applied. "
+                            "They are still shown here, unsaved.")
+                        return
                     QMessageBox.information(self, "Success", "FITS Header saved successfully.")
                 else:
                     QMessageBox.information(self, "Header Updated", "Header cards updated in memory (file not overwritten).")
