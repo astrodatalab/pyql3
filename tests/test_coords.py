@@ -419,3 +419,17 @@ def test_box_index_slices_clips_the_high_edge_and_rejects_an_empty_box():
     # centre selects nothing.
     assert coords.box_index_slices(25.0, 0.0, 10, 4, 30, 30) == (slice(25, 30), slice(0, 4))
     assert coords.box_index_slices(35.2, 5.0, 1e-5, 4, 80, 60) is None
+
+
+def test_circle_index_mask_keeps_the_drawn_circle_off_the_edge():
+    """R80: the circle is the one the box draws, whatever part of the box is on the image."""
+    # A 6 x 6 box on pixel edges: the circle of radius 3 about its centre, pixel by pixel
+    whole = coords.circle_index_mask(10.0, 20.0, 6, 6, slice(10, 16), slice(20, 26))
+    ix, iy = np.mgrid[:6, :6]
+    assert (whole == (((ix - 2.5) ** 2 + (iy - 2.5) ** 2) <= 9.0)).all()
+
+    # Off the low x edge: the on-image columns of that same circle, not a circle refitted to them
+    x_slice, y_slice = coords.box_index_slices(-3.0, 20.0, 6, 6, 30, 30)
+    clipped = coords.circle_index_mask(-3.0, 20.0, 6, 6, x_slice, y_slice)
+    assert clipped.shape == (3, 6)
+    assert (clipped == whole[3:]).all()

@@ -1405,7 +1405,8 @@ def test_wcs_readout_never_shows_a_previous_position(qapp):
 
     assert after != before
     world = viewer.wcs.pixel_to_world_values(15, 9, viewer.current_z())
-    assert after == f"WCS: em.wl: {world[0]:.5g} m  |  {_sky_text_dec(world[1])}"
+    # In µm, as the slice label shows wavelengths (the WCS holds them in m)
+    assert after == f"WCS: em.wl: {world[0] * 1e6:.5g} µm  |  {_sky_text_dec(world[1])}"
 
 
 def test_duplicate_axis_choice_swaps_the_axes(qapp):
@@ -1531,6 +1532,67 @@ def test_an_iraf_axis_is_read_out_by_its_iraf_name(qapp, nifs_like_header):
         del nifs_like_header[key]
     viewer.set_data(np.zeros((40, 12, 10), dtype=np.float32), nifs_like_header)
     assert _hover_centre(viewer) == f"WCS: LINEAR: {0.3:.5g}  |  LINEAR: {0.35:.5g}"
+
+
+def test_the_slice_label_uses_the_chosen_wavelength_unit(qapp, nifs_like_header):
+    """A NIFS cube states no wavelength unit. The unit the user chooses for it is shown, with
+    the header's numbers, labelled as theirs; clearing it returns to Unknown."""
+    import astropy.units as u
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 12, 10), dtype=np.float32), nifs_like_header)
+    assert viewer.lbl_slice_info.text() == "Slice: 0, Wavelength (Unknown): 19968.7"
+    assert viewer.wavelength_unit_label() == "Unknown"
+
+    viewer.set_wavelength_unit_override(u.AA)
+    assert viewer.wavelength_unit_override == u.AA
+    assert viewer.wavelength_unit() == u.AA
+    assert viewer.wavelength_unit_label() == "Å, set by you"
+    assert viewer.lbl_slice_info.text() == "Slice: 0, Wavelength (Å, set by you): 19968.7"
+    assert viewer.top_axis.tickStrings([0], 1, 1) == ["19968.7"]
+
+    viewer.set_wavelength_unit_override(None)
+    assert viewer.lbl_slice_info.text() == "Slice: 0, Wavelength (Unknown): 19968.7"
+
+
+def test_a_chosen_unit_for_a_stated_unit_reads_the_header_numbers(qapp):
+    """wcslib holds `CUNIT3 = 'nm'` in metres. A unit the user chooses describes the numbers
+    the header writes (2100 nm read as 2100 Å), not the metres the WCS holds them in."""
+    import astropy.units as u
+    from astropy.io import fits
+    header = fits.Header({'NAXIS': 3, 'CTYPE1': 'RA---TAN', 'CTYPE2': 'DEC--TAN',
+                          'CTYPE3': 'WAVE', 'CUNIT1': 'deg', 'CUNIT2': 'deg', 'CUNIT3': 'nm',
+                          'CRVAL1': 266.4, 'CRVAL2': -29.0, 'CRVAL3': 2100.0,
+                          'CDELT1': -1e-5, 'CDELT2': 1e-5, 'CDELT3': 0.25,
+                          'CRPIX1': 5.0, 'CRPIX2': 5.0, 'CRPIX3': 1.0})
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((20, 12, 10), dtype=np.float32), header)
+    assert viewer.get_wavelength_for_slice(0) == pytest.approx(2.1)
+    assert viewer.wavelength_unit_label() == "µm"
+
+    viewer.set_wavelength_unit_override(u.AA)
+    assert viewer.get_wavelength_for_slice(0) == pytest.approx(2100.0)
+    assert viewer.lbl_slice_info.text() == "Slice: 0, Wavelength (Å, set by you): 2100"
+    # One unit of the WCS's values (a metre as wcslib holds it) is 1e9 header numbers, 1e9 Å
+    assert (1.0 * viewer.wavelength_unit()).to_value(u.um) == pytest.approx(1e5)
+
+
+def test_the_hover_readout_uses_the_chosen_wavelength_unit(qapp, nifs_like_header):
+    """With the spectral axis on screen, the readout names the unit the user chose for it."""
+    import astropy.units as u
+    viewer = ImageViewer()
+    viewer.resize(800, 800)
+    viewer.set_data(np.zeros((40, 12, 10), dtype=np.float32), nifs_like_header)
+    viewer.combo_x.setCurrentText("AXIS 3")     # the spectral axis on X
+    x = viewer.display_data.shape[1] // 2
+    value = 19968.66 + x * 2.1325798
+
+    # As the slice label writes it: Unknown, then the chosen unit
+    wave = _hover_centre(viewer).removeprefix("WCS: ").split("  |  ")[0]
+    assert wave == f"wave (Unknown): {value:.5g}"
+
+    viewer.set_wavelength_unit_override(u.AA)
+    wave = _hover_centre(viewer).removeprefix("WCS: ").split("  |  ")[0]
+    assert wave == f"wave (Å, set by you): {value:.5g}"
 
 
 # --- R83: every unit label names the file's own unit ----------------------------------

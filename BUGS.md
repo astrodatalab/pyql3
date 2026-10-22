@@ -3586,7 +3586,7 @@ box.
 
 ## R20. With a Region background, a circular Total aperture subtracts the background over its full area even in channels where NaN pixels made it smaller
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/spectral_photometry.py` (`SpectrumResult.aperture_weight`), `pyql3/gui/tools/depth_plot.py` (the Region branch subtracts with `aperture_weight`), covered by `tests/test_depth_plot.py::test_a_region_background_uses_the_per_channel_area`
 - **Severity:** medium — over-subtraction by the background level times the number of NaN
   pixels, in exactly the channels that have bad pixels
 - **Files:** `pyql3/gui/tools/depth_plot.py:1584-1592`, `pyql3/core/spectral_photometry.py:203-218`
@@ -3640,7 +3640,7 @@ cube above, Region mode, Combine Total. Assert that `plot_sub` is 0 to 1e-9 in e
 
 ## R21. Total reports 0.0, not NaN, for a channel in which no aperture pixel is finite
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/spectral_photometry.py` (`aperture_spectrum` returns NaN for Total where no aperture pixel is finite), `pyql3/gui/tools/depth_plot.py` (`_channel_total` in the rectangle path and `region_background_level`), covered by `tests/test_spectral_photometry.py::test_a_channel_that_is_all_nan_in_the_annulus_yields_nan_not_an_exception` and `tests/test_depth_plot.py::test_a_rectangle_total_is_nan_where_no_pixel_is_finite`
 - **Severity:** medium — gaps in the data are drawn as real zeros, and on a JWST cube that
   is dozens to hundreds of channels at the edge of the field
 - **Files:** `pyql3/core/spectral_photometry.py:138-148`, `pyql3/gui/tools/depth_plot.py:1614-1615`
@@ -3693,7 +3693,7 @@ Extend the existing all-NaN test to assert `np.isnan(result.source[1])` and
 
 ## R22. A sky annulus that starts inside the aperture is accepted without warning, so source flux is subtracted as sky
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/core/spectral_photometry.py` (`annulus_spectrum` raises `ApertureError` when `r_in < r_ap`), covered by `tests/test_spectral_photometry.py::test_an_annulus_inside_the_aperture_is_refused` and `tests/test_depth_plot.py::test_growing_the_aperture_past_the_sky_annulus_says_so`
 - **Severity:** medium — the flux comes out low by an amount that depends on the source,
   and the status line reads as if nothing were wrong
 - **Files:** `pyql3/gui/tools/depth_plot.py:793-818`, `:1558-1583`, `pyql3/core/spectral_photometry.py:157-158`
@@ -5629,7 +5629,7 @@ asserting that the compass base angles match those from `w.celestial.to_header()
 
 ## R53. With Log X ticked, the line list disappears and the cursor and top axis report log10 values as wavelengths
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/depth_plot.py` (`PixelIndexAxis.log_x`, `toggle_log_scale`, `mouse_moved` and `update_line_overlays` convert view x with `10 ** x` and place each line at its log10), covered by `tests/test_depth_plot.py::test_the_line_list_survives_log_x`
 - **Severity:** low — the overlay silently empties and the readouts are wrong, but only in
   log mode
 - **Files:** `pyql3/gui/tools/depth_plot.py:666-667`, `:1269-1295`, `:1339`, `:562-573`, `:93-101`
@@ -5692,7 +5692,7 @@ at `log10` of its wavelength.
 
 ## R54. Line lists are looked up by file name, not path, and a file with no readable lines leaves the previous status on screen
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/depth_plot.py` (`linelist_files` keyed by path, `on_linelist_selection_changed` reads `currentData()`, `parse_line_list` splits on whitespace when a line has no comma, `update_line_overlays` says "No lines could be read from <name>"), `docs/tools.md`, covered by `tests/test_depth_plot.py::test_two_line_lists_with_one_name_load_their_own_files`, `::test_an_unreadable_line_list_says_so` and `::test_a_whitespace_separated_line_list_loads`
 - **Severity:** low — the wrong lines can be drawn under a correct-looking name, but only
   when two files share a name
 - **Files:** `pyql3/gui/tools/depth_plot.py:1096-1097`, `:1153-1158`, `:1131-1151`, `:1250-1259`;
@@ -5763,7 +5763,7 @@ whitespace list: parsed 0 | drawn 0 | status: '1 line(s) visible (out of 1 total
 
 ## R55. A radius edit leaves the hidden rectangle spins at the old box, so the first rectangle edit rebuilds the box from stale numbers
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/depth_plot.py` (`_sync_rect_spins`, called from `on_roi_changed`, `on_radius_changed` and `toggle_roi_shape`), covered by `tests/test_depth_plot.py::test_the_rectangle_spins_follow_a_radius_edit`
 - **Severity:** low — the box jumps to a different size and place on the first edit, which
   is visible and can be undone
 - **Files:** `pyql3/gui/tools/depth_plot.py:749-770`, `:669-684`, `:686-698`, `:1355-1416`
@@ -6377,8 +6377,16 @@ else None. The unit comes from `CUNITn`, or from `units=` in `WATn_001`. With ne
 unknown: the axis is labelled "Wavelength (Unknown)" and shows the header's numbers as they are, and
 the line list says it needs a known wavelength unit rather than guessing one (decided 2026-10-21:
 unknown units are labelled "Unknown", never inferred). The user can then state the unit themselves —
-a *Wavelength unit* choice (Å / nm / µm) beside the Depth Plot's line list, labelled "set by you"
+a *Cube wavelength unit* choice (Å / nm / µm) in the Depth Plot's Plot Axes group, labelled "set by you"
 wherever it is shown (plan Task 23).
+
+Implemented in plan Task 23: the Depth Plot's *Cube wavelength unit* combo sets
+`ImageViewer.wavelength_unit_override`; the header's numbers are shown labelled with the chosen unit
+and "set by you" (`wavelength_unit_label()`), and the line list is drawn. Covered by
+`tests/test_depth_plot.py::test_choosing_a_wavelength_unit_enables_the_line_list`,
+`::test_the_wavelength_unit_choice_survives_a_reload_without_a_unit`,
+`::test_a_header_unit_replaces_an_unused_override` and
+`tests/test_image_viewer.py::test_the_slice_label_uses_the_chosen_wavelength_unit`.
 
 ### Regression test (proposed)
 `tests/test_header_info.py::test_spectral_axis_from_iraf_cards` (WAT, DISPAXIS alone, neither) and
@@ -6519,7 +6527,7 @@ hovering the region), `_remove_from_scene` first makes the scene forget it, as `
 does. Both steps are now one implementation in `pyql3/gui/scene_items.py`, used by the tool
 dialogs and the region layer.
 
-## R65–R80, R84, R86–R88. Minor items
+## R65–R80, R84, R86–R88, R91. Minor items
 
 | # | File | Issue | Fix (proposed) |
 |---|------|-------|-----|
@@ -6538,11 +6546,12 @@ dialogs and the region layer.
 | R77 | `pyql3/core/regions_io.py:248-271`, `pyql3/gui/main_window.py:1035` | `load_regions` returns the file's `style:` block, but the window keeps only the regions and `save_regions` takes no style. A file with `style: {color: red, line_width: 1}` is re-saved with the default block (green, 2), and `color: red` and `line_width: 1` are written on every region, so editing the block no longer restyles them. | Keep the loaded style with the layer and pass it through `save_regions` as `RegionList.style`. |
 | R78 | `pyql3/core/regions_model.py:458-472` | `looks_like_ds9` needs ds9's header line, or a line that is exactly one of five frame words. Headerless files that ds9 accepts — `fk5;circle(...)` lines, a `j2000`/`fk4`/`b1950`/`ecliptic` frame line, or bare `circle(...)` lines — go to the YAML reader and fail with "should be a mapping with 'format' and 'regions' keys, found str". | Recognise any `_FRAME_RE` frame word, including inside `;`-separated statements, and a shape call in text that does not parse as a YAML mapping. |
 | R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
-| R80 | `pyql3/gui/tools/depth_plot.py:549-562` (`_circular_mask`), called from `_cut_region` `:524` and the background box `:1665` | With Shape set to Circle, a cut (Horizontal/Vertical Cut through the aperture) or a background box that hangs off the image builds its circular mask from the box *after* `coords.box_index_slices` has clipped it to the image. The mask is centred on the clipped box and its radius is half the clipped box's shorter side, so it measures a smaller circle shifted toward the image interior instead of the part of the drawn circle that is on the image. Pre-existing; found in the Phase 1 review (2026-10-21), and reachable more often since R19 made an off-edge box measure its on-image part. | Build the mask from the unclamped circle (the drawn box's centre and radius, in the clipped box's index frame) and intersect it with the image, so the pixels kept are the drawn circle's on-image pixels. |
+| R80 | `pyql3/gui/tools/depth_plot.py:549-562` (`_circular_mask`), called from `_cut_region` `:524` and the background box `:1665` | ✅ FIXED — `pyql3/core/coords.py` (`circle_index_mask`), `pyql3/gui/tools/depth_plot.py` (`_circular_mask` takes the ROI and its clipped slices; `_cut_region`, the rectangle path and `region_background_level` use it), covered by `tests/test_depth_plot.py::test_a_circle_off_the_image_masks_the_drawn_circle` and `tests/test_coords.py::test_circle_index_mask_keeps_the_drawn_circle_off_the_edge`. With Shape set to Circle, a cut (Horizontal/Vertical Cut through the aperture) or a background box that hangs off the image builds its circular mask from the box *after* `coords.box_index_slices` has clipped it to the image. The mask is centred on the clipped box and its radius is half the clipped box's shorter side, so it measures a smaller circle shifted toward the image interior instead of the part of the drawn circle that is on the image. Pre-existing; found in the Phase 1 review (2026-10-21), and reachable more often since R19 made an off-edge box measure its on-image part. | Build the mask from the unclamped circle (the drawn box's centre and radius, in the clipped box's index frame) and intersect it with the image, so the pixels kept are the drawn circle's on-image pixels. |
 | R84 | `pyql3/gui/viewers/image_viewer.py` (`apply_z_range`, reached from `show_current_plane`) | ✅ FIXED — `pyql3/gui/viewers/image_viewer.py`, `pyql3/gui/viewers/region_layer.py`, covered by `test_an_unparsable_z_field_does_not_leave_a_stale_plane`, `test_the_z_fields_refuse_letters_when_typed`, `test_an_unparsable_collapse_range_shows_the_regions_of_every_channel`. An unparsable Z Min or Z Max ("abc") present during `set_data` or any redisplay in Z Range mode makes `apply_z_range` stop at "Collapsed: Invalid Range" after `_give_imageview_the_cube()` has already loaded the cube, so channel 0 stays painted with the previous image's levels and `display_data` is left as the full cube copy that `apply_axis_mapping` made, not the plane on screen. Measured: Sum over 4-8 of a cube whose channel k holds k + 100 (530.0, levels 530-531); Z Min set to "abc" and the cube reloaded ×10: the screen shows channel 0 (1000.0) at levels 530-531. No `plane_changed` is emitted, while `display_changed` is. Found in the Phase 2 review (2026-10-21). | Put a `QIntValidator` on Z Min, Z Max and the Boxcar field so an unparsable value cannot be entered, or fall back to the full range with a message in `lbl_slice_info`. |
 | R86 | `pyql3/gui/tools/plot_catalog.py:1030-1033` (`_clear_text_items`), `:1283-1285` (`tear_down`) | ✅ FIXED — `_clear_text_items` takes every label off the scene and then empties `self.text_items`, and `tear_down` does the same to `scatter_item` and `highlight_item` (`setattr(self, attr, None)`), so the last Python reference to each `QGraphicsItem` is dropped rather than retired — `M18`'s pattern. `tear_down` then calls `_release_retired()`, whose `gc.collect()` frees them in whatever order their reference cycles are walked (`M31`). Both run only from `tear_down`; a catalog reload reuses the two scatter items and the label pool. Pre-existing; found in the Phase 3 review (2026-10-21). | Route the labels and both scatter items through `_retire_items` into `_retired`, which `tear_down` already releases with `_release_retired()`; as in `BaseToolDialog._drop_retired_rois`, `shiboken6.delete` each still-valid item before the `gc.collect()`. |
 | R87 | `pyql3/gui/tools/advanced_plots.py:136-164` (Contour `update_plot`), `:120-128` (`clear_contours`) | ✅ FIXED — `update_plot` calls `clear_contours()`, which takes each `IsocurveItem` off the view and then drops them all (`self.iso_items = []`), and goes straight on to build the new ones — `M18`'s drop-then-build pattern, in which the collector can run inside the construction of a replacement item and free the old one. It runs on every `sigTimeChanged` while contours are shown, so stepping through a cube with contours on rebuilds them each frame. Pre-existing; found in the Phase 3 review (2026-10-21). | Retire the old items instead of dropping them: a `_retired` list released from `QTimer.singleShot(0, ...)` and in `tear_down`, with `shiboken6.delete` before the `gc.collect()` as in `BaseToolDialog._drop_retired_rois`. |
 | R88 | `pyql3/gui/viewers/image_viewer.py` (`get_north_angle_base`) | ✅ FIXED — the compass angle is evaluated at a point off the plane centre on non-square planes (axes swapped): the centre was `((shape[-1] - 1) / 2, (shape[-2] - 1) / 2)` of `transposed_data`, which is `(z, x, y)`, so X got the Y length's centre. On `osiris_like_fits` (66 × 51) the point was off by (-7.5, +7.5) px; the angle error is about 1e-5°. Now taken from `orig_spatial_dims()`, covered by `tests/test_position_angle.py::test_the_compass_is_evaluated_at_the_plane_centre`. Found in Task 20 (2026-10-21). | `raw_cx, raw_cy` from `orig_spatial_dims()`. |
+| R91 | `pyql3/gui/tools/depth_plot.py` (Horizontal and Vertical Cut, `np.nansum` in `update_plot`), `pyql3/gui/tools/cuts.py:253`, `:272`, `:289` | With Combine = Total, a cut through a column or row in which no pixel is finite shows 0.0, which reads as a measurement. The Depth Plot's spectrum shows NaN for the same case since R21. Found in the Phase 6 review (2026-10-21); not fixed there, because R21 covers the spectrum only. | Generalise `depth_plot._channel_total` to take an `axis`, move it to a Qt-free module, and use it in both cut paths of the Depth Plot and in the Cuts tool, so a column with no finite pixel is NaN. |
 
 ## Working checklist — code review 2026-10-21
 
@@ -6568,9 +6577,9 @@ Medium
 - [ ] R17 Arrow-only ds9 export declares `icrs` whatever the WCS frame — plan Task 35
 - [ ] R18 Photometry sky wrong at edges and with NaN; inverted annulus freezes — plan Task 24
 - [x] R19 Depth Plot rectangle clamping measures shifted or edge pixels — plan Task 4
-- [ ] R20 Region-mode background over-subtracts where aperture pixels are NaN — plan Task 22
-- [ ] R21 Total is 0.0, not NaN, for a channel with no finite aperture pixel — plan Task 22
-- [ ] R22 A sky annulus inside the aperture is accepted silently — plan Task 22
+- [x] R20 Region-mode background over-subtracts where aperture pixels are NaN — plan Task 22
+- [x] R21 Total is 0.0, not NaN, for a channel with no finite aperture pixel — plan Task 22
+- [x] R22 A sky annulus inside the aperture is accepted silently — plan Task 22
 - [ ] R23 Arithmetic: 2-decimal Number, integer wrap, inconsistent header — plan Task 25
 - [x] R24 `AWAV` not recognised; stale WCS readout — plan Task 20
 - [x] R25 Non-science extension set up from its own header only — plan Task 21
@@ -6603,9 +6612,9 @@ Low
 - [x] R50 Catalog labels return with Show All off — plan Task 13
 - [x] R51 Show Region Labels off: new labels shown, text regions vanish — plan Task 33
 - [x] R52 2-D image with a 3-axis WCS: readout and compass wrong — plan Task 20
-- [ ] R53 Depth Plot Log X removes the line list and breaks the readout — plan Task 23
-- [ ] R54 Line lists keyed by file name; empty parse leaves old status — plan Task 23
-- [ ] R55 Depth Plot hidden rectangle spins go stale — plan Task 23
+- [x] R53 Depth Plot Log X removes the line list and breaks the readout — plan Task 23
+- [x] R54 Line lists keyed by file name; empty parse leaves old status — plan Task 23
+- [x] R55 Depth Plot hidden rectangle spins go stale — plan Task 23
 - [x] R56 ROTPOSN fallback compass uses 90 + PA — plan Task 20
 - [x] R57 Display → Scaling menu drops timeline and manual levels — plan Task 6
 - [x] R58 Recent Files stale across windows and processes — plan Task 40
@@ -6643,4 +6652,5 @@ Minor items (table)
 - [ ] R77 Region `style:` block not preserved on re-save — plan Task 37
 - [ ] R78 Headerless ds9 files not detected — plan Task 38
 - [ ] R79 A newline in a label breaks the `.reg` line — plan Task 38
-- [ ] R80 Circle-shaped box off the image masks around the clipped box — plan Task 23
+- [x] R80 Circle-shaped box off the image masks around the clipped box — plan Task 23
+- [ ] R91 Cut Total is 0.0, not NaN, for an all-NaN column (Depth Plot cuts, Cuts tool) — plan: unassigned

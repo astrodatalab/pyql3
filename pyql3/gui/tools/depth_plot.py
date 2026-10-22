@@ -7,7 +7,7 @@ import pyqtgraph as pg
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QCheckBox, QSpinBox, QHBoxLayout, QGroupBox, QPushButton, QDoubleSpinBox, QFileDialog, QWidget
 from PySide6.QtCore import Qt, QDir
 from pyql3.core import coords
-from pyql3.core.header_info import in_microns
+from pyql3.core.header_info import UNKNOWN_UNIT, in_microns, unit_name
 from pyql3.core.spectral_photometry import (
     ApertureError,
     annulus_spectrum,
@@ -42,6 +42,28 @@ GUTTER_LEVELS = (0.08, 0.16, 0.24, 0.32)
 #: Colour of the two sky rings. The same orange as the Background curve, so the annulus on
 #: the image and the line on the plot are visibly one thing.
 _RING_COLOR = (255, 140, 0)
+
+
+def _channel_total(region):
+    """The sum of each channel of a `(z, x, y)` region, NaN where no pixel is finite.
+
+    `np.nansum` gives 0.0 for a channel with nothing in it, which is drawn as a measurement
+    (`BUGS.md` R21). `spectral_photometry.aperture_spectrum` treats the circular aperture
+    the same way.
+    """
+    with np.errstate(invalid="ignore"):
+        total = np.nansum(region, axis=(1, 2))
+    return np.where(np.isfinite(region).any(axis=(1, 2)), total, np.nan)
+
+
+def _from_log_view(x):
+    """`10 ** x` for a view coordinate on a Log X axis; inf where that overflows.
+
+    Right after Log X is ticked the view range is still the linear one until pyqtgraph re-ranges
+    it, and `10.0 ** 19968.66` raises OverflowError on a Python float.
+    """
+    with np.errstate(over='ignore'):
+        return np.power(10.0, np.asarray(x, dtype=float))
 
 
 def latex_to_html(text):
@@ -88,16 +110,23 @@ def latex_to_html(text):
 
 
 class PixelIndexAxis(pg.AxisItem):
-    """Top axis displaying 0-indexed channel slice numbers when the bottom X-axis displays physical wavelengths."""
-    def __init__(self, *args, **kwargs):
+    """Top axis displaying 0-indexed channel slice numbers when the bottom X-axis displays physical wavelengths.
+
+    With `log_x` set (the Depth Plot's Log X), pyqtgraph hands the tick values over as
+    log10(wavelength), and they are converted back before the channel is looked up (R53).
+    """
+    def __init__(self, *args, log_x=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.wavelengths = None
+        self.log_x = log_x
 
     def tickStrings(self, values, scale, spacing):
         if self.wavelengths is None or len(self.wavelengths) == 0:
             return super().tickStrings(values, scale, spacing)
 
         try:
+            if self.log_x:
+                values = _from_log_view(values)
             indices = np.interp(values, self.wavelengths, np.arange(len(self.wavelengths)))
             return [f"{int(round(idx))}" for idx in indices]
         except Exception:
@@ -422,11 +451,27 @@ class DepthPlotDialog(BaseToolDialog):
         self.btn_browse_linelist = QPushButton("Browse...")
         self.lbl_line_info = QLabel("")
 
+        # The unit of the cube's spectral axis, for a file that states none or states it wrongly.
+        # A line list is in µm and cannot be matched against numbers of unknown unit, so this is
+        # the control that makes it available (R82). It sits with the plot's axes, not beside the
+        # line list, because it describes the cube's numbers and not the line list's. The choice
+        # is the window's (`ImageViewer.wavelength_unit_override`); entry 0 takes the header's unit.
+        self.combo_wave_unit = QComboBox()
+        self.combo_wave_unit.addItem("From header (Unknown)", None)
+        for name, unit in (("Å", u.AA), ("nm", u.nm), ("µm", u.um)):
+            self.combo_wave_unit.addItem(name, unit)
+        self.combo_wave_unit.setToolTip(
+            "The unit of the wavelengths stored in the cube (the plot's X axis), not of the line "
+            "list, which is always in µm. A unit chosen here is labelled \"set by you\" wherever "
+            "wavelengths are shown.")
+        axes_layout.addWidget(QLabel("Cube wavelength unit:"), 2, 0)
+        axes_layout.addWidget(self.combo_wave_unit, 2, 1, 1, 3)
+
         linelist_layout.addWidget(self.chk_enable_lines, 0, 0)
         linelist_layout.addWidget(QLabel("Line List:"), 0, 1)
         linelist_layout.addWidget(self.combo_linelist, 0, 2)
         linelist_layout.addWidget(self.btn_browse_linelist, 0, 3)
-        linelist_layout.addWidget(self.lbl_line_info, 0, 4)
+        linelist_layout.addWidget(self.lbl_line_info, 1, 0, 1, 4)
 
         self.layout.addWidget(self.group_linelist)
 
@@ -435,6 +480,8 @@ class DepthPlotDialog(BaseToolDialog):
         self.linelist_files = {}
 
         self.chk_enable_lines.stateChanged.connect(self.update_line_overlays)
+        self.sync_wavelength_unit_combo()
+        self.combo_wave_unit.currentIndexChanged.connect(self.on_wavelength_unit_chosen)
         self.combo_linelist.currentIndexChanged.connect(self.on_linelist_selection_changed)
         self.btn_browse_linelist.clicked.connect(self.browse_custom_linelist)
 
@@ -522,7 +569,7 @@ class DepthPlotDialog(BaseToolDialog):
         region = plane[x_slice, y_slice]
         if region.size == 0:
             return None
-        mask = self._circular_mask(*region.shape)
+        mask = self._circular_mask(self.roi, x_slice, y_slice)
         if mask is None:
             return region
         return np.where(mask, region.astype(float), np.nan)
@@ -547,20 +594,20 @@ class DepthPlotDialog(BaseToolDialog):
         self.plot_sub.setData([], [])
         self.sync_legend()
 
-    def _circular_mask(self, nx, ny):
-        """Whole pixels of an `nx` by `ny` bounding box whose centres fall inside the circle.
+    def _circular_mask(self, roi, x_slice, y_slice):
+        """Which pixels of `x_slice` x `y_slice` have their centres inside the circle `roi` draws.
 
         `None` for a rectangular aperture, so a caller applies the mask or not without
         consulting the shape combo itself. The radius is the half-width of the shorter side,
         matching `aperture_geometry()` -- which is what keeps a circle dragged out of square
-        measuring the same figure everywhere it is measured.
+        measuring the same figure everywhere it is measured. The slices are the ROI's pixels
+        clipped to the image (`_box_slices`); the circle is the drawn one, not one fitted to the
+        clipped box, so a circle hanging off the image keeps its own on-image pixels (R80).
         """
         if self.combo_shape.currentText() != "Circle":
             return None
-        ix, iy = np.mgrid[:nx, :ny]
-        cx, cy = nx / 2.0 - 0.5, ny / 2.0 - 0.5
-        r = min(nx / 2.0, ny / 2.0)
-        return ((ix - cx) ** 2 + (iy - cy) ** 2) <= r ** 2
+        pos, size = roi.pos(), roi.size()
+        return coords.circle_index_mask(pos.x(), pos.y(), size.x(), size.y(), x_slice, y_slice)
 
     def set_center(self, center):
         """Centre the aperture on `center`, a fractional numpy index `(x, y)`.
@@ -595,12 +642,15 @@ class DepthPlotDialog(BaseToolDialog):
             mousePoint = self.plot_widget.plotItem.vb.mapSceneToView(pos)
             x_val = mousePoint.x()
             y_val = mousePoint.y()
+            if self.chk_log_x.isChecked():
+                # In log mode the view's x is log10 of the plotted value (R53)
+                x_val = float(_from_log_view(x_val))
+                if not np.isfinite(x_val):
+                    return
             if hasattr(self, 'current_wavelengths') and self.current_wavelengths is not None and len(self.current_wavelengths) > 0:
                 pix_idx = int(round(np.interp(x_val, self.current_wavelengths, np.arange(len(self.current_wavelengths)))))
-                if getattr(self, 'current_wavelength_unit', 'µm') == 'Unknown':
-                    wavelength = f"Wavelength (Unknown): {x_val:.6g}"
-                else:
-                    wavelength = f"Wavelength: {x_val:.4f} µm"
+                # Written as the slice readout writes it: µm, Unknown, or a unit the user chose
+                wavelength = self.image_viewer.wavelength_text(x_val)
                 self.lbl_cursor.setText(f"{wavelength}  (Pixel: {pix_idx})   Intensity: {y_val:.4f}")
             else:
                 self.lbl_cursor.setText(f"Pixel: {x_val:.1f}   Intensity: {y_val:.4f}")
@@ -697,8 +747,12 @@ class DepthPlotDialog(BaseToolDialog):
             self.update_line_overlays()
 
     def toggle_log_scale(self):
+        self.top_axis.log_x = self.chk_log_x.isChecked()
+        # The lines are placed in view coordinates, which Log X changes. They are redrawn by
+        # on_x_range_changed once pyqtgraph has re-ranged the view; redrawn here, they were
+        # computed from the linear range read as log10 (Phase 6 review, I1).
         self.plot_widget.setLogMode(x=self.chk_log_x.isChecked(), y=self.chk_log_y.isChecked())
-        
+
     def on_spin_changed(self):
         if self._updating_spins:
             return
@@ -716,19 +770,28 @@ class DepthPlotDialog(BaseToolDialog):
         self.roi.blockSignals(False)
         self.update_plot()
         
-    def on_roi_changed(self):
+    def _sync_rect_spins(self):
+        """Write the source ROI's edges into the rectangle spins.
+
+        Every path that moves or resizes the ROI calls this, including those that block the
+        ROI's signals. `on_spin_changed` rebuilds the box from all four spins, so a stale one
+        made the first rectangle edit jump the box to a different size and place (R55).
+        """
         pos = self.roi.pos()
         size = self.roi.size()
-        
+
         x0, y0 = int(pos.x()), int(pos.y())
         w, h = int(size.x()), int(size.y())
-        
+
         self._updating_spins = True
         self.spin_x0.setValue(x0)
         self.spin_x1.setValue(x0 + w)
         self.spin_y0.setValue(y0)
         self.spin_y1.setValue(y0 + h)
         self._updating_spins = False
+
+    def on_roi_changed(self):
+        self._sync_rect_spins()
 
         # The aperture radius and the sky rings are derived from the ROI, so every path
         # that moves or resizes it -- a drag, the spin boxes, set_center() from the
@@ -802,7 +865,8 @@ class DepthPlotDialog(BaseToolDialog):
         self.roi.setSize([r * 2, r * 2])
         self.roi.blockSignals(False)
         # The ROI's signals are blocked, so on_roi_changed() will not run and this path has
-        # to carry the annulus along itself.
+        # to carry the rectangle spins and the annulus along itself.
+        self._sync_rect_spins()
         self._updating_radius = True
         self.track_aperture_radii(r)
         self._updating_radius = False
@@ -927,11 +991,9 @@ class DepthPlotDialog(BaseToolDialog):
         if region.size == 0:
             return None
 
-        if self.combo_shape.currentText() == "Circle":
-            yy, xx = np.mgrid[:region.shape[1], :region.shape[2]]
-            cx, cy = region.shape[1] / 2.0 - 0.5, region.shape[2] / 2.0 - 0.5
-            r = min(region.shape[1] / 2.0, region.shape[2] / 2.0)
-            region = np.where(((xx - cy) ** 2 + (yy - cx) ** 2) <= r ** 2, region, np.nan)
+        mask = self._circular_mask(self.bg_roi, x_slice, y_slice)
+        if mask is not None:
+            region = np.where(mask, region, np.nan)
 
         method = self.combo_bg_calc.currentText()
         with np.errstate(invalid="ignore"):
@@ -939,7 +1001,7 @@ class DepthPlotDialog(BaseToolDialog):
                 return np.nanmean(region, axis=(1, 2))
             if method == "Median":
                 return np.nanmedian(region, axis=(1, 2))
-            return np.nansum(region, axis=(1, 2))
+            return _channel_total(region)
 
     def on_bg_mode_changed(self):
         """Swap between a concentric annulus and an independent region."""
@@ -1117,10 +1179,11 @@ class DepthPlotDialog(BaseToolDialog):
         into "NIR Stellar Lines" breaks the association with the file on disk that the numbers
         can be checked against. The full path rides along in the item data and tooltip, which
         says which *copy* was loaded -- a frozen bundle, the repo, a browsed file -- without
-        changing what is displayed.
+        changing what is displayed. `linelist_files` is keyed by that path, so two files with
+        one name are two entries, each loading its own file (R54).
         """
         name = os.path.basename(filepath)
-        self.linelist_files[name] = filepath
+        self.linelist_files[filepath] = name
         if index is None:
             self.combo_linelist.addItem(name, filepath)
             index = self.combo_linelist.count() - 1
@@ -1142,12 +1205,13 @@ class DepthPlotDialog(BaseToolDialog):
 
         self.combo_linelist.addItem("Load Custom CSV...")
 
-        default = ("nir_stellar_lines.txt" if "nir_stellar_lines.txt" in self.linelist_files
-                   else next(iter(self.linelist_files), None))
+        names = self.linelist_files
+        default = next((path for path, name in names.items() if name == "nir_stellar_lines.txt"),
+                       next(iter(names), None))
 
         if default is not None:
-            self.combo_linelist.setCurrentText(default)
-            self.loaded_lines = self.parse_line_list(self.linelist_files[default])
+            self.combo_linelist.setCurrentIndex(self.combo_linelist.findData(default))
+            self.loaded_lines = self.parse_line_list(default)
         else:
             self.combo_linelist.setCurrentText("Load Custom CSV...")
             self.loaded_lines = []
@@ -1155,6 +1219,12 @@ class DepthPlotDialog(BaseToolDialog):
         self.combo_linelist.blockSignals(False)
 
     def parse_line_list(self, filepath):
+        """`(wavelength in µm, name)` for each line of a line list.
+
+        A line is `wavelength,name`; a line with no comma is `wavelength name`, split at the
+        first run of whitespace so the name keeps its own spaces (R54). Comment lines (`#`,
+        `;`) and lines without a number first are skipped.
+        """
         lines = []
         if not filepath or not os.path.exists(filepath):
             return lines
@@ -1164,7 +1234,7 @@ class DepthPlotDialog(BaseToolDialog):
                     line = line.strip()
                     if not line or line.startswith('#') or line.startswith(';'):
                         continue
-                    parts = line.split(',')
+                    parts = line.split(',') if ',' in line else line.split(None, 1)
                     if len(parts) >= 2:
                         try:
                             wl = float(parts[0].strip())
@@ -1177,9 +1247,9 @@ class DepthPlotDialog(BaseToolDialog):
         return lines
 
     def on_linelist_selection_changed(self):
-        text = self.combo_linelist.currentText()
-        if text in self.linelist_files:
-            filepath = self.linelist_files[text]
+        # The entry's own path: its text is only a filename, which two files can share (R54)
+        filepath = self.combo_linelist.currentData()
+        if filepath in self.linelist_files:
             self.loaded_lines = self.parse_line_list(filepath)
             self.update_line_overlays()
 
@@ -1194,14 +1264,47 @@ class DepthPlotDialog(BaseToolDialog):
             self, "Select Spectral Line List CSV", initial_dir, "CSV / Text Files (*.csv *.txt);;All Files (*)"
         )
         if filepath:
-            idx = self.combo_linelist.findText("Load Custom CSV...")
-            idx = self.add_linelist_item(filepath, index=idx if idx >= 0 else None)
+            idx = self.combo_linelist.findData(filepath)
+            if idx < 0:
+                idx = self.combo_linelist.findText("Load Custom CSV...")
+                idx = self.add_linelist_item(filepath, index=idx if idx >= 0 else None)
             self.combo_linelist.setCurrentIndex(idx)
             self.loaded_lines = self.parse_line_list(filepath)
             self.update_line_overlays()
         else:
             if self.combo_linelist.currentText() == "Load Custom CSV..." and self.combo_linelist.count() > 1:
                 self.combo_linelist.setCurrentIndex(0)
+
+    def sync_wavelength_unit_combo(self):
+        """Show the window's wavelength unit choice, and the header's own unit in entry 0.
+
+        The choice belongs to the viewer (`ImageViewer.wavelength_unit_override`) and changes
+        without this dialog -- a load whose header states a unit clears it -- so the combo is
+        set from the viewer, with its signal blocked, before each redraw.
+        """
+        if self.image_viewer is None:
+            return
+        stated = self.image_viewer.header_wavelength_unit()
+        chosen = self.image_viewer.wavelength_unit_override
+        index = 0
+        if chosen is not None:
+            index = next((i for i in range(1, self.combo_wave_unit.count())
+                          if self.combo_wave_unit.itemData(i) == chosen), 0)
+        self.combo_wave_unit.blockSignals(True)
+        try:
+            self.combo_wave_unit.setItemText(
+                0, f"From header ({unit_name(stated) if stated is not None else UNKNOWN_UNIT})")
+            self.combo_wave_unit.setCurrentIndex(index)
+        finally:
+            self.combo_wave_unit.blockSignals(False)
+
+    def on_wavelength_unit_chosen(self):
+        """The user chose the spectral axis's unit (or the header's): redraw in it."""
+        if self.image_viewer is None:
+            return
+        self.image_viewer.set_wavelength_unit_override(self.combo_wave_unit.currentData())
+        self.update_plot()
+        self.update_line_overlays()
 
     def wavelength_to_pixel(self, wavelengths_um):
         if self.image_viewer is None or getattr(self.image_viewer, 'wcs', None) is None:
@@ -1266,7 +1369,7 @@ class DepthPlotDialog(BaseToolDialog):
         plot_type = self.combo_type.currentText()
         lines_enabled = self.chk_enable_lines.isChecked() and (plot_type == "Depth Plot")
 
-        if not lines_enabled or not self.loaded_lines or self.image_viewer is None or getattr(self.image_viewer, 'wcs', None) is None:
+        if not lines_enabled or self.image_viewer is None or getattr(self.image_viewer, 'wcs', None) is None:
             self.clear_line_overlays()
             if hasattr(self, 'lbl_line_info'):
                 if not self.chk_enable_lines.isChecked():
@@ -1277,6 +1380,16 @@ class DepthPlotDialog(BaseToolDialog):
                     self.lbl_line_info.setText("No WCS present for wavelength mapping.")
             return
 
+        if not self.loaded_lines:
+            # Without this the previous list's count stayed on screen over an empty plot (R54)
+            self.clear_line_overlays()
+            if self.combo_linelist.currentData() is None:
+                self.lbl_line_info.setText("No line list is selected.")
+            else:
+                self.lbl_line_info.setText(
+                    f"No lines could be read from {self.combo_linelist.currentText()}")
+            return
+
         # wcs_z_idx is set only for a spectral Z axis (header_info.spectral_axis)
         if getattr(self.image_viewer, 'wcs_z_idx', None) is None:
             self.clear_line_overlays()
@@ -1284,9 +1397,10 @@ class DepthPlotDialog(BaseToolDialog):
             return
         unit = self.image_viewer.wavelength_unit()
         if unit is None:
+            # The file states no unit; `combo_wave_unit` is how the user supplies one
             self.clear_line_overlays()
-            self.lbl_line_info.setText("The line list needs a known wavelength unit; "
-                                       "this file does not state one.")
+            self.lbl_line_info.setText("Set the cube's wavelength unit under Plot Axes to show the "
+                                       "line list (the line list is in µm)")
             return
         if in_microns(1.0, unit) is None:
             # A spectral axis in, for example, m/s: there is no wavelength to match lines to
@@ -1304,11 +1418,25 @@ class DepthPlotDialog(BaseToolDialog):
             if x_data is not None and len(x_data) > 1:
                 view_x_min, view_x_max = float(x_data[0]), float(x_data[-1])
 
+        # With Log X the view's x is log10 of the plotted value. Lines are chosen and spaced
+        # in plotted values and placed at their log10 (R53).
+        log_x = self.chk_log_x.isChecked()
+        if log_x:
+            view_x_min, view_x_max = _from_log_view([view_x_min, view_x_max])
+            if not (np.isfinite(view_x_min) and np.isfinite(view_x_max)):
+                # A linear range not yet re-ranged to log; on_x_range_changed redraws
+                self.clear_line_overlays()
+                return
+
         visible_lines = []
         if use_wavelength_x:
-            for wl_um, name in self.loaded_lines:
-                if view_x_min <= wl_um <= view_x_max:
-                    visible_lines.append((wl_um, name, wl_um))
+            # The plot's x is in the unit ImageViewer.wavelength_display_unit names: µm, or
+            # the unit the user chose. The line list is in µm.
+            plotted = (np.array([wl for wl, _ in self.loaded_lines]) * u.um).to_value(
+                self.image_viewer.wavelength_display_unit(), equivalencies=u.spectral())
+            for (wl_um, name), x_pos in zip(self.loaded_lines, plotted, strict=True):
+                if view_x_min <= x_pos <= view_x_max:
+                    visible_lines.append((float(x_pos), name, wl_um))
         else:
             wls_um = [item[0] for item in self.loaded_lines]
             pix_coords = self.wavelength_to_pixel(wls_um)
@@ -1321,6 +1449,9 @@ class DepthPlotDialog(BaseToolDialog):
             for (wl_um, name), x_px in zip(self.loaded_lines, pix_coords, strict=True):
                 if view_x_min <= x_px <= view_x_max:
                     visible_lines.append((x_px, name, wl_um))
+        if log_x:
+            # A channel index of 0 or less has no log10, and so no place on a log axis
+            visible_lines = [line for line in visible_lines if line[0] > 0]
 
         num_needed = len(visible_lines)
 
@@ -1348,6 +1479,8 @@ class DepthPlotDialog(BaseToolDialog):
             else:
                 level = 0
             last_x = x_pos
+            if log_x:
+                x_pos = np.log10(x_pos)
 
             y_pos = view_y_min + GUTTER_LEVELS[level] * y_span
 
@@ -1399,6 +1532,7 @@ class DepthPlotDialog(BaseToolDialog):
             
         self.add_roi_to_viewer(roi)
         self._wire_drag_freeze(self.roi)
+        self._sync_rect_spins()
 
         if self.chk_enable_bg.isChecked() and self.bg_roi is not None:
             bg_pos = self.bg_roi.pos()
@@ -1454,10 +1588,10 @@ class DepthPlotDialog(BaseToolDialog):
         """
         x_axis = np.arange(z_len)
         wavelengths = None
-        # µm when the file states the unit; the header's own numbers, labelled Unknown, when
-        # it does not (header_info.spectral_unit)
-        unit = self.image_viewer.wavelength_unit()
-        cunit = "µm" if unit is not None else "Unknown"
+        # µm when the file states the unit; the header's own numbers, labelled Unknown, when it
+        # does not; the header's own numbers in the unit the user chose, labelled "set by you",
+        # when they chose one (ImageViewer.displayed_wavelength, wavelength_unit_label)
+        cunit = self.image_viewer.wavelength_unit_label()
 
         if self.image_viewer.wcs is not None and self.image_viewer.wcs_z_idx is not None:
             wcs = self.image_viewer.wcs
@@ -1480,10 +1614,8 @@ class DepthPlotDialog(BaseToolDialog):
 
             try:
                 world = wcs.wcs_pix2world(fixed_coords, 0)
-                wavelengths = world[:, z_idx]
-                if unit is not None:
-                    # None for a spectral unit that is not a wavelength, such as a velocity
-                    wavelengths = in_microns(wavelengths, unit)
+                # None for a spectral unit that is not a wavelength, such as a velocity
+                wavelengths = self.image_viewer.displayed_wavelength(world[:, z_idx])
             except Exception as e:
                 print(f"Warning: WCS pixel_to_world failed in DepthPlotDialog: {e}")
                 wavelengths = None
@@ -1491,7 +1623,6 @@ class DepthPlotDialog(BaseToolDialog):
         if wavelengths is not None and len(wavelengths) == z_len:
             x_axis = wavelengths
             self.current_wavelengths = wavelengths
-            self.current_wavelength_unit = cunit
             
             self.plot_widget.getAxis('bottom').setLabel(f"Wavelength ({cunit})")
             
@@ -1501,7 +1632,6 @@ class DepthPlotDialog(BaseToolDialog):
         else:
             x_axis = np.arange(z_len)
             self.current_wavelengths = None
-            self.current_wavelength_unit = ""
             self.plot_widget.setLabel('bottom', "Slice Index (pixels)")
             self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
@@ -1547,7 +1677,8 @@ class DepthPlotDialog(BaseToolDialog):
     def update_plot(self):
         if self.image_viewer is None or self.image_viewer.transposed_data is None:
             return
-            
+        self.sync_wavelength_unit_combo()
+
         if self.image_viewer.transposed_data.ndim != 3:
             # A 2-D image has no spectrum. The curves from the previous cube would otherwise
             # stay drawn as though they described this image (R7).
@@ -1558,7 +1689,6 @@ class DepthPlotDialog(BaseToolDialog):
             # The lines and the cursor readout belong to the previous cube's wavelength axis.
             self.clear_line_overlays()
             self.current_wavelengths = None
-            self.current_wavelength_unit = ""
             self.lbl_bg_info.setText("The displayed image is 2-D: it has no spectrum to plot.")
             return
             
@@ -1629,8 +1759,10 @@ class DepthPlotDialog(BaseToolDialog):
                 bg_spectrum = self.region_background_level(cube)
                 note = f"Aperture {result.aperture_area:.1f} px²"
                 if bg_spectrum is not None:
+                    # The per-channel weight, as the annulus uses: a channel with NaN pixels
+                    # in the aperture is charged only for the pixels that hold data (R20).
                     subtracted_spectrum = subtract_background(
-                        spectrum, bg_spectrum, calc_method, result.aperture_area)
+                        spectrum, bg_spectrum, calc_method, result.aperture_weight)
                 elif self.bg_roi is not None:
                     note += ("<br><span style='color:#b00'>the background box does not "
                              "overlap the cube</span>")
@@ -1655,7 +1787,7 @@ class DepthPlotDialog(BaseToolDialog):
             if region.size == 0:
                 return
 
-            mask = self._circular_mask(*region.shape[1:])
+            mask = self._circular_mask(self.roi, x_slice, y_slice)
             if mask is not None:
                 region = np.where(mask, region, np.nan)
 
@@ -1665,7 +1797,7 @@ class DepthPlotDialog(BaseToolDialog):
             elif calc_method == "Median":
                 spectrum = np.nanmedian(region, axis=(1, 2))
             else:
-                spectrum = np.nansum(region, axis=(1, 2))
+                spectrum = _channel_total(region)
 
             bg_spectrum = None
             subtracted_spectrum = None
@@ -1682,7 +1814,7 @@ class DepthPlotDialog(BaseToolDialog):
                 bg_x_slice, bg_y_slice = bg_box
                 bg_region = cube[:, bg_x_slice, bg_y_slice].astype(float, copy=True)
                 if bg_region.size > 0:
-                    mask_bg = self._circular_mask(*bg_region.shape[1:])
+                    mask_bg = self._circular_mask(self.bg_roi, bg_x_slice, bg_y_slice)
                     if mask_bg is not None:
                         bg_region = np.where(mask_bg, bg_region, np.nan)
 
@@ -1692,7 +1824,7 @@ class DepthPlotDialog(BaseToolDialog):
                     elif bg_calc_method == "Median":
                         bg_spectrum = np.nanmedian(bg_region, axis=(1, 2))
                     else:
-                        bg_spectrum = np.nansum(bg_region, axis=(1, 2))
+                        bg_spectrum = _channel_total(bg_region)
 
                     # Option B: Subtract background spectrum from each pixel's spectrum in the source data
                     subtracted_region = region - bg_spectrum[:, None, None]
@@ -1702,7 +1834,7 @@ class DepthPlotDialog(BaseToolDialog):
                     elif calc_method == "Median":
                         subtracted_spectrum = np.nanmedian(subtracted_region, axis=(1, 2))
                     else:
-                        subtracted_spectrum = np.nansum(subtracted_region, axis=(1, 2))
+                        subtracted_spectrum = _channel_total(subtracted_region)
                 
             # The centre of the pixels measured, as a numpy index like the circular path's.
             self._draw_depth_curves(
@@ -1729,7 +1861,6 @@ class DepthPlotDialog(BaseToolDialog):
             self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
             self.current_wavelengths = None
-            self.current_wavelength_unit = ""
                 
             x_axis = np.arange(x_slice.start, x_slice.stop)
             self.plot_widget.setLabel('bottom', "X Pixel")
@@ -1755,7 +1886,6 @@ class DepthPlotDialog(BaseToolDialog):
             self.top_axis.wavelengths = None
             self.plot_widget.hideAxis('top')
             self.current_wavelengths = None
-            self.current_wavelength_unit = ""
             x_axis = np.arange(y_slice.start, y_slice.stop)
             self.plot_widget.setLabel('bottom', "Y Pixel")
             self._set_intensity_label()

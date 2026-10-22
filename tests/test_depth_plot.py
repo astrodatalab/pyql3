@@ -1290,7 +1290,11 @@ def test_the_line_list_needs_a_known_wavelength_unit(qapp, nifs_like_header):
 
         assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (Unknown)"
         assert dialog.plot_data.getData()[0][0] == pytest.approx(19968.66)
-        assert "needs a known wavelength unit" in dialog.lbl_line_info.text()
+        # The Cube wavelength unit combo is how the user supplies one (Task 23). It sits with
+        # the plot's axes, not the line list, because it is the unit of the cube's numbers.
+        assert dialog.combo_wave_unit.parent().title() == "PLOT AXES"
+        assert dialog.lbl_line_info.text() == ("Set the cube's wavelength unit under Plot Axes to show the line list "
+                                                "(the line list is in µm)")
         assert not dialog.line_items
     finally:
         dialog.close()
@@ -1336,3 +1340,430 @@ def test_a_velocity_axis_is_not_a_wavelength(qapp):
         assert not dialog.line_items
     finally:
         dialog.close()
+
+
+# ---------------------------------------------------------------------------
+# Spectral photometry edge cases (BUGS.md R20, R22)
+# ---------------------------------------------------------------------------
+
+def test_a_region_background_uses_the_per_channel_area(qapp):
+    """R20: a Region background is charged for the aperture pixels that hold data in each
+    channel, as the annulus is. Charging the full area over-subtracted by the level times
+    the number of NaN pixels, in exactly the channels that have them."""
+    data = np.full((3, 30, 40), 5.0)          # numpy (z, y, x): a flat sky of 5, no source
+    data[1, 15, 12:14] = np.nan               # two bad pixels inside the aperture, channel 1
+    viewer = ImageViewer()
+    viewer.set_data(data, None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.set_center((12.0, 15.0))
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.combo_bg_mode.setCurrentText("Region")
+        dialog.bg_roi.setPos([25, 5])
+        dialog.bg_roi.setSize([8, 8])
+        assert dialog.combo_calc.currentText() == "Total"
+        assert dialog.plot_bg.getData()[1] == pytest.approx([5.0, 5.0, 5.0])
+        assert dialog.plot_sub.getData()[1] == pytest.approx([0.0, 0.0, 0.0], abs=1e-9)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_growing_the_aperture_past_the_sky_annulus_says_so(qapp):
+    """R22: sky radii the user chose stay put when the aperture grows past them, and the
+    status line says the annulus now starts inside the aperture instead of subtracting
+    source flux as sky."""
+    xx, yy = np.mgrid[:41, :41]
+    star = 1000.0 * np.exp(-((xx - 20) ** 2 + (yy - 20) ** 2) / (2 * 2.5 ** 2))
+    viewer = ImageViewer()
+    viewer.set_data(np.repeat((star + 2.0)[None, :, :], 2, axis=0), None)   # sky = 2
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.set_center((20.0, 20.0))
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.spin_r_in.setValue(5.0)
+        dialog.spin_r_out.setValue(8.0)
+        dialog.spin_radius.setValue(7.0)
+
+        assert (dialog.spin_r_in.value(), dialog.spin_r_out.value()) == (5.0, 8.0)
+        assert "the sky annulus starts inside the aperture" in dialog.lbl_bg_info.text()
+        assert _curve_is_empty(dialog.plot_sub) and _curve_is_empty(dialog.plot_bg)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+# ---------------------------------------------------------------------------
+# Line lists, Log X, the rectangle spins, the off-image circle mask (BUGS.md R53-R55, R80)
+# and a wavelength unit chosen by the user (R82)
+# ---------------------------------------------------------------------------
+
+def _k_band_viewer():
+    """A cube with a WAVE axis in nm on FITS axis 1, 2100-2200 nm (R53, R54)."""
+    from astropy.wcs import WCS
+    w = WCS(naxis=3)
+    w.wcs.ctype = ['WAVE', 'DEC--TAN', 'RA---TAN']
+    w.wcs.cunit = ['nm', 'deg', 'deg']
+    w.wcs.crval = [2100.0, 0, 0]
+    w.wcs.cdelt = [0.25, 1e-5, 1e-5]
+    w.wcs.crpix = [1, 1, 1]
+    viewer = ImageViewer()
+    viewer.set_data(np.random.default_rng(1).normal(10, 1, (30, 20, 400)), w.to_header())
+    return viewer
+
+
+def test_the_line_list_survives_log_x(qapp):
+    """R53: in log mode pyqtgraph's view x is log10(wavelength). The lines, the cursor
+    readout and the channel axis convert it back; each line is placed at log10 of its
+    wavelength."""
+    from PySide6.QtCore import QPointF
+    viewer = _k_band_viewer()
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.chk_enable_lines.setChecked(True)
+        qapp.processEvents()
+        dialog.update_line_overlays()
+        linear = dialog.lbl_line_info.text()
+        x0, x1 = dialog.plot_widget.getViewBox().viewRange()[0]
+        expected = [wl for wl, _ in dialog.loaded_lines if x0 <= wl <= x1]
+        assert expected, "no line in the K-band view to check"
+
+        dialog.chk_log_x.setChecked(True)
+        qapp.processEvents()
+        dialog.update_line_overlays()
+
+        assert dialog.lbl_line_info.text() == linear
+        placed = [line.value() for line, _ in dialog.line_items]
+        assert placed == pytest.approx(np.log10(expected).tolist())
+        assert [text.pos().x() for _, text in dialog.line_items] == pytest.approx(placed)
+
+        vb = dialog.plot_widget.getViewBox()
+        (lx0, lx1), (y0, y1) = vb.viewRange()
+        mid = (lx0 + lx1) / 2
+        dialog.mouse_moved((vb.mapViewToScene(QPointF(mid, (y0 + y1) / 2)),))
+        assert dialog.lbl_cursor.text().startswith(f"Wavelength: {10 ** mid:.4f} µm")
+        # Channel 200 is 2150 nm
+        assert dialog.top_axis.tickStrings([np.log10(2.15)], 1, 1) == ["200"]
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def _browse(dialog, monkeypatch, path, text):
+    """Write `text` to `path` and load it through the Browse button, its dialog stubbed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                        staticmethod(lambda *a, **k: (str(path), "")))
+    dialog.browse_custom_linelist()
+    return str(path)
+
+
+def test_two_line_lists_with_one_name_load_their_own_files(qapp, tmp_path, monkeypatch):
+    """R54: the combo entry carries its path, and that path is what is loaded."""
+    viewer = _k_band_viewer()
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        a = _browse(dialog, monkeypatch, tmp_path / "A" / "lines.csv", "2.1661,from_A\n")
+        b = _browse(dialog, monkeypatch, tmp_path / "B" / "lines.csv", "2.2000,from_B\n")
+        assert dialog.combo_linelist.findData(a) != dialog.combo_linelist.findData(b)
+
+        dialog.combo_linelist.setCurrentIndex(0)
+        dialog.combo_linelist.setCurrentIndex(dialog.combo_linelist.findData(a))
+        assert dialog.combo_linelist.currentData() == a
+        assert dialog.loaded_lines == [(2.1661, 'from_A')]
+
+        dialog.combo_linelist.setCurrentIndex(dialog.combo_linelist.findData(b))
+        assert dialog.loaded_lines == [(2.2, 'from_B')]
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_an_unreadable_line_list_says_so(qapp, tmp_path, monkeypatch):
+    """R54: a file with no line in it leaves no previous list's status on screen."""
+    viewer = _k_band_viewer()
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        _browse(dialog, monkeypatch, tmp_path / "good.csv", "2.1661,Brgamma\n")
+        assert dialog.lbl_line_info.text().startswith("1 line(s) visible")
+
+        _browse(dialog, monkeypatch, tmp_path / "notes.txt", "no wavelengths here\n# 2.1\n")
+        assert dialog.loaded_lines == []
+        assert not dialog.line_items
+        assert dialog.lbl_line_info.text() == "No lines could be read from notes.txt"
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_whitespace_separated_line_list_loads(qapp, tmp_path, monkeypatch):
+    """R54: a line with no comma is split on whitespace; the name keeps its spaces."""
+    viewer = _k_band_viewer()
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        _browse(dialog, monkeypatch, tmp_path / "ws_lines.txt",
+                "2.1661 Brgamma\n2.1218\tH2 1-0 S(1)\n2.1500, comma, kept\n")
+        assert dialog.loaded_lines == [(2.1661, 'Brgamma'), (2.1218, 'H2 1-0 S(1)'),
+                                       (2.15, 'comma')]
+        assert len(dialog.line_items) == 3
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_the_rectangle_spins_follow_a_radius_edit(qapp):
+    """R55: a radius edit moves the box, and the hidden rectangle spins with it, so the first
+    rectangle edit starts from the box on screen."""
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((3, 20, 30)), None)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.set_center((15.0, 10.0))
+        dialog.spin_radius.setValue(6.0)
+
+        def edges():
+            pos, size = dialog.roi.pos(), dialog.roi.size()
+            x0, y0 = int(pos.x()), int(pos.y())
+            return (x0, x0 + int(size.x()), y0, y0 + int(size.y()))
+
+        def spins():
+            return (dialog.spin_x0.value(), dialog.spin_x1.value(),
+                    dialog.spin_y0.value(), dialog.spin_y1.value())
+
+        assert spins() == edges()
+
+        dialog.combo_shape.setCurrentText("Rectangle")
+        assert spins() == edges()
+        width, height = dialog.roi.size().x(), dialog.roi.size().y()
+        dialog.spin_y1.setValue(dialog.spin_y1.value() + 1)
+        assert (dialog.roi.size().x(), dialog.roi.size().y()) == (width, height + 1)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_circle_off_the_image_masks_the_drawn_circle(qapp):
+    """R80: a Circle background box half off the low edge keeps exactly the drawn circle's
+    on-image pixels, not a smaller circle centred on the part of the box that is on it."""
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((2, 30, 40)), None)        # display (z, x=40, y=30)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.set_center((20.0, 15.0))
+        dialog.combo_bg_mode.setCurrentText("Region")
+        dialog.chk_enable_bg.setChecked(True)
+        dialog.combo_bg_calc.setCurrentText("Total")
+        dialog.bg_roi.setPos([-4.0, 10.0])
+        dialog.bg_roi.setSize([10.0, 10.0])
+
+        # The drawn circle: centre (1, 15) in ImageItem coordinates, radius 5
+        xx, yy = np.mgrid[:40, :30]
+        inside = ((xx + 0.5 - 1.0) ** 2 + (yy + 0.5 - 15.0) ** 2) <= 5.0 ** 2
+        shape = (2, 40, 30)
+        ones = np.ones(shape)
+        xs = np.broadcast_to(xx.astype(float), shape).copy()
+        ys = np.broadcast_to(yy.astype(float), shape).copy()
+        assert dialog.region_background_level(ones)[0] == inside.sum()
+        assert dialog.region_background_level(xs)[0] == xx[inside].sum()
+        assert dialog.region_background_level(ys)[0] == yy[inside].sum()
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def _unit_index(dialog, text):
+    index = dialog.combo_wave_unit.findText(text)
+    assert index >= 0, f"no {text!r} in the wavelength unit combo"
+    return index
+
+
+def test_choosing_a_wavelength_unit_enables_the_line_list(qapp, nifs_like_header):
+    """R82: a NIFS cube states no wavelength unit, so the line list waits for the user to
+    choose one. Chosen, it is shown with the header's numbers and labelled as theirs."""
+    import astropy.units as u
+    from pyql3.core.header_info import in_microns
+    cube = np.ones((1000, 12, 10), dtype=np.float32)
+    viewer = ImageViewer()
+    viewer.set_data(cube, nifs_like_header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.update_line_overlays()
+        assert dialog.combo_wave_unit.currentText() == "From header (Unknown)"
+        assert dialog.lbl_line_info.text() == ("Set the cube's wavelength unit under Plot Axes to show the line list "
+                                                "(the line list is in µm)")
+        assert not dialog.line_items
+
+        dialog.combo_wave_unit.setCurrentIndex(_unit_index(dialog, "Å"))
+
+        assert viewer.wavelength_unit_override == u.AA
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (Å, set by you)"
+        x0 = dialog.plot_data.getData()[0][0]
+        assert x0 == pytest.approx(19968.66)
+        assert in_microns(x0, u.AA) == pytest.approx(1.99687, abs=1e-5)
+        assert dialog.line_items, dialog.lbl_line_info.text()
+        # Brγ, 2.1661 µm, is drawn at 21661 Å
+        assert any(line.value() == pytest.approx(21661.0) for line, _ in dialog.line_items)
+
+        dialog.combo_wave_unit.setCurrentIndex(0)
+        assert viewer.wavelength_unit_override is None
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (Unknown)"
+        assert not dialog.line_items
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_the_wavelength_unit_choice_survives_a_reload_without_a_unit(qapp, nifs_like_header):
+    """Successive frames from one instrument keep the unit the user chose for the first."""
+    import astropy.units as u
+    cube = np.ones((1000, 12, 10), dtype=np.float32)
+    viewer = ImageViewer()
+    viewer.set_data(cube, nifs_like_header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.combo_wave_unit.setCurrentIndex(_unit_index(dialog, "Å"))
+
+        viewer.set_data(cube * 2, nifs_like_header)
+
+        assert viewer.wavelength_unit_override == u.AA
+        assert dialog.combo_wave_unit.currentText() == "Å"
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (Å, set by you)"
+        assert dialog.plot_data.getData()[0][0] == pytest.approx(19968.66)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_header_unit_replaces_an_unused_override(qapp, nifs_like_header):
+    """A unit chosen for a file that stated none gives way to the next file that states one.
+    A unit chosen over a stated unit corrects that header, and stays for files stating it."""
+    import astropy.units as u
+    cube = np.ones((1000, 12, 10), dtype=np.float32)
+    stated = nifs_like_header.copy()
+    stated['WAT3_001'] = 'wtype=linear axtype=wave units=angstroms'
+    viewer = ImageViewer()
+    viewer.set_data(cube, nifs_like_header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.combo_wave_unit.setCurrentIndex(_unit_index(dialog, "nm"))
+        assert viewer.wavelength_unit_override == u.nm
+
+        viewer.set_data(cube, stated)
+
+        assert viewer.wavelength_unit_override is None
+        assert viewer.wavelength_unit_label() == "µm"
+        assert dialog.combo_wave_unit.currentIndex() == 0
+        assert dialog.combo_wave_unit.currentText() == "From header (Å)"
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (µm)"
+
+        # Chosen over the stated Å, nm is kept by the next file that states Å
+        dialog.combo_wave_unit.setCurrentIndex(_unit_index(dialog, "nm"))
+        viewer.set_data(cube, stated)
+        assert viewer.wavelength_unit_override == u.nm
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (nm, set by you)"
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def _stated_wave_header(unit, crval, cdelt):
+    """A WAVE axis on FITS axis 1 with `CUNIT1 = unit`, or no CUNIT1 when `unit` is None."""
+    from astropy.io import fits
+    header = fits.Header({'NAXIS': 3, 'CTYPE1': 'WAVE', 'CTYPE2': 'DEC--TAN',
+                          'CTYPE3': 'RA---TAN', 'CUNIT2': 'deg', 'CUNIT3': 'deg',
+                          'CRVAL1': crval, 'CRVAL2': -29.0, 'CRVAL3': 266.4,
+                          'CDELT1': cdelt, 'CDELT2': 1e-5, 'CDELT3': -1e-5,
+                          'CRPIX1': 1.0, 'CRPIX2': 1.0, 'CRPIX3': 1.0})
+    if unit is not None:
+        header['CUNIT1'] = unit
+    return header
+
+
+def test_a_unit_chosen_over_a_stated_unit_gives_way_to_a_different_one(qapp):
+    """A unit chosen over the unit one file states corrects that file's header. It is kept for
+    later files that state the same unit or none, and cleared by a file that states another:
+    that header says what its own numbers are."""
+    import astropy.units as u
+    cube = np.ones((30, 20, 400))                      # numpy (RA, Dec, wave)
+    nm = _stated_wave_header('nm', 2100.0, 0.25)
+    viewer = ImageViewer()
+    viewer.set_data(cube, nm)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.combo_wave_unit.setCurrentIndex(_unit_index(dialog, "nm"))
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (nm, set by you)"
+
+        viewer.set_data(cube, nm)                       # the same stated unit: kept
+        assert viewer.wavelength_unit_override == u.nm
+        viewer.set_data(cube, _stated_wave_header(None, 2100.0, 0.25))   # none stated: kept
+        assert viewer.wavelength_unit_override == u.nm
+
+        viewer.set_data(cube, _stated_wave_header('um', 2.1, 0.00025))   # another: cleared
+        assert viewer.wavelength_unit_override is None
+        assert dialog.combo_wave_unit.currentText() == "From header (µm)"
+        assert dialog.plot_widget.getAxis('bottom').labelText == "Wavelength (µm)"
+        assert dialog.plot_data.getData()[0][0] == pytest.approx(2.1)
+        dialog.update_line_overlays()
+        assert dialog.line_items, dialog.lbl_line_info.text()
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_log_x_with_a_chosen_unit_places_the_lines(qapp, nifs_like_header):
+    """I1 (Phase 6 review): ticking Log X redrew the lines against the still-linear range and
+    raised OverflowError computing 10 ** 19968. The lines follow the range once it is in log."""
+    import astropy.units as u
+    viewer = ImageViewer()
+    viewer.set_data(np.ones((1000, 12, 10), dtype=np.float32), nifs_like_header)
+    dialog = DepthPlotDialog(image_viewer=viewer)
+    try:
+        dialog.show()
+        dialog.chk_enable_lines.setChecked(True)
+        dialog.combo_wave_unit.setCurrentIndex(_unit_index(dialog, "Å"))
+        qapp.processEvents()
+        linear = sorted(line.value() for line, _ in dialog.line_items)
+        assert linear
+
+        for log in (True, False):
+            dialog.chk_log_x.blockSignals(True)
+            dialog.chk_log_x.setChecked(log)
+            dialog.chk_log_x.blockSignals(False)
+            dialog.toggle_log_scale()                   # called directly, so errors propagate
+            qapp.processEvents()
+            placed = sorted(line.value() for line, _ in dialog.line_items)
+            assert placed, dialog.lbl_line_info.text()
+            in_angstrom = [10 ** x for x in placed] if log else placed
+            # Every line placed is a line of the list, in Å
+            lines_aa = [(wl * u.um).to_value(u.AA) for wl, _ in dialog.loaded_lines]
+            for x in in_angstrom:
+                assert min(abs(x - wl) for wl in lines_aa) < 1e-6 * x
+        assert placed == pytest.approx(linear)
+    finally:
+        dialog.close()
+        viewer.close()
+
+
+def test_a_rectangle_total_is_nan_where_no_pixel_is_finite(x_cube_dialog):
+    """R21, the rectangle path: a channel with no finite pixel in the box has no total. 0.0
+    would be drawn as a measurement."""
+    d = x_cube_dialog
+    cube = d.image_viewer.raw_data.copy()
+    cube[1] = np.nan
+    d.image_viewer.set_data(cube, None)
+    d.combo_calc.setCurrentText("Total")
+    d.roi.setPos([10, 2])
+    d.roi.setSize([10, 4])
+    y = d.plot_data.getData()[1]
+    assert np.isnan(y[1]), f"an all-NaN channel totalled {y[1]}"
+    assert np.isfinite(y[[0, 2]]).all()

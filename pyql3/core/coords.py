@@ -194,3 +194,20 @@ def box_index_slices(x0, y0, width, height, nx, ny):
     if x_hi <= x_lo or y_hi <= y_lo:
         return None
     return slice(x_lo, x_hi), slice(y_lo, y_hi)
+
+
+def circle_index_mask(x0, y0, width, height, x_slice, y_slice):
+    """Which pixels of `x_slice` x `y_slice` have their centres inside the circle a box draws.
+
+    The box is `[x0, x0 + width) x [y0, y0 + height)` in ImageItem coordinates, and its circle
+    is centred on the box with radius half the shorter side. The slices are the pixels to
+    test, normally the box's own from `box_index_slices`, already clipped to the image: the
+    circle is still the drawn one, so a box hanging off an edge keeps the drawn circle's
+    on-image pixels rather than a smaller circle fitted to the clipped box (`BUGS.md` R80).
+    Returns a boolean array of shape `(len(x_slice), len(y_slice))`.
+    """
+    cx, cy = x0 + width / 2.0, y0 + height / 2.0
+    r = min(width, height) / 2.0
+    dx = np.arange(x_slice.start, x_slice.stop) + 0.5 - cx
+    dy = np.arange(y_slice.start, y_slice.stop) + 0.5 - cy
+    return dx[:, None] ** 2 + dy[None, :] ** 2 <= r ** 2

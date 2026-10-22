@@ -84,10 +84,13 @@ subtracting that sum from each pixel would scale with however wide the annulus h
 be drawn, so it is disabled for an annulus.
 
 A NaN pixel contributes to neither $\sum_i w_i I_i$ nor $A$, so a masked or dead pixel inside
-the aperture reduces the area rather than poisoning the channel. A channel that is entirely
-NaN within the annulus yields a NaN background for that channel alone. Geometry that cannot
-be measured at all — an aperture off the edge of the cube, $r_{\text{in}} \ge r_{\text{out}}$
-— is reported beneath the controls instead of being drawn as a flat line.
+the aperture reduces the area rather than poisoning the channel. $A$ is therefore counted per
+channel, in Region mode as in Annulus mode. A channel in which no aperture pixel is finite is
+NaN for every combine method, Total included, and a channel that is entirely NaN within the
+annulus yields a NaN background for that channel alone. Geometry that cannot be measured at
+all — an aperture off the edge of the cube, $r_{\text{in}} \ge r_{\text{out}}$, a sky annulus
+that starts inside the aperture ($r_{\text{in}} < r_{\text{ap}}$) — is reported beneath the
+controls instead of being drawn as a flat line.
 
 Because the aperture is circular and the view transforms are flips and multiples of 90°, the
 extracted spectrum is invariant to how the image is currently oriented. Note that a circle in
@@ -98,11 +101,24 @@ The arithmetic lives in `pyql3/core/spectral_photometry.py`, which imports no Qt
 tested directly, including against the Aperture Photometry tool's independent implementation.
 
 #### C. Wavelength Primary X-Axis & Dual Axis Display
-When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths $\lambda$ ($\mu\text{m}$). The top X-axis (`PixelIndexAxis`) dynamically renders the corresponding 0-indexed channel slice numbers ($z \in [0, N-1]$). 
+When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths $\lambda$ ($\mu\text{m}$), or, with a unit chosen in the **Cube wavelength unit** box under **Plot Axes** (below), the header's numbers in that unit. The top X-axis (`PixelIndexAxis`) dynamically renders the corresponding 0-indexed channel slice numbers ($z \in [0, N-1]$). 
 
 This setup allows users to click the **Export...** button on the top control bar (or right-click the plot and select **Export...**) to save wavelength-resolved spectra ($xData = \lambda$, $yData = \text{Intensity}$) to CSV, vector graphics, or images.
 
 Line list wavelengths $\lambda$ are mapped directly onto the plot in wavelength units. Overlays positioned outside the dataset's visible spectral range are automatically filtered out.
+With **Log** X ticked, the lines, the cursor readout and the channel axis follow the logarithmic
+axis.
+
+A file that states no wavelength unit (a Gemini NIFS cube, for one) has its axis labelled
+**Wavelength (Unknown)** in the header's own numbers, and the line list, which is in µm, cannot be
+placed on it. The **Cube wavelength unit** box under **Plot Axes** states the unit of the cube's
+numbers (not of the line list, which is always in µm): **Å**, **nm** or **µm**. The header's numbers are then shown as they are, labelled with the chosen unit and "set by
+you" (for example **Wavelength (Å, set by you)**) on the plot, the cursor readout and the slice
+readout under the image, and the line list is drawn. **From header** returns to the file's own unit,
+which the entry names. The choice belongs to the window: it is kept when the next file is loaded,
+so successive frames from one instrument keep it. A later file whose header states a unit replaces
+it, unless the choice was made over that same stated unit (a correction of that instrument's
+header); a file that states a different unit is shown in its own unit.
 
 #### D. Spectral Line Overlay & Staggering
 - Overlaid spectral line labels feature 90° vertical rotation.
@@ -114,7 +130,12 @@ Line list wavelengths $\lambda$ are mapped directly onto the plot in wavelength 
 
 Line lists are listed under their own filenames, so a curve can always be traced back to the
 file it was drawn from. Hovering an entry shows the full path, which distinguishes copies of
-the same filename coming from different data directories.
+the same filename coming from different data directories; each entry loads its own file.
+
+A line list has one line per spectral line: the wavelength in µm, then the name, separated by a
+comma or, on a line with no comma, by whitespace (`0.8027028,Ti I` or `0.8027028 Ti I`).
+Lines starting with `#` or `;` are comments. A file in which no line can be read says so
+beside the list ("No lines could be read from <file>").
 
 #### E. Exporting Spectra & Figures (CSV, PNG, SVG)
 
@@ -123,7 +144,7 @@ Astronomers can export the extracted 1D spectra and plot graphics by clicking th
 1. **Exporting Wavelength & Intensity Data to CSV**:
    - In the Export dialog, select **CSV Exporter** under **Item to export**.
    - Select the target curve (`PlotItem`, `Source`, `Background`, or `Subtracted`).
-   - Click **Export** to save a `.csv` data table. When the cube's Z axis is spectral, the first column holds what the plot's bottom axis shows: wavelengths in $\mu\text{m}$ when the file states the axis's unit, or, when the axis reads "Wavelength (Unknown)" (a NIFS cube, for example), the header's own numbers, whose unit the file does not state. Otherwise, as for a velocity axis, it holds the slice index. The subsequent columns contain the corresponding flux/intensity values, in the unit the plot's left axis names (see [Data Units](#data-units)).
+   - Click **Export** to save a `.csv` data table. When the cube's Z axis is spectral, the first column holds what the plot's bottom axis shows: wavelengths in $\mu\text{m}$ when the file states the axis's unit, or, when the axis reads "Wavelength (Unknown)" (a NIFS cube, for example), the header's own numbers, whose unit the file does not state; or, with a unit chosen in the **Cube wavelength unit** box, the header's numbers in that unit. Otherwise, as for a velocity axis, it holds the slice index. The subsequent columns contain the corresponding flux/intensity values, in the unit the plot's left axis names (see [Data Units](#data-units)).
 
 2. **Exporting High-Resolution Images (PNG, JPG)**:
    - Select **Image Exporter** in the Export dialog.

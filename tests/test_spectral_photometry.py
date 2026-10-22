@@ -197,6 +197,23 @@ def test_a_channel_that_is_all_nan_in_the_annulus_yields_nan_not_an_exception():
     assert np.isnan(result.background[1])
     assert np.isfinite(result.background[[0, 2]]).all(), "one dead plane lost the others"
 
+    # R21: with no finite pixel in the aperture, Total has nothing to sum. 0.0 would be
+    # drawn as a measurement; NaN is a gap.
+    total = annulus_spectrum(cube, (20.0, 20.0), 5.0, 9.0, 13.0, combine="Total")
+    assert np.isnan(total.source[1]), f"an all-NaN channel totalled {total.source[1]}"
+    assert np.isnan(total.subtracted[1])
+    assert np.isfinite(total.source[[0, 2]]).all()
+    assert total.aperture_weight[1] == 0.0
+
+
+def test_an_annulus_inside_the_aperture_is_refused():
+    """R22: sky measured from inside the aperture subtracts source flux as sky."""
+    cube = _cube()
+    with pytest.raises(ApertureError, match="the sky annulus starts inside the aperture"):
+        annulus_spectrum(cube, (20.0, 20.0), r_ap=7.0, r_in=5.0, r_out=8.0)
+    # An annulus that starts exactly at the aperture's edge takes no aperture pixel.
+    annulus_spectrum(cube, (20.0, 20.0), r_ap=7.0, r_in=7.0, r_out=9.0)
+
 
 def test_an_aperture_at_the_edge_measures_the_part_that_overlaps():
     cube = _cube(background=2.0)

@@ -265,7 +265,15 @@ the axis reads "Wavelength (Unknown)" in the header's own numbers and the Depth 
 which is in µm, is not matched against it. A known unit is shown in µm
 (`header_info.in_microns`); a spectral unit that is not a wavelength, such as the m/s of a `VELO`
 axis, gets no wavelength axis and the line list says "Z-axis is not a wavelength". `wavelength_unit()`
-is the one place the viewer and the tools ask for the unit.
+gives the unit of the WCS's values, `displayed_wavelength()` is the one conversion to the numbers
+shown, and `wavelength_unit_label()` the one label. The user can state the unit in the Depth
+Plot's *Cube wavelength unit* combo, under Plot Axes rather than beside the line list because it is
+the cube's unit (`ImageViewer.wavelength_unit_override`, set through
+`set_wavelength_unit_override()`). The
+choice describes the numbers the header writes, so they are shown as they are and labelled "Å, set
+by you" (`displayed_wavelength()`); over a stated `CUNIT` it is scaled by
+`header_info.header_value_scale` to the SI values wcslib holds. It is kept across loads, and cleared
+by a load whose header states a unit other than the one it was chosen over.
 
 The view supports rotation and flips (N up, E left); when mapping a screen coordinate back to
 a numpy index or WCS position, apply the inverse transforms.

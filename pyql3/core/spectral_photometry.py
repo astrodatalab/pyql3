@@ -66,7 +66,11 @@ class SpectrumResult:
     source: np.ndarray
     background: np.ndarray | None
     subtracted: np.ndarray | None
+    #: The largest per-channel area, for the status line.
     aperture_area: float
+    #: The summed weight of the aperture's finite pixels, per channel. A background level is
+    #: multiplied by this, not by `aperture_area`, so a NaN pixel is not charged for.
+    aperture_weight: np.ndarray
     annulus_pixels: int
 
     def as_tuple(self):
@@ -110,7 +114,9 @@ def _validate(cube, r_ap):
 def aperture_spectrum(cube, center, r_ap, combine="Total"):
     """One value per channel from a circular aperture. No background subtraction.
 
-    `cube` is `(z, x, y)`; `center` is `(x, y)` in the same pixel coordinates.
+    `cube` is `(z, x, y)`; `center` is `(x, y)` in the same pixel coordinates. Returns
+    `(values, weight)`, where `weight` is the summed weight of the finite aperture pixels in
+    each channel. A channel with no finite pixel is NaN, whatever the combine method.
     """
     _validate(cube, r_ap)
     _require(combine in COMBINE_METHODS,
@@ -133,7 +139,7 @@ def aperture_spectrum(cube, center, r_ap, combine="Total"):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN channel -> NaN
             values = np.nanmedian(sub[:, inside], axis=1)
-        return values, float(inside.sum())
+        return values, np.isfinite(sub[:, inside]).sum(axis=1).astype(float)
 
     finite = np.isfinite(sub)
     # Weight only where there is data, so a NaN pixel neither contributes flux nor inflates
@@ -142,7 +148,8 @@ def aperture_spectrum(cube, center, r_ap, combine="Total"):
     total = np.einsum("zxy,xy->z", np.where(finite, sub, 0.0), weights)
 
     if combine == "Total":
-        return total, per_channel_weight
+        # A channel with nothing finite has no total; 0.0 would be drawn as a measurement.
+        return np.where(per_channel_weight > 0, total, np.nan), per_channel_weight
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(per_channel_weight > 0, total / per_channel_weight, np.nan), \
             per_channel_weight
@@ -184,8 +191,9 @@ def subtract_background(source, level, combine, aperture_area):
 
     Where the level came from -- a concentric annulus or a region drawn somewhere else --
     makes no difference to how it is applied, so both callers use this and cannot drift
-    apart. `aperture_area` is the summed pixel weight and matters only for `Total`, which
-    is a sum over pixels and so needs the level multiplied by how many there were.
+    apart. `aperture_area` is the summed weight of the finite pixels in each channel
+    (`SpectrumResult.aperture_weight`) and matters only for `Total`, which is a sum over
+    pixels and so needs the level multiplied by how many there were in that channel.
     """
     if combine == "Total":
         return source - level * aperture_area
@@ -199,12 +207,18 @@ def annulus_spectrum(cube, center, r_ap, r_in=None, r_out=None,
     With `r_in`/`r_out` given, `background` and `subtracted` are filled in; without them
     both are `None` and only the aperture is measured. `center` is `(x, y)` and the cube is
     `(z, x, y)`, both in display pixel coordinates -- see the module docstring.
+
+    An annulus that starts inside the aperture is refused: it would measure source flux as
+    sky and subtract it, and the result would look like an ordinary spectrum.
     """
+    if r_in is not None and r_out is not None:
+        _require(r_in >= r_ap, "the sky annulus starts inside the aperture")
     source, area = aperture_spectrum(cube, center, r_ap, combine=combine)
+    scalar_area = float(np.nanmax(area))
 
     if r_in is None or r_out is None:
         return SpectrumResult(source=source, background=None, subtracted=None,
-                              aperture_area=float(np.nanmax(area)) if np.ndim(area) else float(area),
+                              aperture_area=scalar_area, aperture_weight=area,
                               annulus_pixels=0)
 
     level, count = annulus_background(cube, center, r_in, r_out, estimator=estimator)
@@ -213,6 +227,6 @@ def annulus_spectrum(cube, center, r_ap, r_in=None, r_out=None,
     # that a NaN pixel is excluded from both terms consistently.
     subtracted = subtract_background(source, level, combine, area)
 
-    scalar_area = float(np.nanmax(area)) if np.ndim(area) else float(area)
     return SpectrumResult(source=source, background=level, subtracted=subtracted,
-                          aperture_area=scalar_area, annulus_pixels=count)
+                          aperture_area=scalar_area, aperture_weight=area,
+                          annulus_pixels=count)

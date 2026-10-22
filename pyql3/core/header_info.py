@@ -345,6 +345,46 @@ def in_microns(value, unit):
         return None
 
 
+def stated_unit(header, axis):
+    """The unit 0-based `axis` is written in, as the header writes it, or None.
+
+    `CUNIT<n>`, else `units=` in `WAT<n>_001`. Unlike `spectral_unit`, this is the unit before
+    wcslib rescales a spectral axis to SI: `CUNIT3 = 'nm'` is nm here and m there.
+    """
+    if axis is None or header is None:
+        return None
+    stated = _parse_unit(str(header.get(f'CUNIT{axis + 1}', "")))
+    return stated if stated is not None else _parse_unit(_wat_value(header, axis, 'units'))
+
+
+def header_value_scale(wcs, header, axis):
+    """The factor that turns a WCS value on 0-based `axis` into the number the header writes.
+
+    wcslib rescales a spectral axis to SI, so `CUNIT3 = 'nm'` is held in metres and the factor
+    is 1e9. It is 1.0 when the WCS holds the axis in the unit the header states, and when the
+    header states none.
+    """
+    stated = stated_unit(header, axis)
+    if stated is None or wcs is None or not 0 <= axis < wcs.naxis:
+        return 1.0
+    held = _parse_unit(str(wcs.wcs.cunit[axis]))
+    if held is None:
+        return 1.0
+    try:
+        return float(held.to(stated))
+    except u.UnitConversionError:
+        return 1.0
+
+
+def unit_name(unit):
+    """`unit` as a label writes it: "Å" and "µm" rather than astropy's "Angstrom" and "um"."""
+    names = {u.AA: "Å", u.um: "µm"}
+    for known, name in names.items():
+        if unit == known:
+            return name
+    return unit.to_string()
+
+
 def _is_osiris(header):
     if header is None:
         return False

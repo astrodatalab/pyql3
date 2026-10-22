@@ -5,9 +5,10 @@ import pytest
 from astropy.io import fits
 
 from pyql3.core.header_info import (DataUnit, build_wcs, data_keywords, data_unit, default_axes,
-                                    has_world_axes, in_microns, integration_seconds,
-                                    spectral_axis, spectral_unit, states_integration_time,
-                                    total_dn_multiplier, world_axis_label)
+                                    has_world_axes, header_value_scale, in_microns,
+                                    integration_seconds, spectral_axis, spectral_unit,
+                                    stated_unit, states_integration_time, total_dn_multiplier,
+                                    unit_name, world_axis_label)
 
 
 def test_truitime_wins_over_millisecond_itime():
@@ -265,6 +266,29 @@ def test_a_unit_wcslib_fills_in_is_not_a_stated_unit():
     unit = spectral_unit(wcs, header, 2)
     assert in_microns(wcs.wcs_pix2world([[0, 0, 0], [0, 0, 4]], 0)[:, 2], unit) == \
         pytest.approx([2.0, 2.001])
+
+
+def test_the_header_numbers_behind_a_rescaled_spectral_axis(nifs_like_header):
+    """A wavelength unit the user chooses describes the numbers the header writes. wcslib holds
+    `CUNIT3 = 'nm'` in metres, so those numbers are the WCS's values times 1e9."""
+    header = _axes_header('RA---TAN', 'DEC--TAN', 'WAVE')
+    header['CUNIT3'] = 'nm'
+    wcs = _wcs_of(header)
+    assert stated_unit(header, 2) == u.nm
+    assert spectral_unit(wcs, header, 2) == u.m
+    assert header_value_scale(wcs, header, 2) == pytest.approx(1e9)
+
+    # IRAF writes the unit in WAT, and the WCS holds the numbers as written
+    nifs_like_header['WAT3_001'] = 'wtype=linear axtype=wave units=angstroms'
+    wcs = _wcs_of(nifs_like_header)
+    assert stated_unit(nifs_like_header, 2) == u.AA
+    assert header_value_scale(wcs, nifs_like_header, 2) == 1.0
+
+    # Nothing stated: nothing to scale
+    del header['CUNIT3']
+    assert stated_unit(header, 2) is None
+    assert header_value_scale(_wcs_of(header), header, 2) == 1.0
+    assert [unit_name(unit) for unit in (u.AA, u.nm, u.um)] == ["Å", "nm", "µm"]
 
 
 # --- keywords borrowed from another header (R25) --------------------------------------

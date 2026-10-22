@@ -10,8 +10,9 @@ import astropy.units as u
 import warnings
 from pyql3.core import coords
 from pyql3.core.header_info import (UNKNOWN_UNIT, build_wcs, data_keywords, data_unit,
-                                    default_axes, has_world_axes, in_microns, spectral_axis,
-                                    spectral_unit, total_dn_multiplier, world_axis_label)
+                                    default_axes, has_world_axes, header_value_scale,
+                                    in_microns, spectral_axis, spectral_unit, stated_unit,
+                                    total_dn_multiplier, unit_name, world_axis_label)
 
 try:
     # Imported for its side effect: this registers the Crameri colormaps with
@@ -168,8 +169,17 @@ class ImageViewer(QWidget):
         self._original_tickStrings = self.top_axis.tickStrings
         self.top_axis.tickStrings = self._custom_tickStrings
         self.wcs_z_idx = None
-        self._wcs_z_unit = None
         self._wcs_problem = ""
+        #: The wavelength unit the user chose for the spectral axis (the Depth Plot's
+        #: Wavelength unit), or None to take the header's. See set_wavelength_unit_override.
+        self.wavelength_unit_override = None
+        # The unit the header stated when the user made that choice, None if it stated none
+        self._override_over_unit = None
+        # The file's spectral axis, set by set_data through _set_spectral_axis
+        self._spectral_index = None
+        self._spectral_header_unit = None
+        self._spectral_stated_unit = None
+        self._spectral_scale = 1.0
         
         self.imv.timeLine.setPen(pg.mkPen('y', width=3))
         self.imv.timeLine.setHoverPen(pg.mkPen('y', width=5))
@@ -259,20 +269,141 @@ class ImageViewer(QWidget):
         self.region_layer = RegionLayer(self)
 
     def wavelength_unit(self):
-        """The unit of the spectral Z axis as the file states it, or None when it states none.
+        """The unit of the WCS's values on the spectral Z axis, or None when it is Unknown.
 
-        None means "Unknown" and is never replaced by a guess: the axis is labelled
-        "Wavelength (Unknown)", shows the header's own numbers, and the line list is not
-        matched against it. This is the one place the viewer and the tools ask for the unit.
+        The unit the user chose (`wavelength_unit_override`) when there is one, else the unit
+        the file states. None means "Unknown" and is never replaced by a guess: the axis is
+        labelled "Wavelength (Unknown)", shows the header's own numbers, and the line list is
+        not matched against it. This is the one place the viewer and the tools ask for the unit;
+        `wavelength_unit_label()` is the one place they ask how to label it.
         """
         if getattr(self, 'wcs_z_idx', None) is None:
             return None
-        return self._wcs_z_unit
+        return self._spectral_values_unit()
+
+    def _spectral_values_unit(self):
+        """`wavelength_unit()` for the file's spectral axis, wherever it is displayed.
+
+        A chosen unit describes the numbers the header writes. wcslib holds a stated `CUNIT`
+        in SI (`nm` as `m`), so the chosen unit is scaled by `header_value_scale` to describe
+        the WCS's values instead.
+        """
+        override = self.wavelength_unit_override
+        if override is None:
+            return self._spectral_header_unit
+        if self._spectral_scale == 1.0:
+            return override
+        return u.CompositeUnit(self._spectral_scale, [override], [1])
+
+    def _wavelength_display(self):
+        """`(unit, chosen)`: the unit wavelengths are shown in, and whether the user chose it.
+
+        The one decision behind `wavelength_display_unit` and `wavelength_unit_label`. The unit
+        the user chose, in which the header's own numbers are shown; else µm when the header
+        states a wavelength, frequency or energy unit; else None, when the header's numbers are
+        shown as they are: Unknown, or a spectral axis that is not a wavelength (a velocity).
+        """
+        if self.wavelength_unit_override is not None:
+            return self.wavelength_unit_override, True
+        if in_microns(1.0, self._spectral_header_unit) is not None:
+            return u.um, False
+        return None, False
+
+    def wavelength_display_unit(self):
+        """The unit wavelengths are shown in, or None when the header's own numbers are shown
+        (`_wavelength_display`)."""
+        return self._wavelength_display()[0]
+
+    def wavelength_unit_label(self):
+        """The label for the numbers `displayed_wavelength` gives: "µm" for a unit the header
+        states, "Å, set by you" for a unit the user chose, "Unknown" for neither."""
+        unit, chosen = self._wavelength_display()
+        if unit is None:
+            header_unit = self._spectral_header_unit
+            return UNKNOWN_UNIT if header_unit is None else unit_name(header_unit)
+        return f"{unit_name(unit)}, set by you" if chosen else unit_name(unit)
+
+    def _shows_stated_microns(self):
+        """True when wavelengths are shown in µm because the header states their unit, and are
+        written "2.2005 µm"; otherwise the label goes in parentheses, "(Å, set by you): 19968.7"."""
+        unit, chosen = self._wavelength_display()
+        return unit is not None and not chosen
+
+    def header_wavelength_unit(self):
+        """The spectral axis's unit as the header writes it (`stated_unit`), or None."""
+        return self._spectral_stated_unit
+
+    def displayed_wavelength(self, values):
+        """WCS values on the spectral axis as the numbers shown, in `wavelength_display_unit()`.
+
+        The values unchanged when the unit is Unknown, and None when they are not wavelengths.
+        Accepts a number or an array.
+        """
+        unit = self._spectral_values_unit()
+        if unit is None:
+            return values
+        target = self.wavelength_display_unit()
+        if target is None:
+            return None
+        try:
+            return (np.asarray(values, dtype=float) * unit).to_value(
+                target, equivalencies=u.spectral())
+        except u.UnitConversionError:
+            return None
+
+    def set_wavelength_unit_override(self, unit):
+        """Read the spectral axis's numbers in `unit` (an astropy unit), or as the header
+        states them when `unit` is None.
+
+        The choice is the window's, and is kept across loads so that successive frames from one
+        instrument keep it. A load whose header states a unit clears it, unless the choice was
+        made over that same stated unit (`_set_spectral_axis`). Redraws the slice label and the
+        timeline's wavelength axis; the Depth Plot, which sets it, redraws itself.
+        """
+        self.wavelength_unit_override = unit
+        self._override_over_unit = self._spectral_stated_unit if unit is not None else None
+        self._sync_timeline_wavelength_axis()
+        if self.transposed_data is not None:
+            self.update_slice_info()
+
+    def _set_spectral_axis(self, wcs, header):
+        """Record the file's spectral axis and the unit it states, for a new load.
+
+        A wavelength unit the user chose is kept for a file that states no unit, and for one
+        that states the unit the choice was made over: it corrects that header. A file that
+        states any other unit clears the choice, and its own unit is used.
+        """
+        index = spectral_axis(wcs, header) if wcs is not None else None
+        self._spectral_index = index
+        self._spectral_header_unit = spectral_unit(wcs, header, index)
+        self._spectral_stated_unit = stated_unit(header, index)
+        self._spectral_scale = header_value_scale(wcs, header, index)
+        stated = self._spectral_stated_unit
+        if stated is not None and (self._override_over_unit is None
+                                   or stated != self._override_over_unit):
+            self.wavelength_unit_override = None
+            self._override_over_unit = None
+
+    def _sync_timeline_wavelength_axis(self):
+        """Show the timeline's wavelength axis for a spectral Z axis, and redraw its ticks.
+
+        A spectral axis whose unit is not a wavelength (a velocity) has none to show; its
+        ticks would repeat the channels.
+        """
+        unit = self.wavelength_unit()
+        if self.wcs_z_idx is not None and (unit is None or in_microns(1.0, unit) is not None):
+            self.imv.ui.roiPlot.showAxis('top')
+        else:
+            self.imv.ui.roiPlot.hideAxis('top')
+        # The tick strings depend on the unit; the axis caches what it drew
+        self.top_axis.picture = None
+        self.top_axis.update()
 
     def get_wavelength_for_slice(self, z):
-        """The wavelength of channel `z`: in µm when `wavelength_unit()` is known, in the
-        header's own numbers when it is Unknown, and None when Z is not a spectral axis or its
-        unit is not a wavelength, frequency or energy."""
+        """The wavelength of channel `z` as shown (`displayed_wavelength`): in µm for a unit
+        the header states, in the header's own numbers for a unit the user chose or an Unknown
+        one, and None when Z is not a spectral axis or its unit is not a wavelength, frequency
+        or energy."""
         if getattr(self, 'wcs', None) is None or getattr(self, 'wcs_z_idx', None) is None:
             return None
         pixel = [0] * self.wcs.naxis
@@ -281,17 +412,18 @@ class ImageViewer(QWidget):
             value = self.wcs.wcs_pix2world([pixel], 0)[0][self.wcs_z_idx]
         except Exception:
             return None
-        unit = self.wavelength_unit()
-        return value if unit is None else in_microns(value, unit)
+        return self.displayed_wavelength(value)
 
     def wavelength_text(self, first, last=None):
         """`first` (or the range `first`-`last`) from `get_wavelength_for_slice`, labelled for
-        the slice readout: "Wavelength: 2.2005 µm", or "Wavelength (Unknown): 19968.7"."""
-        known = self.wavelength_unit() is not None
-        fmt = "{:.4f}" if known else "{:.6g}"
+        the slice readout: "Wavelength: 2.2005 µm", "Wavelength (Unknown): 19968.7" or
+        "Wavelength (Å, set by you): 19968.7"."""
+        label = self.wavelength_unit_label()
+        in_um = self._shows_stated_microns()
+        fmt = "{:.4f}" if in_um else "{:.6g}"
         values = fmt.format(first) if last is None else f"{fmt.format(first)}-{fmt.format(last)}"
         name = "Wavelength" if last is None else "Wavelengths"
-        return f"{name}: {values} µm" if known else f"{name} (Unknown): {values}"
+        return f"{name}: {values} µm" if in_um else f"{name} ({label}): {values}"
 
     def clamp_z_range(self, zmin, zmax, write_back=False):
         """Clamp a channel range to the cube and return it in ascending order.
@@ -794,7 +926,7 @@ class ImageViewer(QWidget):
         if self.wcs is None or self.wcs_z_idx is None:
             return self._original_tickStrings(values, scale, spacing)
             
-        known = self.wavelength_unit() is not None
+        known = self._shows_stated_microns()
         strings = []
         for val in values:
             if val < 0:
@@ -1428,7 +1560,7 @@ class ImageViewer(QWidget):
         # Only apply_axis_mapping sets these, and only for a cube: a 2-D image, or no data,
         # must not keep a previous cube's spectral axis (R52)
         self.wcs_z_idx = None
-        self._wcs_z_unit = None
+        self._set_spectral_axis(wcs, wcs_header)
         self.lbl_wcs.setText(self.wcs_label_when_unavailable())
         if data is None:
             self.imv.clear()
@@ -1541,17 +1673,10 @@ class ImageViewer(QWidget):
         header = getattr(self, 'wcs_header', None)
         if self.wcs is not None and spectral_axis(self.wcs, header) == z_index:
             self.wcs_z_idx = z_index
-            self._wcs_z_unit = spectral_unit(self.wcs, header, z_index)
-            # The timeline's top axis shows wavelengths. A spectral axis whose unit is not a
-            # wavelength (a velocity) has none to show; its ticks would repeat the channels.
-            if self._wcs_z_unit is None or in_microns(1.0, self._wcs_z_unit) is not None:
-                self.imv.ui.roiPlot.showAxis('top')
-            else:
-                self.imv.ui.roiPlot.hideAxis('top')
         else:
             self.wcs_z_idx = None
-            self._wcs_z_unit = None
-            self.imv.ui.roiPlot.hideAxis('top')
+        # The timeline's top axis shows wavelengths
+        self._sync_timeline_wavelength_axis()
         
         previous = self.transposed_data
         previous_zs = previous.shape[0] if previous is not None and previous.ndim == 3 else None
@@ -2207,7 +2332,14 @@ class ImageViewer(QWidget):
                 parts.append(f"DEC: {coord.dec.to_string(unit=u.deg, sep='dms', precision=2)}")
             else:
                 name, unit = world_axis_label(self.wcs, getattr(self, 'wcs_header', None), ax_idx)
-                parts.append(f"{name}: {val:.5g} {unit}".rstrip())
+                shown = self.displayed_wavelength(val) if ax_idx == self._spectral_index else None
+                if shown is None:
+                    parts.append(f"{name}: {val:.5g} {unit}".rstrip())
+                elif self._shows_stated_microns():
+                    # The unit and numbers the slice label uses: µm, not the WCS's metres
+                    parts.append(f"{name}: {shown:.5g} µm")
+                else:
+                    parts.append(f"{name} ({self.wavelength_unit_label()}): {shown:.5g}")
         return f"WCS: {'  |  '.join(parts)}"
 
     def set_colormap(self, cmap_name=None, invert=None):
