@@ -332,6 +332,9 @@ image's own right-click menu.
 | Arrow | drag from tail to head |
 | Text | click where the label goes; the label is asked for afterwards |
 
+While a shape tool is armed, dragging on the image draws rather than pans. Press **Escape**, or click
+the pressed toolbar button again, to stop drawing without drawing anything.
+
 Right-clicking the image offers **New Region ➔ Circle / Box / Arrow / Text**, which places a
 **default-sized** region on the pixel under the cursor without any dragging — usually quicker, since
 the size is easy to change afterwards.
@@ -344,6 +347,10 @@ marker: the text itself is the handle, so click, drag or right-click the words.
 **Double-click a region** — or choose **Properties…** from its right-click menu, or from the Region
 List — to open an editor for everything it carries: position and size, angle, label, colour, line
 width, dashing, text size, tag, visibility, and a channel range.
+
+The editor can stay open while you work on the image. Dragging or resizing the region updates the
+position and size fields you have not typed in; **OK** and **Apply** write only the fields you
+changed, and **Cancel** undoes what the editor applied but not a drag made on the image.
 
 A **channel range** restricts a region to part of a cube, so a marker on an emission-line feature
 appears only across the channels where the feature is. When the plane on screen combines several
@@ -371,6 +378,8 @@ A region's `text` is drawn beside it. With a large catalogue that becomes a grea
 - only labels inside the visible area are drawn — zoom in and more appear;
 - labels are hidden while the view is panning and return once it settles;
 - **Region ➔ Show Region Labels** turns them off entirely, as the Catalog tool's *Show Names* does.
+  A **text** region is the region itself, not a label, so it stays on screen with labels off;
+  above 500 regions, where the set is drawn as one overlay, it stays as its **+** marker.
 
 ### Saving, loading and ds9
 

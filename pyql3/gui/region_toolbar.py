@@ -114,7 +114,7 @@ class RegionToolBar(QToolBar):
     Owns no state: every button calls the window, which is what the Region menu does too, so the
     two cannot drift apart. The shape buttons are exclusive and follow the layer's drawing mode, so
     the pressed button says what a drag will draw — and un-presses itself when a tool dialog takes
-    the drag away.
+    the drag away. Clicking the pressed button again leaves drawing mode.
     """
 
     def __init__(self, window):
@@ -129,7 +129,9 @@ class RegionToolBar(QToolBar):
         colour = self.palette().windowText().color()
 
         self.shape_group = QActionGroup(self)
-        self.shape_group.setExclusive(True)
+        # At most one pressed, and the pressed one can be released: clicking it again puts the
+        # tool away (`BUGS.md` R46).
+        self.shape_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
         self.shape_actions = {}
         for kind, tooltip in SHAPES:
             action = self.addAction(region_icon(kind, colour), kind.title())
@@ -154,7 +156,12 @@ class RegionToolBar(QToolBar):
             layer.draw_mode_changed.connect(self.follow_draw_mode)
 
     def _start(self, kind):
-        self.window.start_drawing_region(kind)
+        layer = getattr(self.window.image_viewer, 'region_layer', None)
+        if layer is not None and layer.draw_kind == kind:
+            # The pressed button clicked again: leave drawing mode and give pan and zoom back.
+            layer.cancel_draw()
+        else:
+            self.window.start_drawing_region(kind)
         # The window may have refused — nothing loaded, or a cancelled label prompt — so the button
         # is set from what actually happened rather than from the click.
         self.follow_draw_mode(None)

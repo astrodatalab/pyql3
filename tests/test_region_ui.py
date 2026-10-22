@@ -123,6 +123,30 @@ def test_an_empty_label_places_nothing(window, monkeypatch):
     assert len(window.region_layer) == 0
 
 
+def test_escape_cancels_drawing(window, qapp):
+    """Escape leaves drawing mode and gives pan and zoom back (`BUGS.md` R46)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = window.image_viewer.imv.getView()
+    window.show()
+    window.activateWindow()
+    qapp.processEvents()
+    # Off unless drawing, so Escape is not taken from anything else in the window.
+    assert not window._cancel_draw_shortcut.isEnabled()
+    window.start_drawing_region("circle")
+    assert window.region_layer.draw_kind == "circle"
+    assert view.state["mouseEnabled"] == [False, False]
+    assert window._cancel_draw_shortcut.isEnabled()
+
+    QTest.keyClick(window.image_viewer.imv, Qt.Key.Key_Escape)
+    qapp.processEvents()
+
+    assert window.region_layer.draw_kind is None
+    assert view.state["mouseEnabled"] == [True, True]
+    assert not window._cancel_draw_shortcut.isEnabled()
+
+
 def test_drawing_without_data_explains_itself(qapp, monkeypatch):
     shown = []
     monkeypatch.setattr(QMessageBox, "information",
@@ -636,9 +660,68 @@ def test_deleting_from_the_table_removes_the_region(dialog, window):
     assert len(window.region_layer) == 3
 
 
-def test_delete_all_from_the_dialog(dialog, window):
+def test_region_list_delete_all_asks_first(dialog, window, monkeypatch):
+    """The list's Delete All asks, as the menu entry and the toolbar do; there is no undo
+    (`BUGS.md` R76)."""
+    count = len(window.region_layer)
+    asked = []
+
+    def answer(reply):
+        return staticmethod(lambda *a, **k: (asked.append(a), reply)[1])
+
+    monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.StandardButton.No))
+    dialog.delete_all()
+    assert asked, "Delete All did not ask"
+    assert len(window.region_layer) == count
+
+    monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.StandardButton.Yes))
     dialog.delete_all()
     assert len(window.region_layer) == 0
+
+
+def test_a_region_list_with_no_window_still_asks_before_deleting_all(window, monkeypatch):
+    """Built without a parent window, the list asks the same question itself (`BUGS.md` R76)."""
+    layer = window.region_layer
+    layer.set_regions([Circle(x=5.0, y=5.0, radius=2.0), Circle(x=9.0, y=5.0, radius=2.0)])
+    dlg = RegionListDialog(None, window.image_viewer)
+    asked = []
+    try:
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda *a, **k: (asked.append(a), QMessageBox.StandardButton.No)[1]))
+        dlg.delete_all()
+        assert asked and "Delete all 2 regions?" in asked[-1]
+        assert len(layer) == 2
+
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda *a, **k: QMessageBox.StandardButton.Yes))
+        dlg.delete_all()
+        assert len(layer) == 0
+    finally:
+        dlg.close()
+
+
+def test_the_selection_follows_the_region_when_another_is_deleted(window):
+    """Deleting a region listed above the selected one, from the image, must not move the
+    selection onto the next region down (`BUGS.md` R34)."""
+    layer = window.region_layer
+    regions = [layer.add(Circle(x=5.0 + 5 * i, y=10.0, radius=2.0, text=name))
+               for i, name in enumerate("ABCDE")]
+    dlg = RegionListDialog(window, window.image_viewer)
+    try:
+        dlg.table.selectRow(2)
+        chosen = dlg.selected_regions()
+        assert len(chosen) == 1 and chosen[0] is regions[2]
+
+        layer.remove(regions[0])          # the image's right-click Delete on A
+
+        chosen = dlg.selected_regions()
+        assert len(chosen) == 1 and chosen[0] is regions[2], \
+            f"the selection moved to {[r.text for r in chosen]}"
+
+        layer.remove(regions[2])          # the selected region itself goes
+        assert dlg.selected_regions() == []
+    finally:
+        dlg.close()
 
 
 def test_zooming_to_a_region_centres_the_view(dialog, window):

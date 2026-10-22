@@ -4422,7 +4422,7 @@ columns.
 
 ## R33. The region properties dialog undoes a drag made while it is open
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/dialogs/region_properties.py`, `docs/tools.md`, covered by `tests/test_region_properties.py::test_a_drag_while_the_dialog_is_open_survives_ok`, `::test_a_drag_while_the_dialog_is_open_survives_cancel`, `::test_a_field_typed_in_the_dialog_is_kept_through_a_drag`, `::test_cancel_undoes_an_applied_size_after_a_drag`, `::test_cancel_keeps_a_colour_changed_elsewhere_while_open`
 - **Severity:** medium — a move or resize the user made is silently reverted by OK, Cancel or closing the dialog
 - **Files:** `pyql3/gui/dialogs/region_properties.py:44`, `:193-231`, `:237-242`, `:317-323`
 
@@ -4482,7 +4482,7 @@ dragged values and its colour is the new one.
 
 ## R34. The Region List tracks its selection by row index, so Delete can remove a region the user did not select
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/region_list.py`, covered by `tests/test_region_ui.py::test_the_selection_follows_the_region_when_another_is_deleted`
 - **Severity:** medium — the Delete button can remove a different region from the one the user chose, with no undo
 - **Files:** `pyql3/gui/tools/region_list.py:98-113`, `:173-179`, `:251-255`
 
@@ -4541,7 +4541,7 @@ originally selected object (checked with `is`).
 
 ## R35. Labels in the aggregate overlay never come back after a pan or zoom once none are built
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (`_on_view_range_changed`), covered by `tests/test_region_layer.py::test_overlay_labels_appear_after_panning_from_an_empty_area`, `::test_overlay_labels_return_after_zooming_in_below_the_ceiling`
 - **Severity:** medium — named sources in a large region file lose their labels, and the status bar's advice to zoom in does not work
 - **Files:** `pyql3/gui/viewers/region_layer.py:652-672`, `:578-594`
 - **Related:** M30 (catalog labels rebuilt on every pan). The policy shared through
@@ -5088,7 +5088,7 @@ When `start_polling` restarts the same directory, carry `_pending`, `_held_path`
 
 ## R44. A shape's caption stays where it was when the shape is dragged
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (`_item_edited`), covered by `tests/test_region_layer.py::test_a_caption_follows_its_dragged_shape`, `::test_a_dragged_caption_is_culled_again`
 - **Severity:** medium — every drag of a labelled circle, box or arrow leaves its text behind
 - **Files:** `pyql3/gui/viewers/region_layer.py:916-967`, `:745-770`
 - **Related:** M13. The arrow head was made to follow a dragged endpoint (`_item_edited` re-places
@@ -5225,7 +5225,7 @@ drawn after `apply_view_rotation(90)` and a settle.
 
 ## R46. Drawing mode cannot be cancelled, and pan and zoom stay disabled until a drag completes
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/region_toolbar.py` (`ExclusiveOptional` group, `_start` disarms the armed kind), `pyql3/gui/main_window.py` (Escape `QShortcut` on the viewer, enabled while drawing), `docs/tools.md`, covered by `tests/test_region_toolbar.py::test_clicking_the_pressed_shape_again_disarms_it`, `tests/test_region_ui.py::test_escape_cancels_drawing`
 - **Severity:** medium — a shape tool armed by mistake leaves the image stuck until the user draws a region and deletes it
 - **Files:** `pyql3/gui/viewers/region_layer.py:1030-1063`, `pyql3/gui/viewers/image_viewer.py:308-329`, `pyql3/gui/region_toolbar.py:131-140`
 
@@ -5496,7 +5496,7 @@ the snippet above and asserting that no `text_items` entry is visible after the 
 
 ## R51. With Show Region Labels off, new and edited regions still draw their labels, and text regions disappear
 
-- **Status:** open — **partly fixed in the Phase 4 review fix wave:** new and restyled regions now obey Show Region Labels (their captions stay hidden while labels are off, via `RegionLayer._show_one`). Still open: a text region, whose label is the region itself, vanishes with labels off — and since that change it vanishes as soon as it is drawn or restyled, not only on the next redraw; aggregate mode still keeps a "+" marker for it, so the two render modes disagree. Plan Task 33 finishes it.
+- **Status:** ✅ FIXED — `pyql3/gui/viewers/region_layer.py` (`update_channel_visibility`, `_show_one`, `_label_is_region`), `docs/tools.md`, covered by `tests/test_region_layer.py::test_new_and_restyled_regions_obey_the_labels_toggle`, `::test_a_text_region_stays_visible_with_labels_off`, `::test_text_regions_do_not_count_against_the_label_ceiling`. New and restyled regions were fixed in the Phase 4 review fix wave; a text region now stays visible with labels off in both render modes and is not counted against the label ceiling.
 - **Severity:** low — the toggle does not do what it says for new or edited regions, and text regions cannot be seen or picked up while it is off
 - **Files:** `pyql3/gui/viewers/region_layer.py:601-618`, `:866`, `:1017`
 
@@ -6534,7 +6534,7 @@ dialogs and the region layer.
 | R73 | `pyql3/services/cli_install.py:206-210`, `:238-239`, `:256-259` | ✅ FIXED — `pyql3/services/cli_install.py`, covered by `test_plan_refuses_a_foreign_launcher`, `test_a_foreign_launcher_is_reported_before_any_confirmation`. When a `quicklook3` not written by QuickLook 3 already exists, `plan()` records `existing='foreign'` without raising, despite its docstring. The confirmation then says "Create: <path>" and "To undo it: rm <path>", which would delete someone else's file. Only after the user clicks OK does `install()` refuse ("already exists and was not created by QuickLook 3"). | Raise `CliInstallError` from `plan()` for a foreign file (or fall through to the next candidate directory), so nothing is offered that will be refused. |
 | R74 | `pyql3/services/cli_install.py:61-76`, `:196-201` | ✅ FIXED — `pyql3/services/cli_install.py`, covered by `test_plan_refuses_a_translocated_bundle`. Reasoned and simulated, not reproduced on a real system. macOS App Translocation runs a quarantined, unmoved bundle from a read-only `/private/var/folders/.../AppTranslocation/<UUID>/d/QuickLook3.app`. That path is not under any `MOUNT_ROOTS` entry, so `on_temporary_volume` is False, `plan()` accepts it, and the launcher's `exec` line names a path that is gone after reboot. | Also refuse when the resolved bundle path contains `/AppTranslocation/`, with the same "copy it to /Applications first" message. |
 | R75 | `pyql3/gui/tools/plot_catalog.py:986-987`, `:1102` | ✅ FIXED — `plot_catalog.py` (`_plot_markers` re-applies the message while the guard is suppressing), covered by `test_the_label_ceiling_message_survives_a_style_change`, `test_the_ceiling_message_does_not_cover_a_catalog_with_nothing_on_the_image`. The label-ceiling message ("10 labels in view — more than the 3 that can be drawn at once", with the limit lowered to 3) is replaced by the plain status line on the next `update_plot`, such as a marker-size change, while the labels remain refused; the user is left with a ticked *Labels* box, no labels and no explanation. `LabelDensityGuard.allows` reports only changes of verdict, so the message is not written again. | After `update_plot` writes its status, re-apply the ceiling message when `self._label_guard.suppressing` is still true. |
-| R76 | `pyql3/gui/tools/region_list.py:257-259` | The Region List's **Delete All** button calls `layer.clear()` straight away, with no confirmation. **Region ➔ Delete All Regions** and the toolbar's clear button both ask first (`pyql3/gui/main_window.py:1199-1210`), and there is no undo. | Have `delete_all()` call the window's `delete_all_regions()` (as the toolbar does), or ask the same `QMessageBox.question` itself. |
+| R76 | `pyql3/gui/tools/region_list.py:257-259` | ✅ FIXED — `pyql3/gui/tools/region_list.py`, covered by `tests/test_region_ui.py::test_region_list_delete_all_asks_first`, `::test_a_region_list_with_no_window_still_asks_before_deleting_all`. The Region List's **Delete All** button calls `layer.clear()` straight away, with no confirmation. **Region ➔ Delete All Regions** and the toolbar's clear button both ask first (`pyql3/gui/main_window.py:1199-1210`), and there is no undo. | Have `delete_all()` call the window's `delete_all_regions()` (as the toolbar does), or ask the same `QMessageBox.question` itself. |
 | R77 | `pyql3/core/regions_io.py:248-271`, `pyql3/gui/main_window.py:1035` | `load_regions` returns the file's `style:` block, but the window keeps only the regions and `save_regions` takes no style. A file with `style: {color: red, line_width: 1}` is re-saved with the default block (green, 2), and `color: red` and `line_width: 1` are written on every region, so editing the block no longer restyles them. | Keep the loaded style with the layer and pass it through `save_regions` as `RegionList.style`. |
 | R78 | `pyql3/core/regions_model.py:458-472` | `looks_like_ds9` needs ds9's header line, or a line that is exactly one of five frame words. Headerless files that ds9 accepts — `fk5;circle(...)` lines, a `j2000`/`fk4`/`b1950`/`ecliptic` frame line, or bare `circle(...)` lines — go to the YAML reader and fail with "should be a mapping with 'format' and 'regions' keys, found str". | Recognise any `_FRAME_RE` frame word, including inside `;`-separated statements, and a shape call in text that does not parse as a YAML mapping. |
 | R79 | `pyql3/core/ds9_regions.py:426-428`, `:332`, `:355` | A label containing a newline (accepted from hand-edited YAML) is written verbatim into `text={...}` and splits the line in two. ds9 rejects a file with a syntax error whole, and our own reader returns the three labels truncated to "line", "tilted" and "", with three warnings. Shape labels written by `regions` break the same way. | Replace newlines and carriage returns with spaces in `_escape_braces` and in `_visual_and_meta` before the library sees the label, and note it in the Report. |
@@ -6581,9 +6581,9 @@ Medium
 - [x] R30 SExtractor `X_IMAGE`/`Y_IMAGE` plotted one pixel off — plan Task 28
 - [x] R31 RA/Dec catalogs take 9.5 s per refresh at 66k rows — plan Task 13
 - [x] R32 VizieR coordinate names not recognised — plan Task 29
-- [ ] R33 Region properties dialog undoes a drag made while it is open — plan Task 31
-- [ ] R34 Region List Delete can remove the wrong region — plan Task 32
-- [ ] R35 Aggregate-mode labels never come back after a pan — plan Task 33
+- [x] R33 Region properties dialog undoes a drag made while it is open — plan Task 31
+- [x] R34 Region List Delete can remove the wrong region — plan Task 32
+- [x] R35 Aggregate-mode labels never come back after a pan — plan Task 33
 - [x] R36 Channel-range visibility ignores Collapse Region mode — plan Task 15
 - [ ] R37 Non-square pixels: region angles wrong and not round-trip stable — plan Task 36
 - [ ] R38 Swapped display axes: box and arrow angles not converted — plan Task 36
@@ -6592,16 +6592,16 @@ Medium
 - [ ] R41 A stale sky anchor is kept and undoes later moves — plan Task 37
 - [ ] R42 Header Editor writes rows back by keyword name — plan Task 26
 - [x] R43 Restarting a watch loses seen-but-unannounced files — plan Task 19
-- [ ] R44 A shape's caption stays behind when the shape is dragged — plan Task 33
+- [x] R44 A shape's caption stays behind when the shape is dragged — plan Task 33
 - [x] R45 View rotation ignored by Zoom To and label culling — plan Task 15
-- [ ] R46 Region drawing mode cannot be cancelled — plan Task 34
+- [x] R46 Region drawing mode cannot be cancelled — plan Task 34
 - [ ] R47 ds9 vector frame tracking misses common forms — plan Task 38
 
 Low
 - [ ] R48 ds9 conversion drops information with an empty Report — plan Task 39
 - [x] R49 File → Exit closes only the current window — plan Task 40
 - [x] R50 Catalog labels return with Show All off — plan Task 13
-- [ ] R51 Show Region Labels off: new labels shown, text regions vanish — plan Task 33
+- [x] R51 Show Region Labels off: new labels shown, text regions vanish — plan Task 33
 - [x] R52 2-D image with a 3-axis WCS: readout and compass wrong — plan Task 20
 - [ ] R53 Depth Plot Log X removes the line list and breaks the readout — plan Task 23
 - [ ] R54 Line lists keyed by file name; empty parse leaves old status — plan Task 23
@@ -6639,7 +6639,7 @@ Minor items (table)
 - [x] R73 `cli_install` confirms a path it then refuses — plan Task 42
 - [x] R74 App Translocation path baked into the launcher (reasoned, not reproduced) — plan Task 42
 - [x] R75 Catalog label-ceiling message overwritten — plan Task 30
-- [ ] R76 Region List Delete All has no confirmation — plan Task 32
+- [x] R76 Region List Delete All has no confirmation — plan Task 32
 - [ ] R77 Region `style:` block not preserved on re-save — plan Task 37
 - [ ] R78 Headerless ds9 files not detected — plan Task 38
 - [ ] R79 A newline in a label breaks the `.reg` line — plan Task 38

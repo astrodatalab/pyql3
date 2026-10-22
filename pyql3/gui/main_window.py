@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QMenu, QFileDialog, QInputDialog,
                                QMessageBox, QApplication)
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QShortcut
 from pyql3.core.fits_reader import FitsReader, NoImageData
 from pyql3.core.header_info import UNKNOWN_UNIT
 from pyql3.gui.dialogs.header_editor import HeaderEditorDialog
@@ -102,6 +102,13 @@ class MainWindow(QMainWindow):
         self.image_viewer.region_layer.region_menu_requested.connect(self.show_region_menu)
         self.image_viewer.region_layer.render_mode_changed.connect(self.on_region_render_mode)
         self.image_viewer.region_layer.labels_suppressed.connect(self.on_region_labels_suppressed)
+        # Escape leaves region drawing mode (`BUGS.md` R46). Enabled only while a shape tool is
+        # armed, so the rest of the time Escape still reaches whatever else in the window wants it.
+        self._cancel_draw_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self.image_viewer)
+        self._cancel_draw_shortcut.setEnabled(False)
+        self._cancel_draw_shortcut.activated.connect(self.image_viewer.region_layer.cancel_draw)
+        self.image_viewer.region_layer.draw_mode_changed.connect(
+            self._cancel_draw_shortcut.setEnabled)
         #: Open property dialogs, keyed by id() of the region, so double-clicking the same
         #: region twice raises the dialog it already has rather than stacking another.
         self._region_property_dialogs = {}

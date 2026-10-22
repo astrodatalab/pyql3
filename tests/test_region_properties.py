@@ -211,6 +211,104 @@ def test_ok_applies_and_closes(window):
     assert not dialog.isVisible()
 
 
+def _drag_on_the_image(window, region):
+    """Move and resize a circle through its ROI, as a drag on the image does (`BUGS.md` R33)."""
+    roi = window.region_layer.item_for(region)
+    roi.translate([8.0, 6.0])
+    roi.setSize([10.0, 10.0], center=[0.5, 0.5])
+    return region.x, region.y, region.radius
+
+
+def test_a_drag_while_the_dialog_is_open_survives_ok(window):
+    """The dialog is not modal, so the region can be dragged while it is open. A later OK must
+    write only what was changed in the dialog, not the geometry it showed when it opened."""
+    region = Circle(x=10.0, y=10.0, radius=2.0, color="green")
+    dialog = editor_for(window, region)
+    try:
+        dragged = _drag_on_the_image(window, region)
+        assert dragged != (10.0, 10.0, 2.0)
+        assert (dialog.spin_x.value(), dialog.spin_y.value(), dialog.spin_size.value()) \
+            == pytest.approx(dragged, abs=1e-3), "the dialog still shows the old geometry"
+
+        dialog._colour = "red"
+        dialog.accept()
+
+        assert (region.x, region.y, region.radius) == pytest.approx(dragged, abs=1e-3)
+        assert region.color == "red"
+    finally:
+        dialog.close()
+
+
+def test_a_drag_while_the_dialog_is_open_survives_cancel(window):
+    """Cancel undoes what the dialog did, not a drag made on the image while it was open."""
+    region = Circle(x=10.0, y=10.0, radius=2.0, color="green")
+    dialog = editor_for(window, region)
+    try:
+        dialog._colour = "red"
+        dialog.apply()
+        dragged = _drag_on_the_image(window, region)
+
+        dialog.reject()
+
+        assert (region.x, region.y, region.radius) == pytest.approx(dragged, abs=1e-3)
+        assert region.color == "green", "Cancel no longer undoes an applied change"
+    finally:
+        dialog.close()
+
+
+def test_cancel_undoes_an_applied_size_after_a_drag(window):
+    """A drag keeps only what it moved: a radius applied from the dialog is still undone by
+    Cancel when the circle is dragged afterwards without being resized."""
+    region = Circle(x=10.0, y=10.0, radius=2.0)
+    dialog = editor_for(window, region)
+    try:
+        dialog.spin_size.setValue(7.0)
+        dialog.apply()
+        window.region_layer.item_for(region).translate([5.0, 3.0])
+        dragged = (region.x, region.y)
+        assert dragged != (10.0, 10.0)
+
+        dialog.reject()
+
+        assert region.radius == 2.0, "Cancel kept a radius the dialog applied"
+        assert (region.x, region.y) == pytest.approx(dragged, abs=1e-3)
+    finally:
+        dialog.close()
+
+
+def test_cancel_keeps_a_colour_changed_elsewhere_while_open(window):
+    """A colour set from the Region List while the editor is open is not the editor's to undo."""
+    region = Circle(x=10.0, y=10.0, radius=2.0, color="green")
+    dialog = editor_for(window, region)
+    try:
+        region.color = "cyan"                    # what a Region List colour edit does
+        window.region_layer.restyle(region)
+
+        dialog.reject()
+
+        assert region.color == "cyan"
+    finally:
+        dialog.close()
+
+
+def test_a_field_typed_in_the_dialog_is_kept_through_a_drag(window):
+    """A drag refreshes only the fields the user has not edited; a typed value still wins on OK."""
+    region = Circle(x=10.0, y=10.0, radius=2.0)
+    dialog = editor_for(window, region)
+    try:
+        dialog.spin_size.setValue(7.0)
+        dragged = _drag_on_the_image(window, region)
+        assert dialog.spin_size.value() == 7.0
+        assert dialog.spin_x.value() == pytest.approx(dragged[0], abs=1e-3)
+
+        dialog.accept()
+
+        assert region.radius == 7.0
+        assert (region.x, region.y) == pytest.approx(dragged[:2], abs=1e-3)
+    finally:
+        dialog.close()
+
+
 def test_the_dialog_shows_the_sky_position_when_there_is_a_wcs(window):
     dialog = editor_for(window, Circle(x=5.0, y=5.0, radius=2.0))
     try:

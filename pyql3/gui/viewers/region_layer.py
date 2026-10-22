@@ -494,15 +494,19 @@ class RegionLayer(QObject):
             return
         self._culled_rotation = getattr(self.viewer, 'view_rotation', 0.0)
         current = self._current_channel()
+        # A text region is not counted against the label ceiling: its label is the region.
         labelled = [entry for entry in self._entries
-                    if entry.label is not None and entry.region.visible
+                    if entry.label is not None and not _label_is_region(entry)
+                    and entry.region.visible
                     and self._in_channel_range(entry.region, current)]
         in_view = self._labels_in_view([entry.label for entry in labelled])
         show = self._labels_fit(int(np.count_nonzero(in_view))) and not self._panning
         shown = ({id(entry) for entry, keep in zip(labelled, in_view, strict=True) if keep}
                  if show else set())
         for entry in self._entries:
-            self._apply_visibility(entry, current, id(entry) in shown)
+            label_shown = (not self._panning if _label_is_region(entry)
+                           else id(entry) in shown)
+            self._apply_visibility(entry, current, label_shown)
 
     def _on_plane_changed(self):
         """The plane on screen changed: show or hide regions by their channel range.
@@ -726,9 +730,13 @@ class RegionLayer(QObject):
 
     def _show_one(self, entry):
         """Apply visibility to one entry just built or restyled, under the current label rules."""
-        label_shown = (entry.label is not None and self._labels_visible and not self._panning
-                       and not self._label_guard.suppressing
-                       and bool(self._labels_in_view([entry.label])[0]))
+        if _label_is_region(entry):
+            # A text region: Show Region Labels, the ceiling and the cull do not apply to it.
+            label_shown = not self._panning
+        else:
+            label_shown = (entry.label is not None and self._labels_visible
+                           and not self._panning and not self._label_guard.suppressing
+                           and bool(self._labels_in_view([entry.label])[0]))
         self._apply_visibility(entry, self._current_channel(), label_shown)
 
     def _view_rect(self):
@@ -748,8 +756,12 @@ class RegionLayer(QObject):
         if self.viewer is None:
             return
 
+        # In aggregate mode the question is whether there are labels to draw, not whether any are
+        # built now: none are built when the view was on an empty area or when the ceiling refused
+        # them, and returning then left them unbuilt after the pan (`BUGS.md` R35).
         has_labels = bool(self._bulk_labels) or any(
-            entry.label is not None for entry in self._entries)
+            entry.label is not None for entry in self._entries) or (
+            self._bulk and self._labels_visible and bool(self._bulk_labelled))
         if not has_labels:
             return
 
@@ -1078,6 +1090,18 @@ class RegionLayer(QObject):
             if moved is None:
                 return
             region.x, region.y = moved
+
+        placed = self._to_item(region.x, region.y)
+        if not isinstance(region, Text) and placed is not None:
+            # A caption is its own item, not a child of the ROI, so the drag did not move it
+            # (`BUGS.md` R44). A text region's label is the item that was dragged. The caption is
+            # culled again where it now is: one label, so one mapping per drag frame.
+            self._placing = True
+            try:
+                self._place_label(entry, placed)
+            finally:
+                self._placing = False
+            self._show_one(entry)
 
         self.regions_changed.emit()
 
@@ -1461,6 +1485,15 @@ def _label_item(region, anchor, hover_pen=None):
         label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
     label.setFont(_font_of_size(region.font_size))
     return label
+
+
+def _label_is_region(entry):
+    """True for a text region, whose label is the region itself rather than a caption beside it.
+
+    Such a label is not subject to the label rules (Show Region Labels, the ceiling, the cull),
+    which are for captions; hiding it would hide the region (`BUGS.md` R51).
+    """
+    return entry.label is not None and entry.label is entry.handle
 
 
 def _label_offset(region):

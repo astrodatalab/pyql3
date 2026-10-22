@@ -4,10 +4,19 @@ Every field the model carries is here, because the alternative is a region you c
 change. The geometry rows are in **orig** coordinates, the same numbers the file stores and the
 Region List shows, so what is typed here is what is saved.
 
-Apply writes to the region and asks the layer to rebuild its items; Cancel puts back the values
-the dialog opened with. The dialog holds the *region*, never its graphics item, because applying a
-style change destroys and rebuilds the item.
+Apply writes to the region the fields changed in the dialog, and asks the layer to rebuild its
+items; Cancel puts back the values the dialog opened with. The dialog holds the *region*, never its
+graphics item, because applying a style change destroys and rebuilds the item.
+
+The dialog is not modal, so the region can be dragged on the image while it is open. A drag
+refreshes the geometry fields the user has not edited, and the fields it changed become what Cancel
+returns them to; Apply and OK write only the fields that differ from what the dialog last showed,
+so neither puts a dragged region back where it was (`BUGS.md` R33). A field changed elsewhere, such
+as a colour set in the Region List, is likewise kept by Cancel.
 """
+
+import math
+
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -42,6 +51,7 @@ class RegionPropertiesDialog(QDialog):
         self.region = region
         self.layer = layer
         self._original = _snapshot(region)
+        self._applying = False
 
         self.setWindowTitle(f"{region.TYPE.title()} Region")
         self.setModal(False)          # as ds9's are: keep working on the image with it open
@@ -146,6 +156,12 @@ class RegionPropertiesDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
         outer.addWidget(buttons)
 
+        self._shown = self._field_values()
+        #: The region's fields as last seen, to tell what changed outside the dialog.
+        self._seen = _snapshot(region)
+        if layer is not None:
+            layer.regions_changed.connect(self._on_regions_changed)
+
     def showEvent(self, event):
         """Open somewhere visible, as the tool dialogs do; this one is not a `BaseToolDialog`."""
         from pyql3.gui.tools.base_tool import keep_on_screen
@@ -190,44 +206,101 @@ class RegionPropertiesDialog(QDialog):
 
     # ----------------------------------------------------------------- applying
 
-    def apply(self):
-        """Write the fields onto the region and redraw it."""
-        region = self.region
-
-        region.x = self.spin_x.value()
-        region.y = self.spin_y.value()
+    def _field_values(self):
+        """What the widgets say, as region field values, keyed by field name."""
+        values = {"x": self.spin_x.value(), "y": self.spin_y.value()}
         if self.spin_size is not None:
-            _apply_size(region, self.spin_size.value())
-        if self.spin_size2 is not None and isinstance(region, Box):
-            region.height = self.spin_size2.value()
+            values[_size_field(self.region)] = self.spin_size.value()
+        if self.spin_size2 is not None:
+            values["height"] = self.spin_size2.value()
         if self.spin_angle is not None:
-            region.angle = self.spin_angle.value() % 360.0
+            values["angle"] = self.spin_angle.value() % 360.0
 
-        text = self.txt_label.text().strip()
-        if isinstance(region, Text) and not text:
-            # A text region with no text draws nothing at all, so there would be no way to find
-            # it again on the image.
-            self.txt_label.setText(region.text)
-        else:
-            region.text = text
-
-        region.color = self._colour
-        region.line_width = self.spin_width.value()
-        region.dash = self.chk_dash.isChecked()
-        region.font_size = self.spin_font.value()
-        region.tag = self.txt_tag.text().strip()
-        region.visible = self.chk_visible.isChecked()
-
+        values["text"] = self.txt_label.text().strip()
+        values["color"] = self._colour
+        values["line_width"] = self.spin_width.value()
+        values["dash"] = self.chk_dash.isChecked()
+        values["font_size"] = self.spin_font.value()
+        values["tag"] = self.txt_tag.text().strip()
+        values["visible"] = self.chk_visible.isChecked()
         if self.chk_channels.isChecked():
             low, high = self.spin_zmin.value(), self.spin_zmax.value()
-            region.z_range = (min(low, high), max(low, high))
+            values["z_range"] = (min(low, high), max(low, high))
         else:
-            region.z_range = None
+            values["z_range"] = None
+        return values
+
+    def _geometry_spins(self):
+        """The geometry spin boxes this region has, keyed by the field each one edits."""
+        spins = {"x": self.spin_x, "y": self.spin_y}
+        if self.spin_size is not None:
+            spins[_size_field(self.region)] = self.spin_size
+        if self.spin_size2 is not None:
+            spins["height"] = self.spin_size2
+        if self.spin_angle is not None:
+            spins["angle"] = self.spin_angle
+        return spins
+
+    def _on_regions_changed(self):
+        """Follow a drag on the image: show the new geometry where the user has not typed over it.
+
+        The fields changed outside the dialog, and only those, are copied into the snapshot Cancel
+        restores, so Cancel keeps a drag and still undoes everything the dialog applied.
+        """
+        if self._applying:
+            return
+        seen = _snapshot(self.region)
+        moved = {name: value for name, value in seen.items()
+                 if not _same(name, value, self._seen[name])}
+        if not moved:
+            return
+        self._seen = seen
+        self._original.update(moved)
+        if not moved.keys() & set(_GEOMETRY):
+            return
+
+        shown = self._field_values()
+        refreshed = []
+        for name, spin in self._geometry_spins().items():
+            if shown[name] != self._shown[name]:
+                continue                    # typed in the dialog: the user's value stays
+            value = getattr(self.region, name)
+            spin.setValue(value % 360.0 if name == "angle" else value)
+            refreshed.append(name)
+        shown = self._field_values()
+        self._shown.update({name: shown[name] for name in refreshed})
+        self._show_sky()
+
+    def apply(self):
+        """Write the fields changed in the dialog onto the region, and redraw it.
+
+        A field is written only when its widget differs from what the dialog last showed, so a
+        value the region took elsewhere while the dialog was open, by a drag on the image, is not
+        overwritten with the one the dialog opened with.
+        """
+        region = self.region
+        values = self._field_values()
+        changed = {name: value for name, value in values.items() if value != self._shown[name]}
+
+        if isinstance(region, Text) and "text" in changed and not changed["text"]:
+            # A text region with no text draws nothing at all, so there would be no way to find
+            # it again on the image.
+            del changed["text"]
+            self.txt_label.setText(region.text)
+
+        for name, value in changed.items():
+            setattr(region, name, value)
 
         if self.layer is not None:
             # restyle rebuilds the items, which is what a colour or width change needs; it also
             # re-places them, so the geometry above lands too.
-            self.layer.restyle(region)
+            self._applying = True
+            try:
+                self.layer.restyle(region)
+            finally:
+                self._applying = False
+        self._shown = self._field_values()
+        self._seen = _snapshot(region)
         self._show_sky()
 
     def accept(self):
@@ -235,11 +308,28 @@ class RegionPropertiesDialog(QDialog):
         super().accept()
 
     def reject(self):
-        """Put back what the dialog opened with, including anything a previous Apply wrote."""
+        """Put back what the dialog opened with, including anything a previous Apply wrote.
+
+        A field a drag on the image changed, or one changed elsewhere, is put back to its value
+        after that change, not the one the dialog opened with: it is not the dialog's to undo.
+        """
         _restore(self.region, self._original)
         if self.layer is not None:
-            self.layer.restyle(self.region)
+            self._applying = True
+            try:
+                self.layer.restyle(self.region)
+            finally:
+                self._applying = False
         super().reject()
+
+    def done(self, result):
+        """Stop following the layer once the dialog is finished: OK, Cancel or the close button."""
+        if self.layer is not None:
+            try:
+                self.layer.regions_changed.disconnect(self._on_regions_changed)
+            except (RuntimeError, TypeError):
+                pass                        # already disconnected by an earlier done()
+        super().done(result)
 
 
 # ------------------------------------------------------------------ shared helpers
@@ -300,22 +390,43 @@ def _angle_spin(value):
     return spin
 
 
-def _apply_size(region, value):
+def _size_field(region):
+    """The field the first size spin box edits for this region's shape."""
     if isinstance(region, Circle):
-        region.radius = value
-    elif isinstance(region, Box):
-        region.width = value
-    elif isinstance(region, Arrow):
-        region.length = value
+        return "radius"
+    if isinstance(region, Box):
+        return "width"
+    return "length"
 
 
 #: Fields the dialog can change, and therefore has to be able to put back.
 _EDITABLE = ("x", "y", "text", "color", "line_width", "dash", "font_size", "tag", "visible",
              "z_range", "radius", "width", "height", "length", "angle")
 
+#: The fields a drag on the image can change.
+_GEOMETRY = ("x", "y", "radius", "width", "height", "length", "angle")
 
-def _snapshot(region):
-    return {name: getattr(region, name) for name in _EDITABLE if hasattr(region, name)}
+
+#: How far apart two numbers may be and still count as the same field value. Reading a dragged
+#: item back moves untouched fields by rounding error: a box's angle comes back through
+#: `_orig_angle(handle.angle())`.
+SAME_TOLERANCE = 1e-6
+
+
+def _snapshot(region, fields=_EDITABLE):
+    return {name: getattr(region, name) for name in fields if hasattr(region, name)}
+
+
+def _same(name, a, b):
+    """Whether two values of field `name` are the same, allowing rounding error in numbers."""
+    numbers = (int, float)
+    if (isinstance(a, numbers) and isinstance(b, numbers)
+            and not isinstance(a, bool) and not isinstance(b, bool)):
+        difference = abs(a - b)
+        if name == "angle":
+            difference = min(difference % 360.0, -difference % 360.0)
+        return math.isclose(difference, 0.0, abs_tol=SAME_TOLERANCE)
+    return a == b
 
 
 def _restore(region, snapshot):

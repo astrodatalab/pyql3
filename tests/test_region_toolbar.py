@@ -136,6 +136,23 @@ def test_only_one_shape_button_is_pressed_at_a_time(window):
     window.region_layer.cancel_draw()
 
 
+def test_clicking_the_pressed_shape_again_disarms_it(window):
+    """A tool armed by mistake is put away by clicking its button again, and the view can pan and
+    zoom again (`BUGS.md` R46)."""
+    window.region_toolbar_action.setChecked(True)
+    view, button = window.image_viewer.imv.getView(), window.region_toolbar.shape_actions["circle"]
+
+    button.trigger()
+    assert window.region_layer.draw_kind == "circle"
+    assert view.state["mouseEnabled"] == [False, False]
+
+    button.trigger()
+
+    assert window.region_layer.draw_kind is None
+    assert not button.isChecked()
+    assert view.state["mouseEnabled"] == [True, True]
+
+
 def test_the_pressed_button_releases_when_drawing_ends(window):
     window.region_toolbar_action.setChecked(True)
     window.region_toolbar.shape_actions["circle"].trigger()

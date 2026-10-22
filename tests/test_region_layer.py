@@ -1329,6 +1329,140 @@ def test_an_enormous_number_of_labels_is_refused_as_a_hang_guard(loaded_viewer, 
     assert told[-1] == 0
 
 
+def test_overlay_labels_appear_after_panning_from_an_empty_area(loaded_viewer, layer, qapp):
+    """With no overlay label built, a pan still has to schedule the rebuild (`BUGS.md` R35)."""
+    layer.interactive_limit = 2
+    layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.5, text=f"s{i}")
+                       for i in range(12)])
+    look_at(loaded_viewer, (300, 310), (300, 310))       # nothing here
+    settle(qapp)
+    assert layer.bulk is True
+    assert layer._bulk_labels == []
+
+    look_at(loaded_viewer, (-2, 12), (-2, 12))           # pan onto the sources
+    settle(qapp)
+
+    assert layer._bulk_labels, "the labels never came back after the pan"
+
+
+def test_overlay_labels_return_after_zooming_in_below_the_ceiling(loaded_viewer, layer, qapp,
+                                                                   monkeypatch):
+    """The status bar says to zoom in when there are too many labels; zooming in has to work,
+    through the real pan debounce rather than a direct call (`BUGS.md` R35)."""
+    from pyql3.gui.viewers import region_layer as module
+
+    monkeypatch.setattr(module, "LABEL_SAFETY_LIMIT", 5)
+    layer.interactive_limit = 2
+    layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.5, text=f"s{i}")
+                       for i in range(12)])
+    look_at(loaded_viewer, (-2, 12), (-2, 12))
+    settle(qapp)
+    assert layer._bulk_labels == [], "the ceiling did not refuse 12 labels"
+
+    # Labels are culled where they are drawn, one radius above their circle's centre.
+    look_at(loaded_viewer, (-0.5, 1.5), (0.5, 1.5))
+    settle(qapp)
+
+    assert layer._bulk_labels, "labels did not come back once few enough were in view"
+
+
+@pytest.mark.parametrize("region", [
+    Circle(x=10.0, y=9.0, radius=3.0, text="src A"),
+    Box(x=20.0, y=12.0, width=6.0, height=4.0, angle=20.0, text="box B"),
+    Arrow(x=5.0, y=5.0, length=8.0, angle=30.0, text="arrow C"),
+], ids=["circle", "box", "arrow"])
+def test_a_caption_follows_its_dragged_shape(loaded_viewer, layer, region):
+    """A caption is its own item, so a drag has to move it too (`BUGS.md` R44)."""
+    from pyql3.gui.viewers.region_layer import _label_offset
+
+    layer.add(region)
+    before = (region.x, region.y)
+
+    layer.item_for(region).translate([7.0, 5.0])         # what an ROI drag does
+
+    assert (region.x, region.y) != before, "the drag did not reach the model"
+    cx, cy = layer._to_item(region.x, region.y)
+    label = layer.label_for(region)
+    assert (label.pos().x(), label.pos().y()) == pytest.approx(
+        (cx, cy + _label_offset(region)), abs=1e-6)
+
+
+def test_new_and_restyled_regions_obey_the_labels_toggle(loaded_viewer, layer):
+    """With labels off, a region added or restyled afterwards draws no caption (`BUGS.md` R51)."""
+    look_at(loaded_viewer, (0, 30), (0, 30))
+    old = layer.add(Circle(x=10.0, y=10.0, radius=2.0, text="old"))
+    layer.set_labels_visible(False)
+
+    new = layer.add(Circle(x=20.0, y=12.0, radius=2.0, text="new"))
+    assert not layer.label_for(new).isVisible(), "a new region drew its caption"
+
+    old.line_width = 4
+    layer.restyle(old)
+    assert not layer.label_for(old).isVisible(), "a restyled region drew its caption"
+    assert layer.item_for(old).isVisible() and layer.item_for(new).isVisible()
+
+
+def test_text_regions_do_not_count_against_the_label_ceiling(loaded_viewer, layer, qapp,
+                                                            monkeypatch):
+    """With labels on, text regions are neither hidden by the ceiling nor counted against it, so
+    one caption beside five text regions is under a ceiling of two (`BUGS.md` R51)."""
+    from pyql3.gui.viewers import region_layer as module
+
+    monkeypatch.setattr(module, "LABEL_SAFETY_LIMIT", 2)
+    look_at(loaded_viewer, (0, 30), (0, 30))
+    texts = [Text(x=4.0 + 3 * i, y=6.0, text=f"knot {i}") for i in range(5)]
+    circle = Circle(x=10.0, y=15.0, radius=2.0, text="src")
+    layer.set_regions(texts + [circle])
+    settle(qapp)
+
+    assert all(layer.item_for(region).isVisible() for region in texts)
+    assert layer.label_for(circle).isVisible(), "the text regions were counted against the ceiling"
+
+
+def test_a_dragged_caption_is_culled_again(loaded_viewer, layer):
+    """A caption culled because it was out of view shows once its shape is dragged into view."""
+    region = layer.add(Circle(x=30.0, y=5.0, radius=1.0, text="src"))
+    look_at(loaded_viewer, (0, 12), (0, 12))
+    layer._labels_settled()
+    assert not layer.label_for(region).isVisible(), "the caption was in view to begin with"
+
+    centre = layer._to_item(region.x, region.y)
+    layer.item_for(region).translate([5.0 - centre[0], 5.0 - centre[1]])
+
+    assert layer.label_for(region).isVisible(), "the caption stayed culled after the drag"
+
+
+@pytest.mark.parametrize("aggregate", [False, True], ids=["per-region", "aggregate"])
+def test_a_text_region_stays_visible_with_labels_off(loaded_viewer, layer, qapp, monkeypatch,
+                                                     aggregate):
+    """A text region's label is the region itself, so Show Region Labels does not hide it, nor
+    does the label ceiling count it (`BUGS.md` R51). The aggregate overlay draws it as a marker."""
+    import pyqtgraph as pg
+
+    from pyql3.gui.viewers import region_layer as module
+
+    monkeypatch.setattr(module, "LABEL_SAFETY_LIMIT", 2)
+    if aggregate:
+        layer.interactive_limit = 2
+    look_at(loaded_viewer, (0, 30), (0, 30))
+    texts = [Text(x=4.0 + 3 * i, y=6.0, text=f"knot {i}") for i in range(4)]
+    layer.set_regions(texts)
+    layer.set_labels_visible(False)
+    added = layer.add(Text(x=8.0, y=14.0, text="added later"))
+    added.color = "red"
+    layer.restyle(added)
+    settle(qapp)
+
+    if aggregate:
+        assert layer.bulk is True
+        marked = sum(len(item.data) for item in layer._bulk_items
+                     if isinstance(item, pg.ScatterPlotItem) and item.opts['symbol'] == '+')
+        assert marked == len(texts) + 1, "a text region lost its marker"
+    else:
+        hidden = [r.text for r in layer if not layer.item_for(r).isVisible()]
+        assert hidden == [], f"text regions vanished with labels off: {hidden}"
+
+
 def test_a_ds9_catalogue_of_named_stars_draws_its_names(loaded_viewer, layer):
     """The reported case: 2,000 labelled circles from a .reg file drew no text at all."""
     from pyql3.core.ds9_regions import from_ds9

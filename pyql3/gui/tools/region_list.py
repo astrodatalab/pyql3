@@ -10,7 +10,7 @@ label, colour and visibility all on one row, so a night's worth of regions can b
 opening anything.
 """
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -53,6 +54,9 @@ class RegionListDialog(BaseToolDialog):
         super().__init__(parent, image_viewer, "Regions")
         self.resize(760, 320)
         self._updating = False
+        #: The regions in table order, as the table was last filled. A row is turned back into a
+        #: region through this list, not through the layer's, which may already have changed.
+        self._listed = []
 
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
@@ -107,19 +111,28 @@ class RegionListDialog(BaseToolDialog):
         return getattr(self.image_viewer, 'region_layer', None)
 
     def update_plot(self):
-        """Rebuild the table from the layer."""
+        """Rebuild the table from the layer, keeping the same regions selected.
+
+        The selection is carried over by region, not by row: a region deleted above the selected
+        one shifts every row below it up, and a selection kept by row index would then name the
+        next region down, which Delete would remove (`BUGS.md` R34).
+        """
         if self.layer is None:
             return
 
         count = len(self.layer)
         listed = count <= LIST_LIMIT
+        selected = {id(region) for region in self.selected_regions()}
 
         self._updating = True
         try:
             regions = self.layer.regions if listed else []
+            self._listed = list(regions)
+            self.table.clearSelection()
             self.table.setRowCount(len(regions))
             for row, region in enumerate(regions):
                 self._fill_row(row, region)
+            self._select_rows(row for row, region in enumerate(regions) if id(region) in selected)
         finally:
             self._updating = False
 
@@ -181,9 +194,15 @@ class RegionListDialog(BaseToolDialog):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return holder
 
+    def _select_rows(self, rows):
+        model = self.table.selectionModel()
+        flags = (QItemSelectionModel.SelectionFlag.Select
+                 | QItemSelectionModel.SelectionFlag.Rows)
+        for row in rows:
+            model.select(self.table.model().index(row, 0), flags)
+
     def _region_at(self, row):
-        regions = self.layer.regions if self.layer is not None else []
-        return regions[row] if 0 <= row < len(regions) else None
+        return self._listed[row] if 0 <= row < len(self._listed) else None
 
     def selected_regions(self):
         rows = sorted({index.row() for index in self.table.selectedIndexes()})
@@ -266,7 +285,26 @@ class RegionListDialog(BaseToolDialog):
         self.layer.remove_many(self.selected_regions())
 
     def delete_all(self):
-        if self.layer is not None:
+        """Delete every region, after asking, as Region ➔ Delete All Regions does (`BUGS.md` R76).
+
+        The window asks when there is one. A list built without a window asks the same question
+        itself.
+        """
+        if self.layer is None:
+            return
+        window = self.parent()
+        if window is not None and hasattr(window, 'delete_all_regions'):
+            window.delete_all_regions()
+            return
+        count = len(self.layer)
+        if not count:
+            return
+        reply = QMessageBox.question(
+            self, "Delete All Regions",
+            f"Delete all {count} region{'s' if count != 1 else ''}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
             self.layer.clear()
 
     def zoom_to_selected(self):
