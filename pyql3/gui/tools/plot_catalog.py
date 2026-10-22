@@ -19,6 +19,7 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import warnings
 
+from pyql3.core import coords
 from pyql3.gui.label_policy import (
     LABEL_REDRAW_DELAY_MS,
     LabelDensityGuard,
@@ -42,13 +43,29 @@ FITS_SUFFIXES = (
 # fitted position is the measurement and the initial one is only the guess the fit started
 # from. Comparison is done in lower case.
 RA_COLUMN_NAMES = ('ra', 'right ascension', 'alpha', 'raj2000', 'ra_j2000',
-                   'alpha_j2000', 'ra_deg', 'radeg')
+                   'alpha_j2000', 'ra_deg', 'radeg', 'ra_icrs', '_raj2000')
 DEC_COLUMN_NAMES = ('dec', 'declination', 'delta', 'decj2000', 'dec_j2000',
-                    'delta_j2000', 'dec_deg', 'decdeg')
+                    'delta_j2000', 'dec_deg', 'decdeg', 'dej2000', '_dej2000', 'de_icrs',
+                    'dedeg')
 X_COLUMN_NAMES = ('x', 'xcenter', 'xc', 'x_c', 'xcentroid', 'x_image', 'xpix',
                   'x_pix', 'xpos', 'x_pos', 'x_fit', 'x_init')
 Y_COLUMN_NAMES = ('y', 'ycenter', 'yc', 'y_c', 'ycentroid', 'y_image', 'ypix',
                   'y_pix', 'ypos', 'y_pos', 'y_fit', 'y_init')
+
+# What a pixel column counts from. SExtractor writes `X_IMAGE`, `XWIN_IMAGE` and the rest of its
+# `*_IMAGE` family in the FITS convention, where the centre of the first pixel is 1.0; photutils
+# and the regions sent from the Region menu use array indices. The origin is a choice because a
+# column name cannot always say which, and it is defaulted from the name where it can.
+PIXEL_ORIGIN_ZERO = 0
+PIXEL_ORIGIN_ONE = 1
+
+
+def default_pixel_origin(x_name, y_name):
+    """`PIXEL_ORIGIN_ONE` when both columns are SExtractor `*_IMAGE` columns, else zero."""
+    if x_name.lower().endswith('_image') and y_name.lower().endswith('_image'):
+        return PIXEL_ORIGIN_ONE
+    return PIXEL_ORIGIN_ZERO
+
 
 # A name list can never keep up with what pipelines actually emit, so a pixel column is
 # also recognised from its axis letter. Anything after the letter is accepted when a
@@ -471,6 +488,9 @@ class PlotCatalogDialog(BaseToolDialog):
         # Held above setup_ui, because update_plot is a slot the widgets it builds connect to
         self._plot_suspended = 0
 
+        #: True once the user has picked the pixel origin, which the column guess then leaves be.
+        self._origin_by_hand = False
+
         self.catalog_table = None
         self.catalog_data = None
         self.scatter_item = None
@@ -487,6 +507,8 @@ class PlotCatalogDialog(BaseToolDialog):
         self._label_rows = np.empty(0, dtype=int)
         #: The status line update_plot last wrote, restored when the label ceiling lifts.
         self._plot_status = ""
+        #: How many labels the last redraw found in view, for the ceiling message.
+        self._labels_in_view = 0
         #: Label items taken out of the scene but not yet released. See `_retire_items`.
         self._retired = []
         #: Applies CATALOG_LABEL_LIMIT and reports when that verdict changes.
@@ -526,15 +548,27 @@ class PlotCatalogDialog(BaseToolDialog):
         self.combo_coord_type.addItems(["Display Pixels", "FITS Pixels", "World (RA/DEC)"])
         self.combo_coord_type.currentIndexChanged.connect(self.update_columns_for_type)
         coord_layout.addWidget(self.combo_coord_type)
-        
+
+        # Only the two pixel types have an origin; `_sync_pixel_origin_controls` hides these for
+        # World. Changing it by hand stops the column guess from choosing it again.
+        self.lbl_pixel_origin = QLabel("  Origin:")
+        coord_layout.addWidget(self.lbl_pixel_origin)
+        self.combo_pixel_origin = QComboBox()
+        self.combo_pixel_origin.addItems(["0-based (array)", "1-based (FITS)"])
+        self.combo_pixel_origin.setToolTip(
+            "What the pixel columns count from. SExtractor's *_IMAGE columns start at 1; "
+            "photutils and regions sent from the Region menu start at 0.")
+        self.combo_pixel_origin.currentIndexChanged.connect(self._on_pixel_origin_chosen)
+        coord_layout.addWidget(self.combo_pixel_origin)
+
         coord_layout.addWidget(QLabel("  X/RA Col:"))
         self.combo_x = QComboBox()
-        self.combo_x.currentIndexChanged.connect(self.update_plot)
+        self.combo_x.currentIndexChanged.connect(self._on_coordinate_column_chosen)
         coord_layout.addWidget(self.combo_x)
-        
+
         coord_layout.addWidget(QLabel("  Y/DEC Col:"))
         self.combo_y = QComboBox()
-        self.combo_y.currentIndexChanged.connect(self.update_plot)
+        self.combo_y.currentIndexChanged.connect(self._on_coordinate_column_chosen)
         coord_layout.addWidget(self.combo_y)
         
         coord_layout.addStretch()
@@ -698,12 +732,17 @@ class PlotCatalogDialog(BaseToolDialog):
             msg = lines[0][:120] if lines else type(e).__name__
             self.lbl_file.setText(f"Error loading file: {msg}")
 
-    def set_catalog_table(self, table, name):
+    def set_catalog_table(self, table, name, coord_type=None, pixel_origin=None):
         """Show a table that is already in memory, rather than reading one from a file.
 
         The seam a caller needs to hand this tool a source list it built itself — the Region menu
         sends the drawn regions here, where they gain the table, the search box and the row
         highlighting that this tool has and the region overlay does not.
+
+        A caller that knows what its coordinates are passes `coord_type` (the index in
+        `combo_coord_type`) and `pixel_origin` (`PIXEL_ORIGIN_ZERO` or `PIXEL_ORIGIN_ONE`). Either
+        one means the choice kept from the previous catalog is not restored, since it was made
+        for other numbers: regions are 0-based indices whatever the last catalog was.
         """
         self.catalog_data = table
         self._forget_positions()
@@ -712,7 +751,8 @@ class PlotCatalogDialog(BaseToolDialog):
         # A reload must not undo a column choice made by hand. Re-running the guess on every
         # load meant a manual x_fit/y_fit selection was silently replaced the next time the
         # file was read, putting the overlay back where the guess wanted it.
-        keep = self._column_choice()
+        keep = None if coord_type is not None or pixel_origin is not None \
+            else self._column_choice()
         self.populate_table()
         # Assigning the columns reaches update_plot through update_columns_for_type;
         # suspending it keeps a load to one O(rows) plotting pass instead of two.
@@ -720,6 +760,13 @@ class PlotCatalogDialog(BaseToolDialog):
         try:
             if not self._restore_column_choice(keep):
                 self.auto_assign_columns()
+                if coord_type is not None and coord_type != self.combo_coord_type.currentIndex():
+                    self.combo_coord_type.blockSignals(True)
+                    self.combo_coord_type.setCurrentIndex(coord_type)
+                    self.combo_coord_type.blockSignals(False)
+                    self.update_columns_for_type()
+                if pixel_origin is not None:
+                    self._set_pixel_origin(pixel_origin)
         finally:
             self._plot_suspended -= 1
         self.update_plot()
@@ -733,6 +780,7 @@ class PlotCatalogDialog(BaseToolDialog):
             return None
         return {
             'coord_type': self.combo_coord_type.currentIndex(),
+            'origin': (self.combo_pixel_origin.currentIndex(), self._origin_by_hand),
             'x': self.combo_x.currentText(),
             'y': self.combo_y.currentText(),
             'name': self.combo_name.currentText(),
@@ -761,6 +809,12 @@ class PlotCatalogDialog(BaseToolDialog):
             else:
                 combo.setCurrentText(value)
             combo.blockSignals(False)
+
+        # The origin goes with the columns it was chosen for, and its by-hand flag with it
+        origin, by_hand = keep['origin']
+        self._set_pixel_origin(origin)
+        self._origin_by_hand = by_hand
+        self._sync_pixel_origin_controls()
 
         if keep['name'] in cols:
             self.combo_name.blockSignals(True)
@@ -832,6 +886,8 @@ class PlotCatalogDialog(BaseToolDialog):
             return
 
         cols = self.catalog_data.colnames
+        # A new set of columns starts from the guess; an earlier choice was about another table
+        self._origin_by_hand = False
 
         # Auto detect RA/DEC vs X/Y
         has_x = best_coord_column(cols, X_COLUMN_NAMES, 'x') is not None
@@ -867,10 +923,15 @@ class PlotCatalogDialog(BaseToolDialog):
 
         Tested on the column's dtype rather than by calling `float()` on row 0. The old test
         accepted a string column of digits — which is how a JWST prior catalog's `id` came to
-        be plotted as an X coordinate — and warned on a masked first element.
+        be plotted as an X coordinate — and warned on a masked first element. A column with no
+        dtype, such as the `SkyCoord` photutils writes as `sky_centroid`, is not a number.
         """
-        return [i for i, cname in enumerate(self.catalog_data.colnames)
-                if np.issubdtype(self.catalog_data[cname].dtype, np.number)]
+        indices = []
+        for i, cname in enumerate(self.catalog_data.colnames):
+            dtype = getattr(self.catalog_data[cname], 'dtype', None)
+            if dtype is not None and np.issubdtype(dtype, np.number):
+                indices.append(i)
+        return indices
 
     def update_columns_for_type(self):
         if self.catalog_data is None:
@@ -879,38 +940,72 @@ class PlotCatalogDialog(BaseToolDialog):
         cols = self.catalog_data.colnames
         is_world = self.combo_coord_type.currentIndex() == 2
 
+        # An exception while the selectors are blocked would leave them dead (`BUGS.md` R62)
         self.combo_x.blockSignals(True)
         self.combo_y.blockSignals(True)
+        try:
+            if is_world:
+                x_idx = best_coord_column(cols, RA_COLUMN_NAMES)
+                y_idx = best_coord_column(cols, DEC_COLUMN_NAMES)
+            else:
+                x_idx = best_coord_column(cols, X_COLUMN_NAMES, 'x')
+                y_idx = best_coord_column(cols, Y_COLUMN_NAMES, 'y')
+                # Keep both axes on one spelling once X is settled
+                mate = paired_column(cols, x_idx, 'x', 'y')
+                if mate is not None:
+                    y_idx = mate
 
-        if is_world:
-            x_idx = best_coord_column(cols, RA_COLUMN_NAMES)
-            y_idx = best_coord_column(cols, DEC_COLUMN_NAMES)
-        else:
-            x_idx = best_coord_column(cols, X_COLUMN_NAMES, 'x')
-            y_idx = best_coord_column(cols, Y_COLUMN_NAMES, 'y')
-            # Keep both axes on one spelling once X is settled
-            mate = paired_column(cols, x_idx, 'x', 'y')
-            if mate is not None:
-                y_idx = mate
+            # Fallback to numeric columns if no name matched
+            if x_idx is None or y_idx is None:
+                numeric = [i for i in self._numeric_column_indices()
+                           if i not in (x_idx, y_idx)]
+                if x_idx is None and numeric:
+                    x_idx = numeric.pop(0)
+                if y_idx is None and numeric:
+                    y_idx = numeric.pop(0)
 
-        # Fallback to numeric columns if no name matched
-        if x_idx is None or y_idx is None:
-            numeric = [i for i in self._numeric_column_indices()
-                       if i not in (x_idx, y_idx)]
-            if x_idx is None and numeric:
-                x_idx = numeric.pop(0)
-            if y_idx is None and numeric:
-                y_idx = numeric.pop(0)
-
-        if x_idx is not None:
-            self.combo_x.setCurrentIndex(x_idx)
-        if y_idx is not None:
-            self.combo_y.setCurrentIndex(y_idx)
-
-        self.combo_x.blockSignals(False)
-        self.combo_y.blockSignals(False)
+            if x_idx is not None:
+                self.combo_x.setCurrentIndex(x_idx)
+            if y_idx is not None:
+                self.combo_y.setCurrentIndex(y_idx)
+        finally:
+            self.combo_x.blockSignals(False)
+            self.combo_y.blockSignals(False)
+        self._apply_default_pixel_origin()
+        self._sync_pixel_origin_controls()
         self.update_plot()
-        
+
+    def _set_pixel_origin(self, origin):
+        """Show `origin` in the control without treating it as the user's choice."""
+        self.combo_pixel_origin.blockSignals(True)
+        self.combo_pixel_origin.setCurrentIndex(origin)
+        self.combo_pixel_origin.blockSignals(False)
+
+    def _apply_default_pixel_origin(self):
+        """Choose the origin the current columns call for, unless the user chose one.
+
+        Only for the pixel types, so a trip through World does not forget a choice made for them.
+        """
+        if self._origin_by_hand or self.combo_coord_type.currentIndex() == 2:
+            return
+        self._set_pixel_origin(default_pixel_origin(self.combo_x.currentText(),
+                                                    self.combo_y.currentText()))
+
+    def _sync_pixel_origin_controls(self):
+        """Offer the origin for the pixel types and hide it for World, which has none."""
+        shown = self.combo_coord_type.currentIndex() != 2
+        self.lbl_pixel_origin.setVisible(shown)
+        self.combo_pixel_origin.setVisible(shown)
+
+    def _on_coordinate_column_chosen(self):
+        """A column was picked by hand: follow it with the origin it implies, then redraw."""
+        self._apply_default_pixel_origin()
+        self.update_plot()
+
+    def _on_pixel_origin_chosen(self):
+        self._origin_by_hand = True
+        self.update_plot()
+
     def choose_color(self):
         color = QColorDialog.getColor(self.marker_color, self, "Select Marker Color")
         if color.isValid():
@@ -943,9 +1038,10 @@ class PlotCatalogDialog(BaseToolDialog):
 
         For *FITS Pixels* and *World (RA/DEC)* these are orig coordinates (`pyql3.core.coords`),
         which do not change with a flip, a 90° rotation or a view rotation, so they are computed
-        once and kept until the catalog, the coordinate columns, the coordinate type, the WCS or
-        the displayed FITS axes change. *Display Pixels* are kept as given: they already name a
-        place on screen, and `_display_positions` does not map them.
+        once and kept until the catalog, the coordinate columns, the coordinate type, the pixel
+        origin, the WCS or the displayed FITS axes change. *Display Pixels* are kept as given:
+        they already name a place on screen, and `_display_positions` does not map them. A
+        1-based pixel origin (SExtractor's `*_IMAGE` columns) is converted to an index first.
 
         Computed column-wise, never per row: one `SkyCoord` per kind of cell (`sky_degrees`) and
         one `world_to_pixel_values` call. Per row, an RA/Dec catalog of 66k rows took 9.5 s, and
@@ -958,7 +1054,11 @@ class PlotCatalogDialog(BaseToolDialog):
         wcs = getattr(self.image_viewer, 'wcs', None)
         axes = (self.image_viewer.display_axis_indices()
                 if coord_idx == 2 and self.image_viewer is not None else None)
-        settings = (self.combo_x.currentText(), self.combo_y.currentText(), coord_idx, axes)
+        # The origin only means something for the pixel types; World positions are the same
+        # whatever it says, and are not worth resolving again for it
+        origin = self.combo_pixel_origin.currentIndex() if coord_idx != 2 else PIXEL_ORIGIN_ZERO
+        settings = (self.combo_x.currentText(), self.combo_y.currentText(), coord_idx, axes,
+                    origin)
 
         cached = self._orig_source
         if (self._orig_positions is not None and cached is not None and cached[0] is table
@@ -973,6 +1073,8 @@ class PlotCatalogDialog(BaseToolDialog):
             else:
                 positions = np.column_stack([float_column(table[x_col]),
                                              float_column(table[y_col])])
+                if origin == PIXEL_ORIGIN_ONE:
+                    positions = coords.fits_to_index_array(positions)
 
         self._orig_positions = positions
         self._orig_source = (table, wcs, settings)
@@ -1192,6 +1294,10 @@ class PlotCatalogDialog(BaseToolDialog):
             self._range_connected = True
 
         self.update_visible_text_labels()
+        # The status above replaced the ceiling message, and the guard only speaks when its
+        # verdict changes (`BUGS.md` R75), so say it again while the labels are still refused.
+        if self._label_guard.suppressing:
+            self._on_labels_suppressed(self._labels_in_view)
         return True
 
     def _remove_scene_item(self, item):
@@ -1253,6 +1359,18 @@ class PlotCatalogDialog(BaseToolDialog):
             # labels itself, and re-running update_plot from inside it would recurse.
             self.lbl_status.setText(self._plot_status)
 
+    def _no_labels_wanted(self):
+        """Hide the labels because there is nothing to label, and settle the ceiling guard.
+
+        Labels switched off, no name column, or no source on the image: none is in view, so the
+        guard has to be told, or it keeps refusing on the count from an earlier pass and
+        `_plot_markers` goes on writing its message over a status line that says nothing is
+        plotted (`BUGS.md` R75).
+        """
+        self._hide_all_labels()
+        self._labels_in_view = 0
+        self._label_guard.allows(0, CATALOG_LABEL_LIMIT)
+
     def _hide_all_labels(self):
         """Hide every pooled label without giving up the items."""
         for txt in self.text_items:
@@ -1280,13 +1398,13 @@ class PlotCatalogDialog(BaseToolDialog):
         self._labelled_rotation = getattr(self.image_viewer, 'view_rotation', 0.0)
 
         if not hasattr(self, 'chk_show_name') or not self.chk_show_name.isChecked():
-            self._hide_all_labels()
+            self._no_labels_wanted()
             return
 
         positions = self._label_positions
         names = self._label_texts() if len(positions) else None
         if names is None:
-            self._hide_all_labels()
+            self._no_labels_wanted()
             return
 
         view = self.image_viewer.imv.getView()
@@ -1294,6 +1412,7 @@ class PlotCatalogDialog(BaseToolDialog):
         xs, ys = self.image_viewer.items_to_view(positions[:, 0], positions[:, 1])
         in_view = np.flatnonzero(labels_in_view(xs, ys, view.viewRect()))
 
+        self._labels_in_view = len(in_view)
         if not self._label_guard.allows(len(in_view), CATALOG_LABEL_LIMIT):
             self._hide_all_labels()
             return

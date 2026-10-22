@@ -292,6 +292,8 @@ def test_pixel_convention_helpers_with_worked_examples():
     assert coords.fits_to_index(1.0) == 0.0
     assert coords.index_to_fits(0.0) == 1.0
     assert coords.fits_to_index(coords.index_to_fits(7.0)) == 7.0
+    assert coords.fits_to_index_array([1.0, 11.5, float("nan")])[:2].tolist() == [0.0, 10.5]
+    assert np.isnan(coords.fits_to_index_array([1.0, 11.5, float("nan")])[2])
 
     # A pyqtgraph ImageItem draws pixel i across [i, i+1), so its centre is at i + 0.5.
     assert coords.index_to_item(0) == 0.5

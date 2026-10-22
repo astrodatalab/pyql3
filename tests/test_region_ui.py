@@ -939,6 +939,21 @@ def test_the_catalog_lands_on_the_same_pixels_as_the_regions(window, some_region
     assert placed == pytest.approx(window.image_viewer.orig_to_display(first.x, first.y))
 
 
+def test_regions_stay_zero_based_after_a_one_based_choice_by_hand(window):
+    """R30: the dialog restores its last column choice when a table has the same X and Y names,
+    and the regions' `x`/`y` are array indices whatever that choice was."""
+    window.region_layer.set_regions([Circle(x=5.0, y=7.0, radius=1.0)])
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+    catalog = window._plot_catalog_dialog
+    catalog.combo_pixel_origin.setCurrentIndex(1)
+
+    menu_action(window, "region_menu", "Send Regions to Plot Catalog...").trigger()
+
+    assert catalog.combo_pixel_origin.currentIndex() == 0
+    placed = catalog._row_to_display(0)
+    assert placed == pytest.approx(window.image_viewer.orig_to_display(5.0, 7.0))
+
+
 def test_unlabelled_regions_still_get_a_searchable_name(window):
     window.region_layer.set_regions([Circle(x=1.0, y=1.0, radius=1.0),
                                      Circle(x=2.0, y=2.0, radius=1.0, text="src A")])

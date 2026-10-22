@@ -4231,7 +4231,7 @@ and that the rect's centre is within 0.01 of the mapped source position.
 
 ## R30. SExtractor `X_IMAGE`/`Y_IMAGE` positions are plotted one pixel off
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py` (*Pixel origin* control, part of the position cache key), `pyql3/core/coords.py` (`fits_to_index_array`), `pyql3/gui/main_window.py` (the regions hand-off names its type and origin), `docs/tools.md`, covered by `test_regions_stay_zero_based_after_a_one_based_choice_by_hand`, `test_sextractor_image_columns_are_one_based`, `test_the_pixel_origin_is_part_of_what_positions_are_resolved_for`, `test_the_pixel_origin_defaults_to_zero_based_for_other_columns`, `test_the_pixel_origin_is_offered_for_pixel_types_only`, `test_a_pixel_origin_chosen_by_hand_survives_a_column_change_and_a_reload`
 - **Severity:** medium — every marker from a SExtractor catalog is offset by one pixel in both axes
 - **Files:** `pyql3/gui/tools/plot_catalog.py:48-51`, `pyql3/gui/tools/plot_catalog.py:858-866`,
   `pyql3/gui/main_window.py:1101-1110`, `pyql3/core/coords.py:32-36`, `pyql3/core/coords.py:128-130`
@@ -4368,7 +4368,7 @@ catalog and assert that changing `spin_size` takes under 0.5 s, and that the res
 
 ## R32. VizieR coordinate column names are not recognised, so their catalogs plot nothing
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py` (`RA_COLUMN_NAMES`, `DEC_COLUMN_NAMES`), `docs/tools.md`, covered by `test_vizier_coordinate_names_select_world`
 - **Severity:** medium — catalogs downloaded from VizieR, the most common source, do not plot without manual setup
 - **Files:** `pyql3/gui/tools/plot_catalog.py:44-47`, `pyql3/gui/tools/plot_catalog.py:733-743`
 - **Related:** M28 fixed the pixel-column half of the guess (`x_fit`); this is the RA/Dec half.
@@ -6136,7 +6136,7 @@ snippet, asserting that the marker is at (10.5, 25.5) to within 0.01.
 
 ## R62. A catalog with a `SkyCoord` column raises in the column guess and leaves the X/Y selectors dead
 
-- **Status:** open
+- **Status:** ✅ FIXED — `pyql3/gui/tools/plot_catalog.py` (`_numeric_column_indices`, `update_columns_for_type`), covered by `test_a_skycoord_column_does_not_break_the_column_guess`
 - **Severity:** low — photutils tables written by astropy are affected; an exception reaches the terminal and the tool stops responding to column choices
 - **Files:** `pyql3/gui/tools/plot_catalog.py:761-769`, `pyql3/gui/tools/plot_catalog.py:778-808`,
   `pyql3/gui/tools/plot_catalog.py:565-596`
@@ -6533,7 +6533,7 @@ dialogs and the region layer.
 | R72 | `pyql3/gui/tools/fitting.py:12-15` vs `:22-23`, `:32-33` | The Gaussian model's cross term has the opposite sign to the Lorentzian and Moffat rotations. For one source with its major axis 30° CCW from +X, the fits report −120.0° (Gaussian), +120.1° (Lorentzian) and −60.0° (Moffat). The Gaussian angle is mirrored (−120 ≡ 60 mod 180, the others ≡ 120), so "Angle (deg)" depends on the model chosen. | Flip the sign of `b` in `gaussian_2d` so all three models share the CCW convention, and document which width "FWHM X" refers to. |
 | R73 | `pyql3/services/cli_install.py:206-210`, `:238-239`, `:256-259` | When a `quicklook3` not written by QuickLook 3 already exists, `plan()` records `existing='foreign'` without raising, despite its docstring. The confirmation then says "Create: <path>" and "To undo it: rm <path>", which would delete someone else's file. Only after the user clicks OK does `install()` refuse ("already exists and was not created by QuickLook 3"). | Raise `CliInstallError` from `plan()` for a foreign file (or fall through to the next candidate directory), so nothing is offered that will be refused. |
 | R74 | `pyql3/services/cli_install.py:61-76`, `:196-201` | Reasoned and simulated, not reproduced on a real system. macOS App Translocation runs a quarantined, unmoved bundle from a read-only `/private/var/folders/.../AppTranslocation/<UUID>/d/QuickLook3.app`. That path is not under any `MOUNT_ROOTS` entry, so `on_temporary_volume` is False, `plan()` accepts it, and the launcher's `exec` line names a path that is gone after reboot. | Also refuse when the resolved bundle path contains `/AppTranslocation/`, with the same "copy it to /Applications first" message. |
-| R75 | `pyql3/gui/tools/plot_catalog.py:986-987`, `:1102` | The label-ceiling message ("10 labels in view — more than the 3 that can be drawn at once", with the limit lowered to 3) is replaced by the plain status line on the next `update_plot`, such as a marker-size change, while the labels remain refused; the user is left with a ticked *Labels* box, no labels and no explanation. `LabelDensityGuard.allows` reports only changes of verdict, so the message is not written again. | After `update_plot` writes its status, re-apply the ceiling message when `self._label_guard.suppressing` is still true. |
+| R75 | `pyql3/gui/tools/plot_catalog.py:986-987`, `:1102` | ✅ FIXED — `plot_catalog.py` (`_plot_markers` re-applies the message while the guard is suppressing), covered by `test_the_label_ceiling_message_survives_a_style_change`, `test_the_ceiling_message_does_not_cover_a_catalog_with_nothing_on_the_image`. The label-ceiling message ("10 labels in view — more than the 3 that can be drawn at once", with the limit lowered to 3) is replaced by the plain status line on the next `update_plot`, such as a marker-size change, while the labels remain refused; the user is left with a ticked *Labels* box, no labels and no explanation. `LabelDensityGuard.allows` reports only changes of verdict, so the message is not written again. | After `update_plot` writes its status, re-apply the ceiling message when `self._label_guard.suppressing` is still true. |
 | R76 | `pyql3/gui/tools/region_list.py:257-259` | The Region List's **Delete All** button calls `layer.clear()` straight away, with no confirmation. **Region ➔ Delete All Regions** and the toolbar's clear button both ask first (`pyql3/gui/main_window.py:1199-1210`), and there is no undo. | Have `delete_all()` call the window's `delete_all_regions()` (as the toolbar does), or ask the same `QMessageBox.question` itself. |
 | R77 | `pyql3/core/regions_io.py:248-271`, `pyql3/gui/main_window.py:1035` | `load_regions` returns the file's `style:` block, but the window keeps only the regions and `save_regions` takes no style. A file with `style: {color: red, line_width: 1}` is re-saved with the default block (green, 2), and `color: red` and `line_width: 1` are written on every region, so editing the block no longer restyles them. | Keep the loaded style with the layer and pass it through `save_regions` as `RegionList.style`. |
 | R78 | `pyql3/core/regions_model.py:458-472` | `looks_like_ds9` needs ds9's header line, or a line that is exactly one of five frame words. Headerless files that ds9 accepts — `fk5;circle(...)` lines, a `j2000`/`fk4`/`b1950`/`ecliptic` frame line, or bare `circle(...)` lines — go to the YAML reader and fail with "should be a mapping with 'format' and 'regions' keys, found str". | Recognise any `_FRAME_RE` frame word, including inside `;`-separated statements, and a shape call in text that does not parse as a YAML mapping. |
@@ -6578,9 +6578,9 @@ Medium
 - [x] R27 Arrow keys / Home / End show a raw channel in collapse mode — plan Task 6
 - [x] R28 Depth Plot Y label not updated for Total DN — plan Task 12
 - [x] R29 Catalog recentre wrong under view rotation — plan Task 14
-- [ ] R30 SExtractor `X_IMAGE`/`Y_IMAGE` plotted one pixel off — plan Task 28
+- [x] R30 SExtractor `X_IMAGE`/`Y_IMAGE` plotted one pixel off — plan Task 28
 - [x] R31 RA/Dec catalogs take 9.5 s per refresh at 66k rows — plan Task 13
-- [ ] R32 VizieR coordinate names not recognised — plan Task 29
+- [x] R32 VizieR coordinate names not recognised — plan Task 29
 - [ ] R33 Region properties dialog undoes a drag made while it is open — plan Task 31
 - [ ] R34 Region List Delete can remove the wrong region — plan Task 32
 - [ ] R35 Aggregate-mode labels never come back after a pan — plan Task 33
@@ -6612,7 +6612,7 @@ Low
 - [ ] R59 Finder multi-select into one window; `--poll-dir` misses `.fits.gz` — plan Task 41
 - [x] R60 Catalog control changes recentre the view — plan Task 14
 - [x] R61 Catalog RA/Dec passed by position on a Dec-first 2-D image — plan Task 13
-- [ ] R62 A `SkyCoord` catalog column leaves the X/Y selectors dead — plan Task 29
+- [x] R62 A `SkyCoord` catalog column leaves the X/Y selectors dead — plan Task 29
 - [x] R63 A region with a channel range is hidden on a 2-D image — plan Task 15
 - [ ] R64 ds9 vectors ignore the `global` line; export omits `width=` — plan Task 38
 
@@ -6638,7 +6638,7 @@ Minor items (table)
 - [ ] R72 Gaussian fit angle sign differs from Lorentzian/Moffat — plan Task 27
 - [ ] R73 `cli_install` confirms a path it then refuses — plan Task 42
 - [ ] R74 App Translocation path baked into the launcher (reasoned, not reproduced) — plan Task 42
-- [ ] R75 Catalog label-ceiling message overwritten — plan Task 30
+- [x] R75 Catalog label-ceiling message overwritten — plan Task 30
 - [ ] R76 Region List Delete All has no confirmation — plan Task 32
 - [ ] R77 Region `style:` block not preserved on re-save — plan Task 37
 - [ ] R78 Headerless ds9 files not detected — plan Task 38

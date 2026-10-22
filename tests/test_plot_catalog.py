@@ -1460,3 +1460,334 @@ def test_center_on_source_recentres_the_view(qapp, loaded_viewer):
         assert (centre.x(), centre.y()) == pytest.approx(source, abs=0.01)
     finally:
         dialog.close()
+
+
+def _sextractor_catalog(w):
+    """One star at numpy [row 20, col 10], written the way SExtractor does: 1-based pixels."""
+    from astropy.table import Table
+
+    ra, dec = w.pixel_to_world_values(10, 20)
+    return Table({"NUMBER": [1], "X_IMAGE": [11.0], "Y_IMAGE": [21.0],
+                  "ALPHA_J2000": [float(ra)], "DELTA_J2000": [float(dec)]})
+
+
+def _sextractor_viewer():
+    w = _tan_wcs()
+    data = np.zeros((40, 60), np.float32)
+    data[20, 10] = 100.0
+    viewer = ImageViewer()
+    viewer.set_data(data, w.to_header())
+    return viewer, w
+
+
+def test_sextractor_image_columns_are_one_based(qapp):
+    """R30: X_IMAGE/Y_IMAGE count the first pixel as 1, and were plotted as 0-based indices, one
+    pixel off in both axes from the same row's ALPHA_J2000/DELTA_J2000."""
+    viewer, w = _sextractor_viewer()
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(_sextractor_catalog(w), "sextractor")
+        assert dlg.combo_coord_type.currentIndex() == 1
+        assert dlg.combo_x.currentText() == "X_IMAGE"
+        assert dlg.combo_pixel_origin.currentIndex() == 1, "SExtractor columns default to 1-based"
+        (px, py), = _scatter_points(dlg)
+
+        dlg.combo_coord_type.setCurrentIndex(2)
+        (wx, wy), = _scatter_points(dlg)
+
+        assert (px, py) == pytest.approx((wx, wy), abs=0.01)
+        assert (px, py) == pytest.approx((10.5, 20.5), abs=0.01)
+        assert viewer.display_data[int(px), int(py)] == 100.0
+    finally:
+        dlg.close()
+
+
+def test_the_pixel_origin_is_part_of_what_positions_are_resolved_for(qapp):
+    """Changing the origin has to re-resolve the positions, not return the other origin's."""
+    viewer, w = _sextractor_viewer()
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(_sextractor_catalog(w), "sextractor")
+        assert tuple(dlg._resolve_orig_positions()[0]) == (10.0, 20.0)
+
+        dlg.combo_pixel_origin.setCurrentIndex(0)
+        assert tuple(dlg._resolve_orig_positions()[0]) == (11.0, 21.0)
+        assert _scatter_points(dlg) == [(11.5, 21.5)]
+
+        dlg.combo_pixel_origin.setCurrentIndex(1)
+        assert _scatter_points(dlg) == [(10.5, 20.5)]
+    finally:
+        dlg.close()
+
+
+def test_the_pixel_origin_defaults_to_zero_based_for_other_columns(qapp):
+    """Only the SExtractor `*_IMAGE` spellings are known to count from 1; the regions hand-off
+    (`x`, `y`) and photutils (`xcentroid`) are array indices."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [5.0], "y": [7.0]}), "regions")
+        assert dlg.combo_pixel_origin.currentIndex() == 0
+        assert _scatter_points(dlg) == [(5.5, 7.5)]
+
+        dlg.set_catalog_table(Table({"id": [1], "xcentroid": [5.0], "ycentroid": [7.0]}), "phot")
+        assert dlg.combo_pixel_origin.currentIndex() == 0
+    finally:
+        dlg.close()
+
+
+def test_the_pixel_origin_is_offered_for_pixel_types_only(qapp):
+    viewer, w = _sextractor_viewer()
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(_sextractor_catalog(w), "sextractor")
+        for kind, shown in ((0, True), (1, True), (2, False)):
+            dlg.combo_coord_type.setCurrentIndex(kind)
+            assert dlg.combo_pixel_origin.isHidden() is (not shown)
+            assert dlg.lbl_pixel_origin.isHidden() is (not shown)
+    finally:
+        dlg.close()
+
+
+def test_a_pixel_origin_chosen_by_hand_survives_a_column_change_and_a_reload(qapp):
+    viewer, w = _sextractor_viewer()
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(_sextractor_catalog(w), "sextractor")
+        dlg.combo_pixel_origin.setCurrentIndex(0)
+
+        dlg.combo_x.setCurrentText("NUMBER")
+        dlg.combo_x.setCurrentText("X_IMAGE")
+        assert dlg.combo_pixel_origin.currentIndex() == 0
+
+        dlg.set_catalog_table(_sextractor_catalog(w), "sextractor again")
+        assert dlg.combo_pixel_origin.currentIndex() == 0
+    finally:
+        dlg.close()
+
+
+@pytest.mark.parametrize("ra_name, dec_name", [
+    ("RAJ2000", "DEJ2000"),
+    ("RA_ICRS", "DE_ICRS"),
+    ("_RAJ2000", "_DEJ2000"),
+    ("RAdeg", "DEdeg"),
+])
+def test_vizier_coordinate_names_select_world(qapp, ra_name, dec_name):
+    """R32: none of VizieR's Dec spellings was recognised, so World was never chosen and a
+    sequence number and the RA column were plotted as X and Y."""
+    from astropy.table import Table
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"Seq": [1, 2], ra_name: [266.40, 266.41],
+                                     dec_name: [-29.00, -29.01], "Vmag": [12.0, 13.0]}), "vizier")
+        assert dlg.combo_coord_type.currentIndex() == 2
+        assert dlg.combo_x.currentText() == ra_name
+        assert dlg.combo_y.currentText() == dec_name
+    finally:
+        dlg.close()
+
+
+def _skycoord_catalog(tmp_path, with_pixels=True):
+    """The shape of a photutils `SourceCatalog` table written by astropy: `sky_centroid` comes
+    back as a `SkyCoord` column."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.table import QTable
+
+    columns = {"label": [1, 2]}
+    if with_pixels:
+        columns.update(xcentroid=[10.0, 30.0], ycentroid=[20.0, 15.0])
+    columns["sky_centroid"] = SkyCoord([266.40, 266.41] * u.deg, [-29.00, -29.01] * u.deg)
+    columns["segment_flux"] = [1.0, 2.0]
+    path = tmp_path / ("phot.fits" if with_pixels else "sky_only.fits")
+    QTable(columns).write(path)
+    return str(path)
+
+
+def test_a_skycoord_column_does_not_break_the_column_guess(qapp, tmp_path, monkeypatch):
+    """R62: `.dtype` was read on every column, and a `SkyCoord` has none; the exception left the X
+    and Y selectors with their signals blocked, so choosing a column did nothing."""
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(_skycoord_catalog(tmp_path))
+        assert dlg.combo_coord_type.currentIndex() == 1
+        assert dlg.combo_x.currentText() == "xcentroid"
+
+        dlg.combo_coord_type.setCurrentIndex(2)           # World: no RA/Dec column to find
+        assert not dlg.combo_x.signalsBlocked()
+        assert not dlg.combo_y.signalsBlocked()
+        assert dlg.combo_x.currentText() in ("label", "xcentroid", "ycentroid", "segment_flux")
+
+        plotted = []
+        real = dlg.update_plot
+        monkeypatch.setattr(dlg, "update_plot", lambda: (plotted.append(1), real())[1])
+        dlg.combo_x.setCurrentText("segment_flux")
+        assert plotted, "picking a column did not redraw"
+
+        # A table whose only position is the SkyCoord loads, with the selectors left usable
+        dlg.load_catalog_file(_skycoord_catalog(tmp_path, with_pixels=False))
+        assert "Error" not in dlg.lbl_file.text()
+        assert not dlg.combo_x.signalsBlocked()
+        assert not dlg.combo_y.signalsBlocked()
+    finally:
+        dlg.close()
+
+
+def test_the_label_ceiling_message_survives_a_style_change(viewer, tmp_path, monkeypatch):
+    """R75: the next `update_plot`, from a marker-size step for instance, wrote the plain status
+    line over the message while the labels were still refused, and the guard says nothing again
+    until its verdict changes."""
+    from pyql3.gui.tools import plot_catalog as module
+
+    monkeypatch.setattr(module, "CATALOG_LABEL_LIMIT", 3)
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.load_catalog_file(_labelled_catalog(tmp_path, 10))
+        dlg.chk_show_name.setChecked(True)
+        assert "10 labels in view" in dlg.lbl_status.text()
+
+        dlg.spin_size.setValue(dlg.spin_size.value() + 2)
+
+        assert dlg._label_guard.suppressing
+        assert "10 labels in view" in dlg.lbl_status.text(), (
+            "the plain status line replaced the explanation for the missing labels")
+        assert "Zoom in" in dlg.lbl_status.text()
+
+        # Once few enough are in view the plain line is back, with the marker counts
+        viewer.imv.getView().setRange(xRange=(0, 5), yRange=(0, 5), padding=0)
+        dlg.update_visible_text_labels()
+        assert "labels in view" not in dlg.lbl_status.text()
+        assert "plotted" in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def _ceiling_dialog(viewer, monkeypatch):
+    """A dialog whose ten labelled sources are refused by a ceiling of three."""
+    from astropy.table import Table
+
+    from pyql3.gui.tools import plot_catalog as module
+
+    monkeypatch.setattr(module, "CATALOG_LABEL_LIMIT", 3)
+    dlg = PlotCatalogDialog(None, viewer)
+    xs = np.arange(10) * 3.0
+    dlg.set_catalog_table(Table({"name": [f"S{i}" for i in range(10)], "x": xs, "y": xs,
+                                 "far": xs + 1000.0}), "t")
+    dlg.chk_show_name.setChecked(True)
+    assert "10 labels in view" in dlg.lbl_status.text()
+    return dlg
+
+
+def test_the_ceiling_message_does_not_cover_a_catalog_with_nothing_on_the_image(
+        viewer, monkeypatch):
+    """R75 follow-up: with every row off the image no label is in view, so the guard has to be
+    told; it kept refusing on the old count and its message replaced the out-of-bounds line."""
+    dlg = _ceiling_dialog(viewer, monkeypatch)
+    try:
+        dlg.combo_x.setCurrentText("far")
+        dlg.combo_y.setCurrentText("far")
+        assert "out of bounds" in dlg.lbl_status.text()
+        assert "labels in view" not in dlg.lbl_status.text()
+        assert not dlg._label_guard.suppressing
+
+        # And it comes back when the rows do
+        dlg.combo_x.setCurrentText("x")
+        dlg.combo_y.setCurrentText("y")
+        assert "10 labels in view" in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_the_ceiling_message_does_not_cover_unusable_world_coordinates(viewer, monkeypatch):
+    """The same, for World on an image with no WCS: no row can be placed."""
+    dlg = _ceiling_dialog(viewer, monkeypatch)
+    try:
+        dlg.combo_coord_type.setCurrentIndex(2)
+        assert "unusable" in dlg.lbl_status.text()
+        assert "labels in view" not in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_unticking_labels_takes_the_ceiling_message_down(viewer, monkeypatch):
+    dlg = _ceiling_dialog(viewer, monkeypatch)
+    try:
+        dlg.chk_show_name.setChecked(False)
+        assert "labels in view" not in dlg.lbl_status.text()
+        assert "plotted" in dlg.lbl_status.text()
+    finally:
+        dlg.close()
+
+
+def test_a_hand_chosen_origin_does_not_reach_a_table_that_names_its_own(viewer):
+    """The regions hand-off: `x`/`y` columns that are 0-based indices, handed to a dialog the user
+    had set to 1-based for an earlier catalog with columns of the same names."""
+    from astropy.table import Table
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [6.0], "y": [8.0]}), "daofind")
+        dlg.combo_pixel_origin.setCurrentIndex(1)
+        assert _scatter_points(dlg) == [(5.5, 7.5)]
+
+        dlg.set_catalog_table(Table({"name": ["r"], "x": [5.0], "y": [7.0]}), "regions",
+                              coord_type=1, pixel_origin=0)
+
+        assert dlg.combo_coord_type.currentIndex() == 1
+        assert dlg.combo_pixel_origin.currentIndex() == 0
+        assert _scatter_points(dlg) == [(5.5, 7.5)]
+        # The origin the caller set is not a choice by hand, so the guess may move it later
+        assert dlg._origin_by_hand is False
+    finally:
+        dlg.close()
+
+
+def test_the_coordinate_type_comes_from_the_caller_when_it_names_one(viewer):
+    from astropy.table import Table
+
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [6.0], "y": [8.0]}), "t")
+        dlg.combo_coord_type.setCurrentIndex(0)           # Display Pixels, by hand
+
+        dlg.set_catalog_table(Table({"name": ["r"], "x": [5.0], "y": [7.0]}), "regions",
+                              coord_type=1, pixel_origin=0)
+
+        assert dlg.combo_coord_type.currentText() == "FITS Pixels"
+        assert dlg.combo_x.currentText() == "x"
+    finally:
+        dlg.close()
+
+
+def test_the_selectors_are_unblocked_when_the_column_guess_raises(qapp, monkeypatch):
+    """R62, the try/finally half: any exception between the two `blockSignals` calls left the X
+    and Y selectors dead."""
+    from astropy.table import Table
+
+    from pyql3.gui.tools import plot_catalog as module
+
+    viewer = ImageViewer()
+    viewer.set_data(np.zeros((40, 60), np.float32))
+    dlg = PlotCatalogDialog(None, viewer)
+    try:
+        dlg.set_catalog_table(Table({"name": ["a"], "x": [6.0], "y": [8.0]}), "t")
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("guess failed")
+
+        monkeypatch.setattr(module, "best_coord_column", boom)
+        with pytest.raises(RuntimeError):
+            dlg.update_columns_for_type()
+
+        assert not dlg.combo_x.signalsBlocked()
+        assert not dlg.combo_y.signalsBlocked()
+    finally:
+        dlg.close()

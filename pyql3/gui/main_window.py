@@ -1250,7 +1250,9 @@ class MainWindow(QMainWindow):
 
         self.open_plot_catalog()
         source = os.path.basename(self.fits_reader.filepath or "") or "regions"
-        self._plot_catalog_dialog.set_catalog_table(table, f"{len(regions)} regions from {source}")
+        # Orig coordinates are 0-based indices, whatever catalog the tool held before
+        self._plot_catalog_dialog.set_catalog_table(
+            table, f"{len(regions)} regions from {source}", coord_type=1, pixel_origin=0)
         self.statusBar().showMessage(
             f"Sent {len(regions):,} regions to the Plot Catalog tool. They are a copy: editing a "
             "region will not change the catalogue.", 8000)

@@ -145,6 +145,11 @@ def fits_to_index(v):
     return float(v) - 1.0
 
 
+def fits_to_index_array(v):
+    """`fits_to_index` for an array of FITS/ds9 pixel coordinates."""
+    return np.asarray(v, dtype=float) - 1.0
+
+
 def index_to_fits(v):
     """numpy index -> FITS/ds9 1-based pixel coordinate."""
     return float(v) + 1.0

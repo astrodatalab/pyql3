@@ -246,8 +246,9 @@ For a **FITS table**, any binary (`BINTABLE`) or ASCII (`TABLE`) extension can b
 - Undefined (`TNULL`) and masked coordinates are counted as unusable in the status line
   rather than being plotted at the origin.
 - Coordinate columns are guessed from the usual `photutils` and SExtractor spellings
-  (`xcentroid`/`ycentroid`, `X_IMAGE`/`Y_IMAGE`, `ALPHA_J2000`/`DELTA_J2000`, `RAJ2000`,
-  ...) in addition to plain `X`/`Y` and `RA`/`DEC`, and can always be overridden with the
+  (`xcentroid`/`ycentroid`, `X_IMAGE`/`Y_IMAGE`, `ALPHA_J2000`/`DELTA_J2000`) and from
+  VizieR's (`RAJ2000`/`DEJ2000`, `RA_ICRS`/`DE_ICRS`, `_RAJ2000`/`_DEJ2000`, `RAdeg`/`DEdeg`)
+  in addition to plain `X`/`Y` and `RA`/`DEC`, and can always be overridden with the
   column selectors.
 
 On the command line, `--catalog <file>` loads a catalog at startup and `--catalog-hdu
@@ -258,8 +259,17 @@ On the command line, `--catalog <file>` loads a catalog at startup and `--catalo
 Astronomers can select between three coordinate modes:
 
 1. **World Coordinates (RA / DEC)**: Celestial Right Ascension ($\text{RA}$) and Declination ($\text{DEC}$) in degrees or sexagesimal notation.
-2. **FITS Array Pixels**: 0-indexed or 1-indexed raw FITS array pixel coordinates $(x_{\text{fits}}, y_{\text{fits}})$.
+2. **FITS Array Pixels**: raw FITS array pixel coordinates $(x_{\text{fits}}, y_{\text{fits}})$.
 3. **Display Pixels**: Direct display viewport pixel coordinates.
+
+For the two pixel modes, the **Origin** box beside the coordinate type says what the columns count
+from: `0-based (array)` (the first pixel is 0, as photutils and the regions sent from the Region
+menu write it) or `1-based (FITS)` (the centre of the first pixel is 1, as SExtractor's `*_IMAGE`
+columns write it). It starts at 1-based when both chosen columns are `*_IMAGE` columns such as
+`X_IMAGE`/`Y_IMAGE` or `XWIN_IMAGE`/`YWIN_IMAGE`, and at 0-based otherwise, and follows the columns
+until you set it yourself. A choice made by hand is kept when a catalog with the same X and Y
+columns is loaded again, and reset when the columns differ; regions sent from the Region menu are
+always 0-based. World coordinates have no origin, and the box is hidden for them.
 
 ### Algorithms
 
@@ -271,7 +281,7 @@ $$(x_{\text{fits}}, y_{\text{fits}}) = \text{WCS}^{-1}(\text{RA}, \text{DEC})$$
 The RA and Dec axes are identified from the WCS rather than assumed to be FITS axes 1 and 2, so
 an image with Dec on axis 1 (an OSIRIS cube collapsed along wavelength) is handled. The whole
 catalog is converted in one call, and the result is kept until the catalog, the coordinate
-columns, the coordinate mode or the image's WCS changes.
+columns, the coordinate mode, the pixel origin or the image's WCS changes.
 
 #### B. Display Rotation & Flip Mapping
 To ensure source overlays track the image viewport when the astronomer rotates or flips the view, original FITS coordinates $(x_0, y_0)$ are mapped to current display coordinates $(x_{\text{disp}}, y_{\text{disp}})$ via the transformation algorithm:
