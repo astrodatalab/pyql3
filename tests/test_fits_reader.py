@@ -594,7 +594,7 @@ def test_save_as_to_a_new_path_uses_the_umask_default(tmp_path):
     assert stat.S_IMODE(os.stat(target).st_mode) == 0o666 & ~current_umask
 
 
-def test_holds_current_copy_after_its_own_save_only(tmp_path):
+def test_holds_current_copy_after_its_own_save_only(tmp_path, rewrite_fits_in_place):
     """R70: the window uses this to skip the poller's announcement of its own save."""
     path = str(tmp_path / "frame.fits")
     other = str(tmp_path / "other.fits")
@@ -610,7 +610,9 @@ def test_holds_current_copy_after_its_own_save_only(tmp_path):
         reader.save()                               # replaced through os.replace
         assert reader.holds_current_copy(path)
 
-        fits.PrimaryHDU(np.ones((4, 4), dtype=np.float32)).writeto(path, overwrite=True)
+        # Written into the open file, not replaced: Windows refuses to replace a file the
+        # reader holds open (docs/developer.md, "Windows: an open file cannot be unlinked").
+        rewrite_fits_in_place(path, fits.PrimaryHDU(np.ones((4, 4), dtype=np.float32)))
         assert not reader.holds_current_copy(path), "a file rewritten by someone else"
     finally:
         reader.close()

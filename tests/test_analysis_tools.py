@@ -648,6 +648,10 @@ def _type_then_click(win, field, text, button):
         if QApplication.activeWindow() is win:
             break
         QTest.qWait(10)
+    if QApplication.activeWindow() is not win:
+        # Focus follows the active window, and a CI window manager (native macOS runners) may
+        # refuse to activate one; typing would then go nowhere, which says nothing about the tool.
+        pytest.skip("the window system did not activate the main window")
     field.setFocus()
     field.selectAll()
     QTest.keyClicks(field, text)

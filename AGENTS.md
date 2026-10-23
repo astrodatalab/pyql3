@@ -665,6 +665,30 @@ Three properties of `.github/workflows/release.yml` are deliberate. Preserve the
 Bundles are unsigned and un-notarized, so each release publishes `SHA256SUMS.txt` as the
 only integrity check a user has. Keep that step.
 
+### Before a release tag is pushed
+
+The workflow runs only on a `v*` tag, and its first failing platform cancels the others, so a
+problem specific to Windows, Linux `offscreen` or Intel macOS appears one at a time, after the
+tag is public, and moving the tag needs a force push. v3.1.0 failed three times this way: OpenGL
+views on Linux, a fixed 350 ms wait for a 200 ms timer on Linux, and a test replacing a file a
+reader held open on Windows. The suite passing on an Apple Silicon Mac proves none of these.
+Before tagging:
+
+- **Check the new tests for the known hazards:** `writeto(..., overwrite=True)` or `os.replace`
+  on a path something still holds open (use `rewrite_fits_in_place`); a fixed sleep or
+  fixed-duration loop waiting for a timer, a scan or an mtime (wait for the condition, with a
+  limit); a reachable modal without a stub (M22); POSIX-only calls (permission bits, symlinks,
+  `getuid`) without a Windows skip; `open()` / `read_text()` without `encoding=` on non-ASCII
+  text; anything importing OpenGL.
+- **Reproduce the Linux job** in Docker: `ubuntu:24.04`, the workflow's apt packages plus
+  `build-essential`, `uv sync --frozen`, then `xvfb-run --auto-servernum` with
+  `QT_QPA_PLATFORM=offscreen` and `-n 4` (with `--cpus 4`; `-n auto` sees every host core and
+  runs out of memory). A copy without `.git` needs `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYQL3`.
+  The container runs as root, so the two `cli_install` unwritable-directory tests fail there and
+  only there.
+- **Run `uv run pyinstaller --noconfirm QuickLook3.spec` and the workflow's asset check
+  locally**: when the tests fail on CI, the packaging steps never run.
+
 ## Repo conventions
 
 - **Commit messages carry no AI attribution.** Do not append `Co-Authored-By: Claude ...`,

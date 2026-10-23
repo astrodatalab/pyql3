@@ -136,7 +136,10 @@ def test_escape_cancels_drawing(window, qapp):
     view = window.image_viewer.imv.getView()
     window.show()
     window.activateWindow()
-    qapp.processEvents()
+    if not QTest.qWaitForWindowActive(window, 1000):
+        # A shortcut fires only in the active window, and a CI window manager (native macOS
+        # runners) may refuse to activate one; that says nothing about the shortcut.
+        pytest.skip("the window system did not activate the window")
     # Off unless drawing, so Escape is not taken from anything else in the window.
     assert not window._cancel_draw_shortcut.isEnabled()
     window.start_drawing_region("circle")
