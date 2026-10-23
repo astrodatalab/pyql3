@@ -183,10 +183,31 @@ jobs:
           echo "--- SHA256SUMS.txt ---"
           cat ../SHA256SUMS.txt
 
+      # The release description is the tag's own section of CHANGELOG.md, the notes written for
+      # astronomers; GitHub's generated notes (only a compare link, since nothing is merged by
+      # pull request) follow it. A tag with no section gets a warning and the link alone, so a
+      # forgotten entry does not stop a release. Written outside artifacts/ like the checksums.
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v tag="${{ github.ref_name }}" \
+            '$0 ~ "^## " { if (found) exit; if ($2 == tag) { found = 1; next } } found' \
+            source/CHANGELOG.md > release_notes.md
+          if ! grep -q '[^[:space:]]' release_notes.md; then
+            echo "::warning::CHANGELOG.md has no '## ${{ github.ref_name }}' section; the release has no notes"
+          fi
+          echo "--- release_notes.md ---"
+          cat release_notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             artifacts/**/*
             SHA256SUMS.txt
+          body_path: release_notes.md
           generate_release_notes: true

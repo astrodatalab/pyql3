@@ -688,6 +688,9 @@ Before tagging:
   only there.
 - **Run `uv run pyinstaller --noconfirm QuickLook3.spec` and the workflow's asset check
   locally**: when the tests fail on CI, the packaging steps never run.
+- **Write the tag's section in `CHANGELOG.md` first**, headed exactly `## vX.Y.Z`. The release
+  job posts that section as the GitHub release description, above GitHub's compare link; a tag
+  without one is released with a warning and no notes.
 
 ## Repo conventions
 
