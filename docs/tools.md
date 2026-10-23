@@ -468,9 +468,10 @@ regions:
   dash: true
 ```
 
-Region files written by this version are format 2, which needs this version of QuickLook 3 or a
-newer one to open; an older one says the file is from a newer version. Format 1 files from older
-versions open here as before. To pass regions to an older version, or to anything else, export
+A region file saved on an image with a WCS carries sky positions and is format 2, which needs this
+version of QuickLook 3 or a newer one to open; an older one says the file is from a newer version.
+A file with no sky positions (saved on an image without a WCS) is written as format 1, which
+older versions open too. Format 1 files from older versions open here as before. To pass regions to an older version, or to anything else, export
 them as ds9 `.reg` (**Region ➔ Export ds9 Regions…**), which opens anywhere.
 
 The **`style:` block is ds9's `global` line**: it records the formatting the file was written with,

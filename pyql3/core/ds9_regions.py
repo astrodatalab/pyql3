@@ -192,9 +192,10 @@ def to_ds9(region_list, wcs=None, axis_indices=(0, 1), frame="auto", written_by=
         if isinstance(region, Arrow):
             arrows.append(region)
             continue
-        if isinstance(region, Text) and region.angle % 360.0:
+        if isinstance(region, Text) and (region.angle % 360.0 or use_sky):
             # Handled by hand below. Passing it to the library as well would write the label
-            # twice, once without its rotation.
+            # twice, once without its rotation. In a sky frame every label is: its angle is
+            # measured from the sky axes, so even a level label needs one on a rotated field.
             rotated_text.append(region)
             continue
         shape = _to_regions_shape(region, index, report)
@@ -367,6 +368,10 @@ def _rotated_text_lines(rotated_text, use_sky, mapping, report):
     `textangle` at all, so a rotated label loses its angle if the library writes it. Such labels
     are therefore kept out of the library's hands entirely (see `to_ds9`) and written here, in
     the `# text(...)` form ds9 itself uses.
+
+    In a sky frame ds9 measures `textangle` from the sky axes, as it does a box's angle: seen in
+    ds9 on a 30°-rotated field, `textangle=30` is drawn level. The angle is converted like an
+    arrow's (`pixel_angle_to_sky`), so every label in a sky export is written here.
     """
     lines = []
     for region in rotated_text:
@@ -374,7 +379,13 @@ def _rotated_text_lines(rotated_text, use_sky, mapping, report):
         if placed is None:
             report.skipped.append(f"text {region.text!r}: {_unplaced_reason(mapping, use_sky)}")
             continue
-        angle = region.angle % 360.0
+        angle = region.angle
+        if use_sky:
+            angle = pixel_angle_to_sky(mapping, region.x, region.y, angle)
+            if angle is None:
+                report.skipped.append(f"text {region.text!r}: no sky position for its angle")
+                continue
+        angle = round(angle % 360.0, 6) % 360.0
         properties = [f"text={{{_escape_braces(region.text)}}}", f"textangle={angle:g}"]
         if region.color:
             properties.append(f"color={region.color}")
@@ -434,7 +445,25 @@ def _arrow_lines(arrows, use_sky, mapping, report):
 
         lines.append(f"# vector({placed[0]},{placed[1]},{length_text},{angle:.8f}) "
                      + " ".join(properties))
+    if use_sky and lines and not _pixels_are_square(mapping):
+        report.notes.append(
+            "the image's pixels are not square, and ds9 draws a sky-frame arrow as if they were: "
+            "its direction and length in ds9 will differ from this image (BUGS.md R94)")
     return lines
+
+
+def _pixels_are_square(mapping):
+    """True when the celestial pixels have the same scale on both axes, to 1 part in 1000.
+
+    Seen in ds9 on 0.36" x 0.72" pixels: ds9 turns a vector's sky angle into a pixel angle by the
+    field rotation alone, and its length into pixels with one scale (there, 0.72"). The writer
+    gives the true direction and length on the sky, so on such pixels ds9 draws the arrow off
+    target (`BUGS.md` R94). On square pixels the two agree.
+    """
+    from astropy.wcs.utils import proj_plane_pixel_scales
+
+    scales = proj_plane_pixel_scales(mapping.wcs2d)
+    return math.isclose(scales[0], scales[1], rel_tol=1e-3)
 
 
 def pixel_angle_to_sky(mapping, x, y, angle_deg):
@@ -928,6 +957,13 @@ def _from_regions_shape(shape, index, mapping, report):
             report.skipped.append(f"region {index}: a text region with no text")
             return None
         rotation = float(shape.visual.get("rotation", 0.0) or 0.0)
+        if _was_sky(shape):
+            # Measured from the sky axes, as the writer converts it (`_rotated_text_lines`).
+            rotation = sky_angle_to_pixel(mapping, shape.center, rotation)
+            if rotation is None:
+                report.skipped.append(f"region {index}: a label whose angle could not be "
+                                      "converted to this image")
+                return None
         return Text(x=centre[0], y=centre[1], text=label, angle=rotation % 360.0, **attributes)
 
     if isinstance(pixel, LinePixelRegion):

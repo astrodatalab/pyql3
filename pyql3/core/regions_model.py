@@ -54,9 +54,13 @@ import yaml
 #: releases v3.0.20 to v3.0.23) refuse an unknown field one line per region; given version 2 they
 #: say the file is from a newer version and suggest a ds9 `.reg` export instead. Version 1 files are
 #: read here as they always were: an anchor with no `frame:` is in the loading image's frame.
+#:
+#: A file with no `sky` block holds nothing version 1 lacks, so it is written as version 1
+#: (`FORMAT_WITHOUT_SKY`) and those builds open it; it reads the same here either way.
 FORMAT_NAME = "pyql3-regions"
 FORMAT_VERSION = 2
 FORMAT = f"{FORMAT_NAME}/{FORMAT_VERSION}"
+FORMAT_WITHOUT_SKY = f"{FORMAT_NAME}/1"
 
 #: Order the shared attributes are written in, after `type` and the geometry.
 COMMON_ORDER = ("text", "color", "line_width", "dash", "font_size", "tag", "visible",
@@ -404,7 +408,8 @@ class RegionList:
         return iter(self.regions)
 
     def to_dict(self):
-        data = {"format": FORMAT}
+        has_sky = any(region.sky is not None for region in self.regions)
+        data = {"format": FORMAT if has_sky else FORMAT_WITHOUT_SKY}
         if self.written_by:
             data["written_by"] = self.written_by
         if self.source:

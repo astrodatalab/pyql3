@@ -820,6 +820,50 @@ def test_an_arrow_survives_a_sky_round_trip_on_a_rotated_field(rotation):
     assert not out_report.skipped and not in_report.skipped
 
 
+@pytest.mark.parametrize("angle, written", [(30.0, 60.0), (0.0, 30.0)])
+def test_a_label_angle_is_a_sky_angle_on_a_rotated_field(angle, written):
+    """Seen in ds9 on a 30°-rotated field: a sky-frame `textangle=30` is drawn level and
+    `textangle=20` at -10°, so ds9 measures a label's angle from the sky axes, as it does a
+    box's or a vector's. A label level on the image therefore needs `textangle=30` there."""
+    text, _ = to_ds9(RegionList(regions=[Text(x=50.0, y=50.0, text="label", angle=angle)]),
+                     wcs=rotated_wcs(30.0), axis_indices=IMAGE_AXES, frame="sky")
+
+    line, = [ln for ln in text.splitlines() if "text={label}" in ln]
+    assert float(line.split("textangle=")[1].split()[0]) == pytest.approx(written, abs=1e-3)
+
+
+@pytest.mark.parametrize("rotation", [0.0, 30.0, 90.0, -45.0])
+@pytest.mark.parametrize("angle", [0.0, 30.0])
+def test_a_label_survives_a_sky_round_trip_on_a_rotated_field(rotation, angle):
+    wcs = rotated_wcs(rotation)
+    original = Text(x=50.0, y=50.0, text="label", angle=angle)
+
+    text, out_report = to_ds9(RegionList(regions=[original]), wcs=wcs,
+                              axis_indices=IMAGE_AXES, frame="sky")
+    restored, in_report = from_ds9(text, wcs=wcs, axis_indices=IMAGE_AXES)
+
+    label, = restored
+    assert (label.x, label.y) == pytest.approx((50.0, 50.0), abs=SUB_PIXEL)
+    difference = (label.angle - angle + 180.0) % 360.0 - 180.0
+    assert difference == pytest.approx(0.0, abs=1e-2)
+    assert not out_report.skipped and not in_report.skipped
+
+
+@pytest.mark.parametrize("cdelt, warned", [([-1e-4, 2e-4], True), ([-1e-4, 1e-4], False)],
+                         ids=["non-square", "square"])
+def test_a_sky_arrow_on_non_square_pixels_is_reported(cdelt, warned):
+    """Seen in ds9 on 0.36" x 0.72" pixels: ds9 turns a vector's sky angle into a pixel angle
+    by the field rotation alone and its length by one pixel scale, so an arrow written as the
+    true direction and length on the sky is drawn off target there (`BUGS.md` R94)."""
+    wcs = image_wcs()
+    wcs.wcs.cdelt = cdelt
+    text, report = to_ds9(RegionList(regions=[Arrow(x=50.0, y=50.0, length=20.0, angle=45.0)]),
+                          wcs=wcs, axis_indices=IMAGE_AXES, frame="sky")
+
+    assert "# vector(" in text
+    assert any("pixels are not square" in note for note in report.notes) == warned, report.notes
+
+
 #: Sgr A*, in ICRS.
 SGR_A_STAR = SkyCoord(266.41683708 * u.deg, -29.00781056 * u.deg)
 

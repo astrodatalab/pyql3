@@ -11,6 +11,7 @@ import yaml
 
 from pyql3.core.regions_model import (
     FORMAT,
+    FORMAT_WITHOUT_SKY,
     Arrow,
     Box,
     Circle,
@@ -108,11 +109,25 @@ def test_defaults_are_left_out_of_the_file():
     assert RegionList.from_yaml(text).regions[0].frame is None
 
 
-def test_a_written_file_declares_format_version_2():
+def test_a_file_with_sky_positions_declares_format_version_2():
     """`sky: frame:` is a field version 1 readers refuse one line per region; a new major version
     makes them say "written by a newer version ... Upgrade, or export ... as a ds9 .reg file"."""
-    text = RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0)]).to_yaml()
+    regions = [Circle(x=1.0, y=2.0, radius=3.0),
+               Circle(x=4.0, y=5.0, radius=3.0,
+                      sky=SkyAnchor(ra_deg=266.4, dec_deg=-29.0, frame="fk5"))]
+    text = RegionList(regions=regions).to_yaml()
     assert yaml.safe_load(text)["format"] == "pyql3-regions/2"
+
+
+def test_a_file_with_no_sky_positions_declares_format_version_1():
+    """Without a `sky` block nothing in the file is new to version 1 readers (cb555d8 and
+    v3.0.20 to v3.0.23), so it says version 1 and they open it; this build reads it the same."""
+    original = RegionList(regions=[Circle(x=1.0, y=2.0, radius=3.0, text="src"),
+                                   Box(x=5.0, y=6.0, width=4.0, height=2.0, angle=30.0)])
+    text = original.to_yaml()
+
+    assert yaml.safe_load(text)["format"] == "pyql3-regions/1"
+    assert RegionList.from_yaml(text).regions == original.regions
 
 
 @pytest.mark.parametrize("with_sky", [False, True], ids=["no-sky", "sky"])
@@ -230,7 +245,8 @@ def test_the_file_declares_its_format_and_leads_with_type_and_geometry():
     text = RegionList(regions=[Box(x=1.0, y=2.0, width=3.0, height=4.0, angle=5.0,
                                    color="red")]).to_yaml()
 
-    assert yaml.safe_load(text)["format"] == FORMAT
+    # No sky block, so version 1 (`test_a_file_with_no_sky_positions_declares_format_version_1`)
+    assert yaml.safe_load(text)["format"] == FORMAT_WITHOUT_SKY
     # Readability: the file's own formatting up top, as ds9 puts its `global` line, then shape
     # and geometry before styling, in declaration order.
     keys = [line.split(":")[0].strip("- ") for line in text.splitlines() if ":" in line]
