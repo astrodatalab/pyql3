@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://astrodatalab.github.io/pyql3/developer/">
       
       
-        <link rel="prev" href="../cli/">
+        <link rel="prev" href="../changelog/">
       
       
         <link rel="next" href="../api/">
@@ -326,6 +326,33 @@
     
   
     CLI & Directory Polling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
   
 
     
@@ -949,6 +976,7 @@
 │   ├── window_manager.py     # The open windows, and where a new file opens
 │   ├── region_toolbar.py     # Optional vertical shape toolbar (icons painted, not files)
 │   ├── file_open.py          # Finder open-document events
+│   ├── scene_items.py        # Deleting graphics items taken off the image
 │   ├── viewers/
 │   │   ├── image_viewer.py   # 2D/3D image display, WCS, scaling, &amp; colormaps
 │   │   └── region_layer.py   # Drawing, hit-testing and rendering of regions
@@ -1016,7 +1044,7 @@ Declination (<code>DEC--TAN</code>), and Axis 3 to Right Ascension (<code>RA---T
 that ordering into C-contiguous NumPy order, so <code>data.shape</code> is <code>(RA, DEC, WAVE)</code> —
 wavelength is FITS axis 1 but the <strong>last</strong> NumPy axis.</p>
 <h3 id="instrument-agnostic-wcs-rule">Instrument-Agnostic WCS Rule</h3>
-<p>Do <strong>not</strong> hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Always dynamically parse the <code>CTYPE</code> string using target axis indices (e.g., <code>wcs.wcs.ctype[z_idx]</code>).</p>
+<p>Do <strong>not</strong> hardcode axis checks (such as assuming Axis 3 is wavelength). Datacubes from other instruments (e.g. JWST NIRSpec, Gemini NIFS) map wavelength to different axes. Find axes through the WCS with the helpers in <code>pyql3/core/header_info.py</code> (<code>spectral_axis</code>, <code>spectral_unit</code>, <code>default_axes</code>), not by matching a <code>CTYPE</code> string: <code>AWAV</code> and IRAF-style <code>LINEAR</code> axes do not contain <code>WAVE</code>.</p>
 <h3 id="reloading-a-file-live-observing">Reloading a File (live observing)</h3>
 <p><code>FitsReader.load()</code> reopens the <code>HDUList</code> whenever the bytes on disk differ from the ones it
 holds open — <strong>including when the path is unchanged</strong>. Staleness is keyed on
@@ -1025,6 +1053,11 @@ picked up, while a byte-identical reload reuses the handle. That reuse is load-b
 switching extensions goes through <code>load()</code>, and reopening every time would silently discard
 Header Editor edits that have not been saved yet. Pass <code>force=True</code> for a guaranteed re-read
 (<strong>Display → Redisplay image</strong> does).</p>
+<p>A load is all or nothing. If opening the file or reading the chosen extension raises, or
+<code>require_data=True</code> finds no 2-D or 3-D image (<code>NoImageData</code>), the reader still holds the file
+it held before, open. <code>MainWindow.load_fits()</code> passes <code>require_data=True</code>, so after a failed
+auto-load of a frame still arriving the window goes on acting on the file it displays (R12 in
+<code>BUGS.md</code>).</p>
 <div class="admonition warning">
 <p class="admonition-title"><code>memmap=False</code> is deliberate</p>
 <p>Files are opened with <code>memmap=False</code>. Reading through a mapping of a file the DRP is
@@ -1033,6 +1066,26 @@ rewriting under us returns undefined data and can <code>SIGBUS</code> if the fil
 new code: <strong>never probe <code>hdu.data</code> to inspect an extension</strong> — that reads it into
 memory. Test the header instead, as <code>FitsReader._is_displayable()</code> does.</p>
 </div>
+<p><strong>A save writes integer images back as the integers the file stores.</strong> astropy reads an integer
+image as floats when its integers are scaled (<code>BSCALE</code>/<code>BZERO</code> other than 1/0) or when it has a
+<code>BLANK</code> (whose pixels become NaN). For a scaled image it removes <code>BSCALE</code>, <code>BZERO</code> and <code>BLANK</code> from
+<code>hdu.header</code> and would write <code>BITPIX = -32</code> (R71 in <code>BUGS.md</code>); for one with <code>BLANK</code> and no scaling
+it keeps the integer <code>BITPIX</code> and would write the float32 bytes under it, which destroys every
+value. So <code>load()</code> records both kinds, with the three cards and their positions, before any data is
+read (<code>_integer_scaling_of</code>). <code>save()</code> reads those HDUs' integers from the file again with
+<code>do_not_scale_image_data=True</code> (<code>_stored_integers</code>) and writes them with the cards put back
+(<code>_encoded_for_writing</code>), so the stored integers are unchanged; rebuilding them from astropy's
+float32 is not exact for a fine <code>BSCALE</code>. A tile-compressed HDU is read the same way and rebuilt
+with its own compression type, tiling and quantisation settings. When the file on disk has changed
+since it was read, its integers cannot be read back, so such a save raises <code>ValueError</code> (the file
+changed on disk; reopen it) and writes nothing; the Header Editor then puts back the cards it had
+applied and keeps the edits, unsaved. The viewer's arrays are never modified. While
+an HDU is recorded, its <code>BSCALE</code>, <code>BZERO</code> and <code>BLANK</code> cannot be edited (<code>_keeps_keyword</code>). Every
+other HDU — float data, identity scaling without <code>BLANK</code>, and unsigned integers (<code>BZERO</code> = 2<strong>15,
+2</strong>31, 2**63), which astropy reads as <code>uint</code> arrays — is written by astropy as it is. Do not open
+with <code>scale_back=True</code> instead: it writes unsigned HDUs without <code>BZERO</code> (a JWST DQ flag 2151153665
+read back as 3670017), removes <code>BSCALE = 1</code>/<code>BZERO = 0</code> from OSIRIS cubes, and rescales the HDU's
+own array in place, which is the viewer's <code>raw_data</code>.</p>
 <div class="admonition danger">
 <p class="admonition-title">Windows: an open file cannot be unlinked or replaced</p>
 <p>Windows opens files without <code>FILE_SHARE_DELETE</code>, so while we hold a FITS file open <strong>no
@@ -1053,9 +1106,10 @@ one</strong> — not us, not another process — can delete or rename over that 
 <p>This asymmetry is only tested on Windows CI, so a change here can pass locally on macOS
 or Linux and fail the release build. See <strong>B18</strong> and <strong>B19</strong> in <code>BUGS.md</code>.</p>
 </div>
-<p><code>_is_displayable(hdu)</code> (<code>is_image</code> <strong>and</strong> <code>NAXIS &gt; 0</code>) is the single definition of an
+<p><code>_is_displayable(hdu)</code> (<code>is_image</code> <strong>and</strong> <code>NAXIS</code> of 2 or 3) is the single definition of an
 extension the viewer can show, used both by <code>load()</code> and by <code>get_image_extensions()</code>, which
-populates the Extension combo. <code>get_all_extensions()</code> is a different question and still lists
+populates the Extension combo. A 1-D or 4-D image is therefore neither offered nor opened by
+default: a file whose primary is 4-D opens its 3-D <code>SCI</code> extension. <code>get_all_extensions()</code> is a different question and still lists
 tables. A <code>BINTABLE</code> has <code>data is not None</code>, so that is never the right test.</p>
 <h3 id="internal-data-state-vs-display-data-state-critical">Internal Data State vs. Display Data State (CRITICAL)</h3>
 <p><code>ImageViewer</code> keeps <strong>three</strong> arrays, not two — <code>raw_data</code>, <code>transposed_data</code>, and
@@ -1074,13 +1128,32 @@ screen. The two directions are kept in sync automatically: <code>on_slider_chang
 timeline back onto the slider. Both are wrapped in the <code>_syncing_slice</code> guard, because
 <code>imv.setImage()</code> emits a spurious <code>sigTimeChanged(0)</code> that would otherwise reset the
 slider on every redisplay.</p>
+<p>To redraw after a flip, a rotation, a unit change or a new axis mapping, call
+<code>refresh_display()</code>. It goes through <code>show_current_plane()</code>, which dispatches on the z mode:
+<code>apply_z_range()</code> in Z Range mode, and <code>apply_z_slice()</code> otherwise, which covers both a single
+slice and Boxcar. Before a collapsed plane is drawn, the full cube is loaded into the
+ImageView, so its timeline has the new cube's frame count. <code>update_image_display()</code> on its own
+redraws <code>display_data</code> as it stands, which is right only for a change of levels or scale
+(<code>apply_contrast()</code>).</p>
+<p>In Z Range mode the ImageView still holds the full cube under the collapsed plane.
+<code>on_imv_time_changed</code> redraws the collapse when the ImageView changes frame (for example
+during playback), and <code>eventFilter</code> ignores presses of the ImageView's frame keys (arrows,
+Home, End, Space), because Home at frame 0 repaints channel 0 without changing frame. Key
+releases still reach pyqtgraph, so a key pressed before the switch is not left marked as held.
+Because Space cannot pause playback in this mode, <code>z_mode_changed</code> stops playback on entering it.</p>
+<p>In Boxcar mode the ImageView holds the full cube too, and <code>apply_z_slice</code> keeps its frame at the
+slider's value. The stepping keys (Left, Right, Home, End, PageUp, PageDown) are turned into
+moves of the Z Slice slider, which draws the median for the new centre. Space, Up and Down still
+start pyqtgraph's playback; each frame it steps reaches <code>on_imv_time_changed</code>, and
+<code>_after_playback_tick</code> stops playback at either end of the cube, where pyqtgraph would otherwise
+keep repainting the raw end channel.</p>
 <div class="admonition warning">
 <p class="admonition-title">Use <code>current_z()</code>, not <code>imv.currentIndex</code></p>
 <p>Tools that need the displayed z index must call <code>self.image_viewer.current_z()</code>. The
-ImageView's own <code>currentIndex</code> is only maintained while a single slice is displayed —
-the Boxcar and collapse-range paths render through <code>bypass_imv=True</code> and never update
-it, so it goes stale. <code>current_z()</code> returns the slider value in slice/boxcar mode and
-the middle of the range in collapse mode, clamped to the cube.</p>
+ImageView's own <code>currentIndex</code> follows the slider in slice and Boxcar mode, but not in
+collapse-range mode, which renders through <code>bypass_imv=True</code> and leaves it wherever it
+was. <code>current_z()</code> returns the slider value in slice/boxcar mode and the middle of the
+range in collapse mode, clamped to the cube.</p>
 </div>
 <h3 id="analysing-the-displayed-plane">Analysing the Displayed Plane</h3>
 <p>In <strong>Boxcar</strong> or <strong>Z Range</strong> mode the screen shows a <em>collapsed</em> plane that exists in no
@@ -1089,7 +1162,10 @@ single channel of the cube, so no <code>cube[z]</code> is the right data. Two ac
 <li><strong><code>current_plane()</code></strong> — the 2-D plane on screen, oriented like <code>display_data</code> but
   <strong>without</strong> the DN multiplier. Use it when the caller multiplies by <code>data_multiplier</code>
   itself (as the Depth Plot does at plot time); using <code>display_data</code> there would apply the
-  multiplier twice.</li>
+  multiplier twice. In Z Range and Boxcar mode it returns the plane the viewer last drew
+  rather than collapsing the cube again, as long as the data, the range and the collapse
+  method are those it was drawn from (<code>ImageViewer.data_generation</code> changes with the data),
+  so any number of open tools cost one collapse per change. Treat the plane as read-only.</li>
 <li><strong><code>display_data</code></strong> — the same plane <em>with</em> the multiplier already folded in. Tools that
   plot it directly want this, and because it is 2-D whenever a collapse is displayed, the
   common <code>if img.ndim == 3: img = img[...]</code> idiom is already correct.</li>
@@ -1113,12 +1189,16 @@ reuse them rather than re-deriving the range:</p>
 <td>the Z Min / Z Max boxes, parsed and clamped; <code>None</code> if unparsable</td>
 </tr>
 <tr>
+<td><code>z_range_in_effect(write_back=False)</code></td>
+<td>the range a Z Range collapse covers: the boxes, or the whole cube while either does not parse (R84); use this to draw or read the collapse</td>
+</tr>
+<tr>
 <td><code>boxcar_width()</code> / <code>boxcar_range(z)</code></td>
 <td>the Boxcar setting and the window it averages</td>
 </tr>
 <tr>
 <td><code>collapse_plane(zmin, zmax, method=None)</code></td>
-<td>Median / Mean / Sum collapse over an inclusive range</td>
+<td>Median / Mean / Sum collapse over an inclusive range; always computes, so read the plane on screen through <code>current_plane()</code></td>
 </tr>
 <tr>
 <td><code>apply_spatial_transforms(arr)</code></td>
@@ -1149,15 +1229,17 @@ swallows <code>print</code> and does not support <code>--pdb</code>.</p>
 <h3 id="test-organization-tests">Test Organization (<code>tests/</code>)</h3>
 <ul>
 <li><code>tests/test_fits_reader.py</code>: FITS loading, WCS extraction, multi-extension headers, in-place reload/staleness, and OSIRIS axis mapping.</li>
+<li><code>tests/test_header_info.py</code>: The Qt-free integration-time rules in <code>pyql3/core/header_info.py</code> behind the Total DN multiplier — <code>TRUITIME</code> over a millisecond <code>ITIME</code>, <code>EXPTIME</code> as the last fallback, zero and missing keywords, and <code>COADDS</code> — and <code>data_unit()</code>, which reads <code>BUNIT</code> to decide the unit label and whether Total DN applies.</li>
 <li><code>tests/test_image_viewer.py</code>: <code>raw_data</code> / <code>transposed_data</code> / <code>display_data</code> separation, view rotations, display scaling, colormaps, and z-slice plane accessors.</li>
 <li><code>tests/test_depth_plot.py</code>: Spectrum extraction, background subtraction (both the sky annulus and the independent region), line list parsing, LaTeX label formatting, and Y-auto scaling.</li>
 <li><code>tests/test_spectral_photometry.py</code>: The Qt-free per-channel aperture photometry behind the Depth Plot's circular extraction — flux recovery over a known sky, the <code>(x, y)</code> vs <code>(y, x)</code> axis convention, NaN and edge handling, and agreement with the Aperture Photometry tool plane by plane.</li>
 <li><code>tests/test_analysis_tools.py</code>: Smoke coverage that each analysis dialog opens and computes — cuts, fitting, statistics, photometry, Strehl, arithmetic, surface plots.</li>
 <li><code>tests/test_cuts.py</code>: Diagonal/linear cut ROI ↔ spinbox round-tripping, cut width, and extraction on cubes.</li>
-<li><code>tests/test_plot_catalog.py</code>: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns.</li>
+<li><code>tests/test_plot_catalog.py</code>: Catalog marker and text-label lifecycle — removal on close, no accumulation across open/close, idempotent and teardown-safe close — plus FITS-table ingest: extension enumeration and selection, vector-column and masked-coordinate handling, and WCS round-tripping of RA/Dec columns; markers and labels following a flip, a new image and a view rotation, and the time a marker-control change takes on a 20,000-row RA/Dec catalog.</li>
+<li><code>tests/test_label_policy.py</code>: The shared overlay-label policy in <code>pyql3/gui/label_policy.py</code> — the cull margin and the <code>LabelDensityGuard</code> ceiling — run without a display.</li>
 <li><code>tests/test_menu_actions.py</code>: The <code>QAction.triggered</code> bool-vs-coordinate slot hazard and <code>as_center()</code> coercion (see the Qt slot gotcha in <code>AGENTS.md</code>).</li>
-<li><code>tests/test_main_window_and_poller.py</code>: <code>MainWindow</code> tool lifecycle, 2D guards, and <code>DirectoryPoller</code> service.</li>
-<li><code>tests/test_poller.py</code>: Settle detection for files still being written, burst coalescing, and the auto-load retry/backoff path.</li>
+<li><code>tests/test_main_window_and_poller.py</code>: <code>MainWindow</code> tool lifecycle, 2D guards, <code>DirectoryPoller</code> service, and the interaction of the header editor and Save FITS As with auto-load.</li>
+<li><code>tests/test_poller.py</code>: Settle detection for files still being written, burst coalescing, the auto-load retry/backoff path, and the cancelling of stale retries.</li>
 <li><code>tests/test_packaging_assets.py</code>: Bundled line lists and <code>cmcrameri</code> colormaps are present, and <code>QuickLook3.spec</code> registers every asset, the bundle identifier, and the FITS document types.</li>
 <li><code>tests/test_cli_install.py</code>: The <code>quicklook3</code> launcher — side-effect-free planning, argument forwarding and quoting, venv interpreter preservation, quarantine guard, disk-image and foreign-file refusals, install directory choice.</li>
 <li><code>tests/test_file_open.py</code>: Finder open-document routing (queueing before the window exists, real <code>QFileOpenEvent</code> delivery) and the Install Command Line Tool menu action, including that declining the confirmation writes nothing.</li>

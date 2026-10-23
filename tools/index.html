@@ -351,6 +351,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#data-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Units
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#1-depth-plot-spectral-line-lists" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -859,6 +870,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../developer/" class="md-nav__link">
         
   
@@ -931,6 +969,17 @@
       Table of contents
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#data-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Units
+      
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#1-depth-plot-spectral-line-lists" class="md-nav__link">
@@ -1422,6 +1471,11 @@
 <h1 id="astronomical-tools-algorithms-guide">Astronomical Tools &amp; Algorithms Guide</h1>
 <p>QuickLook 3 provides a suite of analytical tools tailored for Integral Field Unit (IFU) data cubes and 2D astronomical images. This guide details the usage and mathematical algorithms underlying each tool.</p>
 <hr />
+<h2 id="data-units">Data Units</h2>
+<p>Every unit label — the colorbar, the hover readout, the Depth Plot and the cut plots — names the unit the file's <code>BUNIT</code> keyword states: <code>DN/s</code> for OSIRIS (<code>'ADU per second per coadd'</code>), <code>MJy/sr</code> for a JWST cube. A unit written in a form astropy cannot read (<code>ELECTRONS/S</code>, <code>counts/s</code>) is shown in the file's own words. A file that states no unit, such as a Gemini NIFS cube, is labelled <strong>Unknown</strong>; the unit is never guessed from the values.</p>
+<p>An extension whose header states no <code>BUNIT</code> takes the primary header's unit and integration time, as the OSIRIS noise extension (in DN/s) needs, unless its values are integers: those are flags, such as the OSIRIS quality extension or a JWST <code>DQ</code>, and have no unit. It never takes another extension's: a JWST <code>DQ</code>, <code>WMAP</code> or <code>VAR_*</code> extension is not in the <code>SCI</code> extension's MJy/sr, so it reads <strong>Unknown</strong> unless it states a unit of its own.</p>
+<p><strong>Display ➔ Data Units</strong> has two choices. <strong>As Stored</strong> shows the values as the file holds them, with the file's unit in parentheses: <code>As Stored (DN/s)</code>, <code>As Stored (MJy/sr)</code>, <code>As Stored (unit not stated)</code>. <strong>As Total DN</strong> multiplies a count rate by the integration time: <code>TRUITIME</code> (else <code>ITIME</code>) times <code>COADDS</code>, or <code>EXPTIME</code> when the header has neither. It is offered only when the data are a count per second (<code>DN/s</code>, <code>electron/s</code>, ...) and the header states an integration time; otherwise it is disabled and its tooltip gives the reason ("data are in MJy/sr", "no unit is stated for these data", "the file's unit 'counts/s' is not recognised", "no integration time in the header"). Loading such a file while Total DN is shown switches back, with the status bar message "Total DN is not available for this file (<em>reason</em>); showing the values as stored."</p>
+<hr />
 <h2 id="1-depth-plot-spectral-line-lists">1. Depth Plot &amp; Spectral Line Lists</h2>
 <p>The <strong>Depth Plot</strong> tool extracts 1D spectra along the wavelength (<span class="arithmatex">\(Z\)</span>) axis of a 3D data cube.</p>
 <p><img alt="Depth Plot" src="../images/depth_plot_example.png" /></p>
@@ -1443,6 +1497,9 @@ same quantity the Aperture Photometry tool reports for one plane.</p>
 how its pixels are combined, and its geometry in the form that shape is parameterised —
 <strong>Center X / Y</strong> and <strong>Radius</strong> for a circle, <strong>X Region / Y Region</strong> for a rectangle. The
 geometry controls swap with the shape rather than describing a circle by its bounding box.
+<strong>Center X / Y</strong> are pixel indices, so a circle whose centre reads <code>12, 9</code> is drawn on the
+centre of pixel (12, 9) and measures that pixel; the Aperture Photometry and Strehl tools
+place their circles the same way.
 The <strong>BACKGROUND</strong> group likewise shows only the controls its current mode uses. An annulus
 is offered only for a circular aperture, since it has nothing to be concentric with
 otherwise; selecting a rectangle withdraws the option rather than ignoring it.</p>
@@ -1479,10 +1536,13 @@ pixel. A background <strong>Total</strong> is offered only in Region mode: summi
 subtracting that sum from each pixel would scale with however wide the annulus happened to
 be drawn, so it is disabled for an annulus.</p>
 <p>A NaN pixel contributes to neither <span class="arithmatex">\(\sum_i w_i I_i\)</span> nor <span class="arithmatex">\(A\)</span>, so a masked or dead pixel inside
-the aperture reduces the area rather than poisoning the channel. A channel that is entirely
-NaN within the annulus yields a NaN background for that channel alone. Geometry that cannot
-be measured at all — an aperture off the edge of the cube, <span class="arithmatex">\(r_{\text{in}} \ge r_{\text{out}}\)</span>
-— is reported beneath the controls instead of being drawn as a flat line.</p>
+the aperture reduces the area rather than poisoning the channel. <span class="arithmatex">\(A\)</span> is therefore counted per
+channel, in Region mode as in Annulus mode. A channel in which no aperture pixel is finite is
+NaN for every combine method, Total included, and a channel that is entirely NaN within the
+annulus yields a NaN background for that channel alone. Geometry that cannot be measured at
+all — an aperture off the edge of the cube, <span class="arithmatex">\(r_{\text{in}} \ge r_{\text{out}}\)</span>, a sky annulus
+that starts inside the aperture (<span class="arithmatex">\(r_{\text{in}} &lt; r_{\text{ap}}\)</span>) — is reported beneath the
+controls instead of being drawn as a flat line.</p>
 <p>Because the aperture is circular and the view transforms are flips and multiples of 90°, the
 extracted spectrum is invariant to how the image is currently oriented. Note that a circle in
 pixel space is a circle on sky only for square spatial pixels, which OSIRIS has and some
@@ -1490,9 +1550,21 @@ instruments do not.</p>
 <p>The arithmetic lives in <code>pyql3/core/spectral_photometry.py</code>, which imports no Qt and is
 tested directly, including against the Aperture Photometry tool's independent implementation.</p>
 <h4 id="c-wavelength-primary-x-axis-dual-axis-display">C. Wavelength Primary X-Axis &amp; Dual Axis Display</h4>
-<p>When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths <span class="arithmatex">\(\lambda\)</span> (<span class="arithmatex">\(\mu\text{m}\)</span>). The top X-axis (<code>PixelIndexAxis</code>) dynamically renders the corresponding 0-indexed channel slice numbers (<span class="arithmatex">\(z \in [0, N-1]\)</span>). </p>
+<p>When FITS WCS wavelength information is available, the primary bottom X-axis displays physical wavelengths <span class="arithmatex">\(\lambda\)</span> (<span class="arithmatex">\(\mu\text{m}\)</span>), or, with a unit chosen in the <strong>Cube wavelength unit</strong> box under <strong>Plot Axes</strong> (below), the header's numbers in that unit. The top X-axis (<code>PixelIndexAxis</code>) dynamically renders the corresponding 0-indexed channel slice numbers (<span class="arithmatex">\(z \in [0, N-1]\)</span>). </p>
 <p>This setup allows users to click the <strong>Export...</strong> button on the top control bar (or right-click the plot and select <strong>Export...</strong>) to save wavelength-resolved spectra (<span class="arithmatex">\(xData = \lambda\)</span>, <span class="arithmatex">\(yData = \text{Intensity}\)</span>) to CSV, vector graphics, or images.</p>
-<p>Line list wavelengths <span class="arithmatex">\(\lambda\)</span> are mapped directly onto the plot in wavelength units. Overlays positioned outside the dataset's visible spectral range are automatically filtered out.</p>
+<p>Line list wavelengths <span class="arithmatex">\(\lambda\)</span> are mapped directly onto the plot in wavelength units. Overlays positioned outside the dataset's visible spectral range are automatically filtered out.
+With <strong>Log</strong> X ticked, the lines, the cursor readout and the channel axis follow the logarithmic
+axis.</p>
+<p>A file that states no wavelength unit (a Gemini NIFS cube, for one) has its axis labelled
+<strong>Wavelength (Unknown)</strong> in the header's own numbers, and the line list, which is in µm, cannot be
+placed on it. The <strong>Cube wavelength unit</strong> box under <strong>Plot Axes</strong> states the unit of the cube's
+numbers (not of the line list, which is always in µm): <strong>Å</strong>, <strong>nm</strong> or <strong>µm</strong>. The header's numbers are then shown as they are, labelled with the chosen unit and "set by
+you" (for example <strong>Wavelength (Å, set by you)</strong>) on the plot, the cursor readout and the slice
+readout under the image, and the line list is drawn. <strong>From header</strong> returns to the file's own unit,
+which the entry names. The choice belongs to the window: it is kept when the next file is loaded,
+so successive frames from one instrument keep it. A later file whose header states a unit replaces
+it, unless the choice was made over that same stated unit (a correction of that instrument's
+header); a file that states a different unit is shown in its own unit.</p>
 <h4 id="d-spectral-line-overlay-staggering">D. Spectral Line Overlay &amp; Staggering</h4>
 <ul>
 <li>Overlaid spectral line labels feature 90° vertical rotation.</li>
@@ -1504,7 +1576,11 @@ tested directly, including against the Aperture Photometry tool's independent im
 </ul>
 <p>Line lists are listed under their own filenames, so a curve can always be traced back to the
 file it was drawn from. Hovering an entry shows the full path, which distinguishes copies of
-the same filename coming from different data directories.</p>
+the same filename coming from different data directories; each entry loads its own file.</p>
+<p>A line list has one line per spectral line: the wavelength in µm, then the name, separated by a
+comma or, on a line with no comma, by whitespace (<code>0.8027028,Ti I</code> or <code>0.8027028 Ti I</code>).
+Lines starting with <code>#</code> or <code>;</code> are comments. A file in which no line can be read says so
+beside the list ("No lines could be read from <file>").</p>
 <h4 id="e-exporting-spectra-figures-csv-png-svg">E. Exporting Spectra &amp; Figures (CSV, PNG, SVG)</h4>
 <p>Astronomers can export the extracted 1D spectra and plot graphics by clicking the <strong>Export...</strong> button on the top control bar (or right-clicking anywhere on the plot canvas and selecting <strong>Export...</strong>):</p>
 <ol>
@@ -1512,7 +1588,7 @@ the same filename coming from different data directories.</p>
 <li>In the Export dialog, select <strong>CSV Exporter</strong> under <strong>Item to export</strong>.</li>
 <li>Select the target curve (<code>PlotItem</code>, <code>Source</code>, <code>Background</code>, or <code>Subtracted</code>).</li>
 <li>
-<p>Click <strong>Export</strong> to save a <code>.csv</code> data table. When WCS is present, the first column contains physical wavelengths (<span class="arithmatex">\(\mu\text{m}\)</span>) and subsequent columns contain corresponding flux/intensity values (<span class="arithmatex">\(DN\)</span> or <span class="arithmatex">\(DN/s\)</span>).</p>
+<p>Click <strong>Export</strong> to save a <code>.csv</code> data table. When the cube's Z axis is spectral, the first column holds what the plot's bottom axis shows: wavelengths in <span class="arithmatex">\(\mu\text{m}\)</span> when the file states the axis's unit, or, when the axis reads "Wavelength (Unknown)" (a NIFS cube, for example), the header's own numbers, whose unit the file does not state; or, with a unit chosen in the <strong>Cube wavelength unit</strong> box, the header's numbers in that unit. Otherwise, as for a velocity axis, it holds the slice index. The subsequent columns contain the corresponding flux/intensity values, in the unit the plot's left axis names (see <a href="#data-units">Data Units</a>).</p>
 </li>
 <li>
 <p><strong>Exporting High-Resolution Images (PNG, JPG)</strong>:</p>
@@ -1546,16 +1622,25 @@ says in as many words.</p>
 <hr />
 <h2 id="3-2d-peak-line-fitting">3. 2D Peak &amp; Line Fitting</h2>
 <p>The <strong>Peak Fit</strong> tool fits analytical 2D spatial surface models to stars, emission lines, or compact sources within a selected ROI.</p>
+<p>The fit uses the whole pixels whose centres lie inside the box; it does not interpolate between pixels, so the result does not depend on where the box sits relative to the pixel grid. The part of a box that hangs off the image is left out, not counted as zeros, and a box that misses the image reports that instead of a fit. Center X and Center Y are pixel indices counted from 0, the same as the Depth Plot's aperture centre. Region Statistics reads pixels the same way.</p>
 <h3 id="mathematical-models">Mathematical Models</h3>
 <h4 id="a-2d-elliptical-gaussian">A. 2D Elliptical Gaussian</h4>
 <div class="arithmatex">\[f(x, y) = z_0 + A \exp\left( -\left[ a (x - x_0)^2 + 2b (x - x_0)(y - y_0) + c (y - y_0)^2 \right] \right)\]</div>
 <p>where:
 $<span class="arithmatex">\(a = \frac{\cos^2\theta}{2\sigma_x^2} + \frac{\sin^2\theta}{2\sigma_y^2}\)</span>$</p>
-<div class="arithmatex">\[b = -\frac{\sin 2\theta}{4\sigma_x^2} + \frac{\sin 2\theta}{4\sigma_y^2}\]</div>
+<div class="arithmatex">\[b = \frac{\sin 2\theta}{4\sigma_x^2} - \frac{\sin 2\theta}{4\sigma_y^2}\]</div>
 <div class="arithmatex">\[c = \frac{\sin^2\theta}{2\sigma_x^2} + \frac{\cos^2\theta}{2\sigma_y^2}\]</div>
-<p>The Full-Width at Half-Maximum (FWHM) along major and minor axes is given by:
+<p>The Full-Width at Half-Maximum (FWHM) along the two axes of the ellipse is given by:
 $<span class="arithmatex">\(\text{FWHM}_x = 2 \sqrt{2 \ln 2} \cdot \sigma_x \approx 2.35482 \cdot \sigma_x\)</span>$
 $<span class="arithmatex">\(\text{FWHM}_y = 2 \sqrt{2 \ln 2} \cdot \sigma_y \approx 2.35482 \cdot \sigma_y\)</span>$</p>
+<p>All three models share one rotation, with <span class="arithmatex">\(\theta\)</span> the reported <strong>Angle (deg)</strong>:</p>
+<div class="arithmatex">\[x_{\text{rot}} = (x - x_0)\cos\theta + (y - y_0)\sin\theta, \qquad y_{\text{rot}} = -(x - x_0)\sin\theta + (y - y_0)\cos\theta\]</div>
+<p>so the Gaussian above is <span class="arithmatex">\(\exp\left(-\frac{x_{\text{rot}}^2}{2\sigma_x^2} - \frac{y_{\text{rot}}^2}{2\sigma_y^2}\right)\)</span> written out. The
+angle is measured counter-clockwise from the image's +X axis (the direction in which Center X
+increases) toward +Y, in the image's own pixel axes, so a view rotation does not change it.
+<strong>FWHM X</strong> is the width along the direction at that angle and <strong>FWHM Y</strong> the width perpendicular to
+it; neither is necessarily the major axis. When FWHM Y is the larger, the major axis lies at the
+angle plus 90°. An angle and the same angle ± 180° describe the same ellipse.</p>
 <h4 id="b-2d-lorentzian">B. 2D Lorentzian</h4>
 <div class="arithmatex">\[f(x, y) = z_0 + \frac{A}{1 + \left(\frac{x_{\text{rot}}}{\gamma_x}\right)^2 + \left(\frac{y_{\text{rot}}}{\gamma_y}\right)^2}\]</div>
 <h4 id="c-2d-moffat-profile">C. 2D Moffat Profile</h4>
@@ -1567,10 +1652,11 @@ $<span class="arithmatex">\(\text{FWHM}_y = 2 \sqrt{2 \ln 2} \cdot \sigma_y \app
 <p>The <strong>Aperture Photometry</strong> tool computes integrated stellar fluxes and background sky noise.</p>
 <h3 id="algorithm_1">Algorithm</h3>
 <ol>
-<li><strong>Aperture Flux (<span class="arithmatex">\(F_{\text{raw}}\)</span>)</strong>: Sum of pixel intensities inside a circular aperture of radius <span class="arithmatex">\(r_{\text{ap}}\)</span>.</li>
-<li><strong>Sky Background (<span class="arithmatex">\(I_{\text{sky}}\)</span>)</strong>: Median pixel intensity computed inside an annular sky region between inner radius <span class="arithmatex">\(r_{\text{in}}\)</span> and outer radius <span class="arithmatex">\(r_{\text{out}}\)</span>.</li>
+<li><strong>Aperture Flux (<span class="arithmatex">\(F_{\text{raw}}\)</span>)</strong>: Sum of pixel intensities inside a circular aperture of radius <span class="arithmatex">\(r_{\text{ap}}\)</span>. NaN pixels are left out of the sum.</li>
+<li><strong>Sky Background (<span class="arithmatex">\(I_{\text{sky}}\)</span>)</strong>: Median of the finite pixel values inside an annular sky region between inner radius <span class="arithmatex">\(r_{\text{in}}\)</span> and outer radius <span class="arithmatex">\(r_{\text{out}}\)</span>. Pixels of the annulus that fall off the image are not used. The inner radius must be smaller than the outer one; otherwise the tool shows a message instead of numbers.</li>
 <li><strong>Net Subtracted Flux (<span class="arithmatex">\(F_{\text{net}}\)</span>)</strong>:
-   $<span class="arithmatex">\(F_{\text{net}} = F_{\text{raw}} - \pi r_{\text{ap}}^2 \times I_{\text{sky}}\)</span>$</li>
+   $<span class="arithmatex">\(F_{\text{net}} = F_{\text{raw}} - A \times I_{\text{sky}}\)</span>$
+   where <span class="arithmatex">\(A\)</span> is the area of the aperture that overlaps finite data: <span class="arithmatex">\(\pi r_{\text{ap}}^2\)</span> for an aperture wholly on the image with no NaN pixels, and less at an edge or around a NaN pixel.</li>
 </ol>
 <hr />
 <h2 id="5-strehl-ratio-optical-psf-analysis">5. Strehl Ratio &amp; Optical PSF Analysis</h2>
@@ -1585,6 +1671,7 @@ $<span class="arithmatex">\(\text{FWHM}_y = 2 \sqrt{2 \ln 2} \cdot \sigma_y \app
 <h2 id="6-datacube-arithmetic">6. Datacube Arithmetic</h2>
 <p>The <strong>Datacube Arithmetic</strong> tool performs element-wise scalar or cube-to-cube mathematical operations (<span class="arithmatex">\(+\)</span>, <span class="arithmatex">\(-\)</span>, <span class="arithmatex">\(\times\)</span>, <span class="arithmatex">\(\div\)</span>) between open datasets:</p>
 <div class="arithmatex">\[D_{\text{result}}(x, y, z) = D_1(x, y, z) \odot D_2(x, y, z)\]</div>
+<p>Image operands are converted to 64-bit floating point first, so a sum of integer frames does not wrap around, and the result is saved with <code>BITPIX = -64</code> and no <code>BZERO</code>/<code>BSCALE</code>. The result window is titled with the expression, for example <code>(a001.fits / a002.fits)</code>.</p>
 <hr />
 <h2 id="7-catalog-plotting-world-coordinate-overlay">7. Catalog Plotting &amp; World Coordinate Overlay</h2>
 <p>The <strong>Plot Catalog</strong> tool overlays external astronomical source catalogs directly onto the 2D image plane or collapsed datacube slices. Both text tables (CSV, TXT, DAT, ECSV, IPAC, ...) and FITS tables (<code>.fits</code>, <code>.fit</code>, <code>.fts</code>, and gzipped variants) are read.</p>
@@ -1603,8 +1690,9 @@ fixed-width layouts load without configuration.</p>
 <li>Undefined (<code>TNULL</code>) and masked coordinates are counted as unusable in the status line
   rather than being plotted at the origin.</li>
 <li>Coordinate columns are guessed from the usual <code>photutils</code> and SExtractor spellings
-  (<code>xcentroid</code>/<code>ycentroid</code>, <code>X_IMAGE</code>/<code>Y_IMAGE</code>, <code>ALPHA_J2000</code>/<code>DELTA_J2000</code>, <code>RAJ2000</code>,
-  ...) in addition to plain <code>X</code>/<code>Y</code> and <code>RA</code>/<code>DEC</code>, and can always be overridden with the
+  (<code>xcentroid</code>/<code>ycentroid</code>, <code>X_IMAGE</code>/<code>Y_IMAGE</code>, <code>ALPHA_J2000</code>/<code>DELTA_J2000</code>) and from
+  VizieR's (<code>RAJ2000</code>/<code>DEJ2000</code>, <code>RA_ICRS</code>/<code>DE_ICRS</code>, <code>_RAJ2000</code>/<code>_DEJ2000</code>, <code>RAdeg</code>/<code>DEdeg</code>)
+  in addition to plain <code>X</code>/<code>Y</code> and <code>RA</code>/<code>DEC</code>, and can always be overridden with the
   column selectors.</li>
 </ul>
 <p>On the command line, <code>--catalog &lt;file&gt;</code> loads a catalog at startup and <code>--catalog-hdu
@@ -1613,13 +1701,25 @@ fixed-width layouts load without configuration.</p>
 <p>Astronomers can select between three coordinate modes:</p>
 <ol>
 <li><strong>World Coordinates (RA / DEC)</strong>: Celestial Right Ascension (<span class="arithmatex">\(\text{RA}\)</span>) and Declination (<span class="arithmatex">\(\text{DEC}\)</span>) in degrees or sexagesimal notation.</li>
-<li><strong>FITS Array Pixels</strong>: 0-indexed or 1-indexed raw FITS array pixel coordinates <span class="arithmatex">\((x_{\text{fits}}, y_{\text{fits}})\)</span>.</li>
+<li><strong>FITS Array Pixels</strong>: raw FITS array pixel coordinates <span class="arithmatex">\((x_{\text{fits}}, y_{\text{fits}})\)</span>.</li>
 <li><strong>Display Pixels</strong>: Direct display viewport pixel coordinates.</li>
 </ol>
+<p>For the two pixel modes, the <strong>Origin</strong> box beside the coordinate type says what the columns count
+from: <code>0-based (array)</code> (the first pixel is 0, as photutils and the regions sent from the Region
+menu write it) or <code>1-based (FITS)</code> (the centre of the first pixel is 1, as SExtractor's <code>*_IMAGE</code>
+columns write it). It starts at 1-based when both chosen columns are <code>*_IMAGE</code> columns such as
+<code>X_IMAGE</code>/<code>Y_IMAGE</code> or <code>XWIN_IMAGE</code>/<code>YWIN_IMAGE</code>, and at 0-based otherwise, and follows the columns
+until you set it yourself. A choice made by hand is kept when a catalog with the same X and Y
+columns is loaded again, and reset when the columns differ; regions sent from the Region menu are
+always 0-based. World coordinates have no origin, and the box is hidden for them.</p>
 <h3 id="algorithms_1">Algorithms</h3>
 <h4 id="a-wcs-celestial-to-pixel-transformation">A. WCS Celestial-to-Pixel Transformation</h4>
 <p>For catalogs specified in celestial World Coordinates <span class="arithmatex">\((\text{RA}, \text{DEC})\)</span>, celestial coordinates are converted to raw FITS pixel coordinates <span class="arithmatex">\((x_{\text{fits}}, y_{\text{fits}})\)</span> using the dataset's 2D/3D FITS World Coordinate System:</p>
 <div class="arithmatex">\[(x_{\text{fits}}, y_{\text{fits}}) = \text{WCS}^{-1}(\text{RA}, \text{DEC})\]</div>
+<p>The RA and Dec axes are identified from the WCS rather than assumed to be FITS axes 1 and 2, so
+an image with Dec on axis 1 (an OSIRIS cube collapsed along wavelength) is handled. The whole
+catalog is converted in one call, and the result is kept until the catalog, the coordinate
+columns, the coordinate mode, the pixel origin or the image's WCS changes.</p>
 <h4 id="b-display-rotation-flip-mapping">B. Display Rotation &amp; Flip Mapping</h4>
 <p>To ensure source overlays track the image viewport when the astronomer rotates or flips the view, original FITS coordinates <span class="arithmatex">\((x_0, y_0)\)</span> are mapped to current display coordinates <span class="arithmatex">\((x_{\text{disp}}, y_{\text{disp}})\)</span> via the transformation algorithm:</p>
 <ol>
@@ -1634,16 +1734,35 @@ fixed-width layouts load without configuration.</p>
    $<span class="arithmatex">\((x_{i+1}, y_{i+1}) = (N_{y,i} - 1 - y_i, \; x_i)\)</span>$</p>
 </li>
 </ol>
+<p>The markers, labels and selection highlight are re-placed whenever the displayed image changes: a
+flip or 90° rotation, a new AXIS mapping, another extension, another file or a frame auto-loaded
+by the poller. A catalog loaded before any image is plotted when the first image arrives. Labels
+also follow a view rotation. <em>Display Pixels</em> are used as given and are not mapped.</p>
 <h4 id="c-interactive-highlighting-filtering">C. Interactive Highlighting &amp; Filtering</h4>
 <ul>
-<li><strong>Interactive Source Selection</strong>: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it.</li>
+<li><strong>Interactive Source Selection</strong>: Clicking any row in the catalog table highlights the target object on the image display with a target reticle ring, and recentres the view on it, also when the view is rotated. Changing a marker, label or unit control redraws the ring without moving the view; <em>Center on Source</em> in the row's context menu recentres on request.</li>
 <li><strong>Clearing a selection</strong>: press <strong>Escape</strong> in the table, use the <strong>Clear Selection</strong> button beside the search box, or pick <strong>Clear Selection</strong> from the row's right-click menu. The view stays where it is. (Qt's own way out of a single-selection table is ctrl-clicking the selected row, which few people find.)</li>
-<li><strong>Search &amp; Filter</strong>: Real-time text search filters the catalog table and dynamically updates plotted markers.</li>
+<li><strong>Search &amp; Filter</strong>: Real-time text search hides the table rows that do not match. It filters the table only; every source stays marked on the image.</li>
 <li><strong>Custom Marker Styling</strong>: Supports customizable marker shapes (Circles, Squares, Triangles, Diamonds, Crosses), sizes, colors, and text labels.</li>
 </ul>
 <hr />
 <h2 id="8-fits-header-editor">8. FITS Header Editor</h2>
 <p>The <strong>Header Editor</strong> allows astronomers to view, search, add, or modify FITS header cards across all HDU extensions in memory. Changes can be saved back to a new FITS file.</p>
+<p>Edits are kept in the editor, for each extension, until <strong>Save Header</strong>; switching the Extension
+combo does not apply them, and <strong>Cancel</strong> discards all of them. Each row is written back to its own
+card, so two cards with the same keyword stay separate, and a row that was not changed is not
+written at all. COMMENT and HISTORY text can be edited too. An undefined value is shown empty and
+stays undefined unless it is edited. Structural keywords (<code>SIMPLE</code>, <code>BITPIX</code>, <code>NAXISn</code>, ...) are not
+changed, and neither are <code>BSCALE</code>, <code>BZERO</code> and <code>BLANK</code> of an integer image whose stored integers
+QuickLook writes back. Saving the header keeps the data as stored on disk: integer images, scaled
+or with a <code>BLANK</code> value, are written back as the same integers with their <code>BSCALE</code>, <code>BZERO</code> and
+<code>BLANK</code>, and unsigned integers keep their <code>BZERO</code>; a tile-compressed image keeps its compression.
+The exception is lossy tile compression (quantised floating-point images, or HCOMPRESS with a
+scale): astropy compresses the data again on every save, so each save changes those pixel values
+slightly (<code>BUGS.md</code> R92). If such a file changed on disk after it was opened, the save is refused and nothing is written:
+reopen the file and make the change again. The edits then stay in the editor, unsaved, and are not
+applied to the header in memory. Edits are checked before any is written, so an edit FITS does not
+allow (a non-ASCII value, for example) is reported and none of the edits is applied.</p>
 <hr />
 <h2 id="9-regions">9. Regions</h2>
 <p>Regions are annotations drawn over the image — <strong>circles, boxes, arrows and text</strong> — in the manner
@@ -1679,6 +1798,8 @@ image's own right-click menu.</p>
 </tr>
 </tbody>
 </table>
+<p>While a shape tool is armed, dragging on the image draws rather than pans. Press <strong>Escape</strong>, or click
+the pressed toolbar button again, to stop drawing without drawing anything.</p>
 <p>Right-clicking the image offers <strong>New Region ➔ Circle / Box / Arrow / Text</strong>, which places a
 <strong>default-sized</strong> region on the pixel under the cursor without any dragging — usually quicker, since
 the size is easy to change afterwards.</p>
@@ -1688,9 +1809,15 @@ marker: the text itself is the handle, so click, drag or right-click the words.<
 <p><strong>Double-click a region</strong> — or choose <strong>Properties…</strong> from its right-click menu, or from the Region
 List — to open an editor for everything it carries: position and size, angle, label, colour, line
 width, dashing, text size, tag, visibility, and a channel range.</p>
+<p>The editor can stay open while you work on the image. Dragging or resizing the region updates the
+position and size fields you have not typed in; <strong>OK</strong> and <strong>Apply</strong> write only the fields you
+changed, and <strong>Cancel</strong> undoes what the editor applied but not a drag made on the image.</p>
 <p>A <strong>channel range</strong> restricts a region to part of a cube, so a marker on an emission-line feature
-appears only across the channels where the feature is. This has no equivalent in ds9 and is dropped
-when exporting a <code>.reg</code> file, which the export report says.</p>
+appears only across the channels where the feature is. When the plane on screen combines several
+channels, in <strong>Collapse Region</strong> mode or with a <strong>Boxcar</strong> wider than one, the region is shown if
+its channel range overlaps those channels. On a 2-D image, which has no channels, it is always
+shown. This has no equivalent in ds9 and is dropped when exporting a <code>.reg</code> file, which the export
+report says.</p>
 <p><strong>Region ➔ Region List…</strong> shows every region in a table — type, position, size, angle, label, colour
 and visibility — editable in place. Double-click the <em>Colour</em> cell for a colour picker, or the
 <em>Type</em> cell for the full properties dialog. Right-click a row for <strong>Properties…</strong>, <strong>Zoom To</strong>,
@@ -1705,7 +1832,9 @@ saved files so they stay idiomatic, and are resolved to ds9's own RGB only for d
 <ul>
 <li>only labels inside the visible area are drawn — zoom in and more appear;</li>
 <li>labels are hidden while the view is panning and return once it settles;</li>
-<li><strong>Region ➔ Show Region Labels</strong> turns them off entirely, as the Catalog tool's <em>Show Names</em> does.</li>
+<li><strong>Region ➔ Show Region Labels</strong> turns them off entirely, as the Catalog tool's <em>Show Names</em> does.
+  A <strong>text</strong> region is the region itself, not a label, so it stays on screen with labels off;
+  above 500 regions, where the set is drawn as one overlay, it stays as its <strong>+</strong> marker.</li>
 </ul>
 <h3 id="saving-loading-and-ds9">Saving, loading and ds9</h3>
 <table>
@@ -1731,7 +1860,7 @@ saved files so they stay idiomatic, and are resolved to ds9's own RGB only for d
 </tbody>
 </table>
 <p>The native format is readable YAML that can be edited by hand:</p>
-<div class="highlight"><pre><span></span><code><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pyql3-regions/1</span>
+<div class="highlight"><pre><span></span><code><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pyql3-regions/2</span>
 <span class="nt">written_by</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">QuickLook 3 v3.0.19</span>
 <span class="nt">style</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">color</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">green</span>
@@ -1755,11 +1884,16 @@ saved files so they stay idiomatic, and are resolved to ds9's own RGB only for d
 <span class="w">  </span><span class="nt">line_width</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
 <span class="w">  </span><span class="nt">dash</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
+<p>A region file saved on an image with a WCS carries sky positions and is format 2, which needs this
+version of QuickLook 3 or a newer one to open; an older one says the file is from a newer version.
+A file with no sky positions (saved on an image without a WCS) is written as format 1, which
+older versions open too. Format 1 files from older versions open here as before. To pass regions to an older version, or to anything else, export
+them as ds9 <code>.reg</code> (<strong>Region ➔ Export ds9 Regions…</strong>), which opens anywhere.</p>
 <p>The <strong><code>style:</code> block is ds9's <code>global</code> line</strong>: it records the formatting the file was written with,
 and each region writes only what it does differently — the box above is red and dashed, the circle
 takes the file's green. Nothing about a region's appearance is left to whichever defaults the
 program happens to have when the file is read, and editing the one block restyles every region that
-did not override it.</p>
+did not override it. Saving regions loaded from such a file writes its <code>style:</code> block back.</p>
 <p>Geometry is stored in <strong>pixels</strong>, and when the image has a WCS the sky position is recorded
 alongside it — so the file holds every region in <strong>both frames at once</strong>, with <code>frame:</code> naming the
 one that was meant:</p>
@@ -1771,15 +1905,24 @@ one that was meant:</p>
 <span class="w">  </span><span class="nt">sky</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">ra_deg</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">266.4171407868465</span>
 <span class="w">    </span><span class="nt">dec_deg</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-29.00776633506410</span>
+<span class="w">    </span><span class="nt">frame</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fk5</span><span class="w">         </span><span class="c1"># the frame of those two numbers: the image&#39;s own, by its ds9 name</span>
 <span class="w">    </span><span class="nt">size_arcsec</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.105</span>
 </code></pre></div>
 <p><code>frame: sky</code> means the same thing it does in ds9: the region is placed from its RA/Dec, so a set
 drawn on one dither lands on the same stars in the next, and a box keeps its orientation on the sky
 if the field is rotated. <code>frame: image</code> keeps the stored pixels instead, which is what something
-fixed to the detector wants.</p>
+fixed to the detector wants; each region is placed by its own <code>frame:</code>, and a re-save keeps it. That
+holds for a region that also has a <code>sky:</code> block, which is what saving with a WCS writes; a
+<code>frame: image</code> on a region with no <code>sky:</code> block is what any region saved without a WCS gets, and
+it follows the sky once the file is saved with one. A region moved on an image with no WCS loses
+its old sky position when it is saved, so the next load puts it where it was moved to. A region
+kept on its pixels with <code>frame: image</code> also loses that setting when it is moved on an image with
+no WCS, since the file then has no <code>sky:</code> block to keep it beside; set it again after the next save
+with a WCS.</p>
 <p><strong>Loading a file whose two frames disagree asks which to use</strong> — that is, a file drawn on a
-different pointing of the same field. The question names the difference ("3 region(s) sit up to
-20.4 pixel(s) apart in the two frames") and defaults to the frame the file was saved with. It is
+different pointing of the same field. The question is about the <code>frame: sky</code> regions only, names
+the difference ("3 region(s) sit up to 20.4 pixel(s) apart in the two frames") and defaults to the
+frame the file was saved with. It is
 not asked when the two agree, which is every file loaded back onto the image it was drawn on: those
 regions come back exactly where they were. <code>--regions</code> at startup never asks; it takes the frame
 the file was saved with.</p>
@@ -1791,7 +1934,9 @@ read back in pixels.</p>
 Anything that cannot be carried across, in either direction, is listed in a summary rather than
 dropped in silence.</p>
 <p>On the way in, every frame ds9 writes is read: <code>image</code>, <code>physical</code>, and the sky frames <code>icrs</code>,
-<code>fk5</code>/<code>j2000</code>, <code>fk4</code>/<code>b1950</code>, <code>galactic</code> and <code>ecliptic</code>. A sky-frame file needs the image to have a
+<code>fk5</code>/<code>j2000</code>, <code>fk4</code>/<code>b1950</code>, <code>galactic</code> and <code>ecliptic</code>, whether the frame is on a line of its own
+or written into a statement (<code>fk5;circle(...)</code>), and a file without ds9's header line is recognised
+too. A sky-frame file needs the image to have a
 WCS covering the two axes on display — with one, positions in any of those frames land on the right
 pixel, in decimal degrees or sexagesimal. <code>physical</code> is read as image coordinates: the two differ
 only for a file cut out of a larger one with IRAF <code>LTV</code>/<code>LTM</code> keywords, and that shift is not

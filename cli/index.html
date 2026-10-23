@@ -16,7 +16,7 @@
         <link rel="prev" href="../tools/">
       
       
-        <link rel="next" href="../developer/">
+        <link rel="next" href="../changelog/">
       
       
         
@@ -548,6 +548,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../developer/" class="md-nav__link">
         
   
@@ -880,9 +907,11 @@ Statistics and other tool windows. More windows can be opened at any time with <
 Window</strong> (⌘N / Ctrl+N) or <strong>File ➔ Open in New Window...</strong>, and <strong>File ➔ Close Window</strong> (⌘W /
 Ctrl+W) closes one without quitting the application. The <strong>Window</strong> menu lists every open window
 with its tool windows grouped underneath, and <strong>Bring All to Front</strong> raises the whole set.</p>
-<p>Opening a file from Finder, or running <code>quicklook3 cube.fits</code> while the application is already
-open, loads it into the window you used most recently — so it replaces the view you were last
-looking at, rather than one hidden behind it. Use <strong>Open in New Window...</strong> to keep both.</p>
+<p>Opening a file from Finder while the application is already open loads it into the window you
+used most recently — so it replaces the view you were last looking at, rather than one hidden
+behind it. Use <strong>Open in New Window...</strong> to keep both.</p>
+<p>Running <code>quicklook3 cube.fits</code> always starts a separate copy of QuickLook 3 with its own window,
+even when one is already open; it does not load into the running copy.</p>
 <hr />
 <h2 id="launching-like-ds9-the-quicklook3-command">🖥️ Launching Like ds9: the <code>quicklook3</code> Command</h2>
 <p>QuickLook 3 can be given a short name on your <code>PATH</code>, so a FITS file opens with one word
@@ -959,7 +988,8 @@ another viewer on its own.</p>
 <ul>
 <li>Finder does not pass a double-clicked file as a command-line argument — it sends the
   application an open-document event. This is handled while the app is running too, so
-  opening a second file from Finder loads it into the existing window.</li>
+  opening a second file from Finder loads it into the existing window. Several files
+  selected together in Finder open one window each.</li>
 <li><code>.fits.gz</code> cannot be registered: macOS matches only the final extension, and claiming
   <code>.gz</code> would offer QuickLook 3 for every gzip file on the system. Open compressed cubes
   through <strong>File ➔ Open...</strong> or <code>quicklook3 cube.fits.gz</code>, both of which handle them.</li>
@@ -985,7 +1015,9 @@ unnoticed. Scanning costs more but is the only approach that sees remote writes.
   NFS. Raise the scan interval for a directory holding a whole run, and prefer watching a
   per-night directory over an accumulating archive.</li>
 </ul>
-<p>The interval defaults to 2 seconds and is configurable in <strong>File ➔ Polling...</strong>.</p>
+<p>The interval defaults to 2 seconds and is configurable in <strong>File ➔ Polling...</strong>. A new
+interval takes effect when you press Return, leave the box, or close the dialog, and changing
+it does not lose a file that was still settling.</p>
 <h3 id="enabling-directory-polling">Enabling Directory Polling</h3>
 <h4 id="option-a-via-command-line">Option A: Via Command Line</h4>
 <p>Start monitoring a folder immediately when launching PyQL3:</p>
@@ -1008,6 +1040,12 @@ unnoticed. Scanning costs more but is the only approach that sees remote writes.
   another window is already watching asks first, and then <em>moves</em> the watch — new frames start
   appearing in the second window instead of the first. Two simultaneous watches would scan the
   directory twice and load every frame twice, which matters on a busy NFS share.</li>
+<li>A frame that cannot be read yet is retried for about 15 seconds. The retries stop as soon as
+  a newer frame arrives, you open a file yourself, or polling is stopped or moved to another
+  directory, so a late retry never replaces what is on screen.</li>
+<li>While <strong>File ➔ Edit FITS Header</strong> is open, new frames are not displayed; the newest one is
+  loaded when the editor closes. Saving the header therefore always writes to the file the
+  editor was opened on.</li>
 </ul>
 
 
