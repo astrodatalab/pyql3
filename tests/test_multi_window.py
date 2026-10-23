@@ -196,7 +196,6 @@ TOOL_OPENERS = {
     "open_horizontal_cut": "_hcut_dialog",
     "open_vertical_cut": "_vcut_dialog",
     "open_diagonal_cut": "_dcut_dialog",
-    "open_surface_plot": "_surf_dialog",
     "open_contour_plot": "_cont_dialog",
     "open_plot_catalog": "_plot_catalog_dialog",
     "open_rotate": "_rotate_dialog",
@@ -218,7 +217,7 @@ def test_every_opener_is_covered_and_tracked():
 def test_opening_a_tool_twice_reuses_it(manager, sample_3d_fits, opener):
     """A second click raises the open dialog rather than building another (`BUGS.md` R16).
 
-    The cut, Surface and Contour openers built a new dialog on every click: the first stayed on
+    The cut, Surface (since removed) and Contour openers built a new dialog on every click: the first stayed on
     screen, out of `TOOL_DIALOG_ATTRS`, with its own ROI still drawn on the image. Everything
     the tool draws is counted, not only `pg.ROI`s: the viewer has two ROIs of its own, the cuts
     draw lines, and Photometry draws an aperture and two annulus rings.
@@ -309,37 +308,6 @@ def test_closing_peak_fit_closes_its_display_window(manager, sample_3d_fits, qap
     left = [d.windowTitle() for d in win.findChildren(QDialog)
             if d.isVisible() and d.windowTitle() == "Display Peak Fit"]
     assert left == []
-
-
-def test_a_surface_plot_opengl_failure_is_reported_not_raised(manager, sample_3d_fits,
-                                                             monkeypatch, capsys):
-    """The message pyqtgraph raises from `initializeGL` without OpenGL 2.1 is caught."""
-    from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
-
-    def no_opengl(self):
-        raise RuntimeError("pyqtgraph.opengl: Requires >= OpenGL 2.1; Found None")
-
-    monkeypatch.setattr(SurfacePlotDialog, "show", no_opengl)
-    win = MainWindow()
-    win.load_fits(sample_3d_fits)
-
-    assert win.open_surface_plot() is None
-    assert "Surface Plot unavailable" in capsys.readouterr().out
-
-
-def test_a_surface_plot_bug_is_not_reported_as_missing_opengl(manager, sample_3d_fits,
-                                                              monkeypatch):
-    from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
-
-    def broken(self, *args, **kwargs):
-        raise ValueError("a bug in the dialog")
-
-    monkeypatch.setattr(SurfacePlotDialog, "__init__", broken)
-    win = MainWindow()
-    win.load_fits(sample_3d_fits)
-
-    with pytest.raises(ValueError, match="a bug in the dialog"):
-        win.open_surface_plot()
 
 
 def test_a_pending_auto_load_retry_does_not_revive_a_closed_window(manager, tmp_path,

@@ -38,7 +38,7 @@ class MainWindow(QMainWindow):
     TOOL_DIALOG_ATTRS = (
         '_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog',
         '_strehl_dialog', '_stats_dialog', '_phot_dialog', '_gauss_dialog',
-        '_plot_catalog_dialog', '_surf_dialog', '_cont_dialog', '_rotate_dialog',
+        '_plot_catalog_dialog', '_cont_dialog', '_rotate_dialog',
         '_arith_dialog', '_region_list_dialog',
     )
 
@@ -268,9 +268,6 @@ class MainWindow(QMainWindow):
         
         dcut_action = self.plot_menu.addAction("Diagonal Cut")
         dcut_action.triggered.connect(self.open_diagonal_cut)
-        
-        surf_action = self.plot_menu.addAction("Surface")
-        surf_action.triggered.connect(self.open_surface_plot)
         
         cont_action = self.plot_menu.addAction("Contour")
         cont_action.triggered.connect(self.open_contour_plot)
@@ -978,18 +975,6 @@ class MainWindow(QMainWindow):
         from pyql3.gui.tools.cuts import CutPlotDialog
         return self._open_tool('_dcut_dialog',
                                lambda: CutPlotDialog('diagonal', self, self.image_viewer))
-
-    def open_surface_plot(self):
-        from pyql3.gui.tools.advanced_plots import SurfacePlotDialog
-        try:
-            return self._open_tool('_surf_dialog', lambda: SurfacePlotDialog(self, self.image_viewer))
-        except RuntimeError as e:
-            # pyqtgraph raises this from `initializeGL` when the context is older than
-            # OpenGL 2.1. Any other error is a bug and is not reported as missing OpenGL.
-            if "OpenGL" not in str(e):
-                raise
-            print(f"Warning: 3D OpenGL Surface Plot unavailable in headless/virtualized GPU environment: {e}")
-            return None
 
     def open_contour_plot(self):
         from pyql3.gui.tools.advanced_plots import ContourDialog

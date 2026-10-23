@@ -589,6 +589,11 @@ Windows. Always build with `uv run pyinstaller --noconfirm QuickLook3.spec` — 
   (`importlib.machinery.EXTENSION_SUFFIXES`; `.pyd` on Windows, `.so` elsewhere): a bare
   `regions/_geometry/*` glob is satisfied by the `__init__.py` and the `tests/` directory
   collected alongside them, so it passes on a build containing no compiled extension at all.
+- **Nothing may use OpenGL** (`pyqtgraph.opengl`, PyOpenGL). Qt's `offscreen` platform on CI's
+  Linux runner reports OpenGL 2.0, below the 2.1 `pyqtgraph.opengl` needs, and the error comes
+  from `show()`, past any guard on construction; OpenGL views broke the release build twice
+  (July and October 2026). The Surface plot was removed and Display Peak Fit is three 2D images
+  for that reason; `tests/test_analysis_tools.py::test_no_module_imports_opengl` holds the line.
 - Runtime resource lookups must go through `pyql3.get_resource_path()`, which handles the
   frozen `sys._MEIPASS` case.
 - Headless Linux CI needs system libs (`libegl1`, `libgl1`, `libglx-mesa0`, `libgl1-mesa-dri`,

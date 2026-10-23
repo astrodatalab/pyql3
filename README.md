@@ -9,14 +9,14 @@ QuickLook 3 is a modern, high-performance Python/Qt-based application designed f
 
 ## Features
 
-- **Rendering**: Built on PySide6 and pyqtgraph. The image display is software-rendered through Qt's raster engine, which imposes no GPU requirement; OpenGL is used only by the 3D Surface and Peak Fit views, which degrade to a message when no GL context is available.
+- **Rendering**: Built on PySide6 and pyqtgraph. The image display is software-rendered through Qt's raster engine, which imposes no GPU requirement; nothing in QuickLook 3 uses OpenGL.
 - **IFU Data Cube Visualization**: Interactively view FITS cubes across spatial and spectral dimensions. Extract 1D depth spectra from specific spatial pixels or regions.
 - **Z-Axis Collapsing**: Collapse 3D spectral ranges into 2D display slices using Median, Mean, or Sum algorithms on the fly.
 - **Advanced Scaling & Displays**: Includes interactive Linear, Logarithmic, Square Root, AsinH, and Histogram Equalization scaling. Supports instant color map inversion and position angle compass overlays.
 - **Astronomical Coordinates & WCS**: Integrates WCS pixel-to-world (RA/Dec) coordinate translations dynamically at your mouse pointer.
 - **Interactive Catalog Overlay**: Overlay astronomical catalogs (CSV, TXT, DAT, or FITS binary tables) using Display Pixels, FITS Pixels, or WCS RA/Dec coordinates. Features viewport label culling for fast performance, custom marker styling, search filtering, and row selection highlighting.
 - **ds9-Style Regions**: Draw circles, boxes, arrows and text over the image from a **Region** menu, an optional toolbar, or a right-click. Edit colour, line width, angle, label and a per-region channel range; save and load as readable YAML or exchange with ds9 as `.reg`. Catalogue-sized sets are drawn as a single overlay so tens of thousands load in seconds.
-- **Analysis Tools**: Built-in 1D profile cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, 2D Peak Fitting, and 3D OpenGL Surface Rendering.
+- **Analysis Tools**: Built-in 1D profile cuts (horizontal, vertical, arbitrary lines), SNR estimates, Encircled Energy plots, and 2D Peak Fitting with data, model and residual images.
 - **FITS Datacube Arithmetic**: Execute image and cube math (addition, subtraction, division, scalar scaling) between open datasets.
 - **Multiple Cubes at Once**: Each window is an independent view — its own file, display settings, tool dialogs and directory watch — so two dithers, or a frame and its sky, can be compared side by side rather than reloaded in turn.
 - **Directory Polling**: Watch a directory and load new FITS files as they are written, including files written from another host onto an NFS share. A frame is announced only after its size and modification time are unchanged across consecutive scans, and a burst of arrivals displays only the most recent frame.
@@ -222,7 +222,6 @@ Found under the **Plot** and **Analysis** menu bars:
 * **1D Profile Cuts**: `Plot -> Horizontal Cut` / `Vertical Cut` / `Diagonal Cut` to generate 1D profile cuts with adjustable boxcar averaging.
 * **Depth Plot**: Click anywhere on a 3D dataset to extract and display 1D spectra along the Z-axis. Extraction defaults to a circular aperture with an explicit radius, totalled per channel. Background subtraction defaults to a sky annulus concentric with that aperture — inner and outer radii are set directly, and the annulus follows the aperture rather than being placed separately — which makes each channel an aperture-photometry measurement. An independently placed background region remains available for a background that must be measured somewhere specific.
 * **Peak Fit / Encircle / SNR**: Draw a rectangular ROI over a source to calculate 2D Gaussian statistics, Encircled Energy radial profiles, or Signal-to-Noise.
-* **Surface Plot**: `Plot -> Surface` renders a 3D OpenGL surface mesh of the displayed image. Requires a working OpenGL context; without one the dialog reports that rather than failing.
 * **FITS Arithmetic**: `File -> Arithmetic...` performs addition, subtraction, division, and scalar scaling between open FITS datasets. The result opens in its own window.
 
 ## License

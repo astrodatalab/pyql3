@@ -2,7 +2,6 @@ import numpy as np
 from scipy.optimize import curve_fit
 from PySide6.QtWidgets import QGridLayout, QLabel, QComboBox, QPushButton, QSpinBox, QVBoxLayout, QDialog, QHBoxLayout
 import pyqtgraph as pg
-import pyqtgraph.opengl as gl
 from pyql3.core import coords
 from pyql3.gui.tools.base_tool import BaseToolDialog, as_center
 
@@ -39,76 +38,53 @@ def moffat_2d(xy, amplitude, xo, yo, wx, wy, theta, offset):
     return m.ravel()
 
 class DisplayPeakFitDialog(QDialog):
+    """The box's pixels, the fitted model and data minus model, as three flat images.
+
+    Drawn with pyqtgraph's 2D items, so it needs no OpenGL: the 3D surfaces it replaced failed
+    wherever OpenGL 2.1 is missing, CI's Linux runner included. Each image sits at the box's own
+    pixel coordinates (orig, the same as the fit's Center X and Y), and the three views pan and
+    zoom together. Data and model share one colour scale so they compare by eye; the residual
+    uses a diverging map centred on zero.
+    """
+
     def __init__(self, parent=None, raw_data=None, fit_data=None, x0=0, y0=0):
         super().__init__(parent)
         self.setWindowTitle("Display Peak Fit")
-        self.resize(800, 400)
-        
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QLabel
+        self.resize(1000, 380)
+
+        residual = raw_data - fit_data
+        shared = (float(min(raw_data.min(), fit_data.min())),
+                  float(max(raw_data.max(), fit_data.max())))
+        if shared[0] == shared[1]:
+            shared = (shared[0] - 0.5, shared[1] + 0.5)
+        spread = float(np.abs(residual).max()) or 1.0
+
         layout = QHBoxLayout(self)
-        
-        try:
-            # Raw Data Surface
-            self.gl_raw = gl.GLViewWidget()
-            layout.addWidget(self.gl_raw)
-        except Exception as e:
-            lbl = QLabel(f"3D Peak Fit View requires OpenGL support.\n\nOpenGL initialization message: {e}")
-            lbl.setWordWrap(True)
-            layout.addWidget(lbl)
-            return
-        
-        raw_label = QLabel("Raw Data", self.gl_raw)
-        raw_label.setStyleSheet("color: white; font-weight: bold; font-size: 16px; background: transparent;")
-        raw_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        raw_vbox = QVBoxLayout(self.gl_raw)
-        raw_vbox.setContentsMargins(0, 10, 0, 0)
-        raw_vbox.addWidget(raw_label)
-        raw_vbox.addStretch()
-        
-        self.gl_raw.opts['distance'] = max(raw_data.shape) * 1.5
-        
-        z_raw = raw_data
-        z_min = z_raw.min()
-        
-        surface_raw = gl.GLSurfacePlotItem(z=z_raw, color=(0.3, 0.5, 1.0, 0.8), shader='shaded', computeNormals=True)
-        surface_raw.translate(-z_raw.shape[0]/2, -z_raw.shape[1]/2, -z_min)
-        self.gl_raw.addItem(surface_raw)
-        
-        ax_raw_x = z_raw.shape[0]/1.5
-        ax_raw_y = z_raw.shape[1]/1.5
-        ax_raw_z = (z_raw.max() - z_min)/1.5
-        
-        ax_raw = gl.GLAxisItem()
-        ax_raw.setSize(ax_raw_x, ax_raw_y, ax_raw_z)
-        self.gl_raw.addItem(ax_raw)
-        
-        # Fit Data Surface
-        self.gl_fit = gl.GLViewWidget()
-        layout.addWidget(self.gl_fit)
-        
-        fit_label = QLabel("Mathematical Fit", self.gl_fit)
-        fit_label.setStyleSheet("color: white; font-weight: bold; font-size: 16px; background: transparent;")
-        fit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        fit_vbox = QVBoxLayout(self.gl_fit)
-        fit_vbox.setContentsMargins(0, 10, 0, 0)
-        fit_vbox.addWidget(fit_label)
-        fit_vbox.addStretch()
-        
-        self.gl_fit.opts['distance'] = max(fit_data.shape) * 1.5
-        
-        z_fit = fit_data
-        surface_fit = gl.GLSurfacePlotItem(z=z_fit, color=(1.0, 0.3, 0.3, 0.8), shader='shaded', computeNormals=True)
-        surface_fit.translate(-z_fit.shape[0]/2, -z_fit.shape[1]/2, -z_min)
-        self.gl_fit.addItem(surface_fit)
-        
-        ax_fit_x = z_fit.shape[0]/1.5
-        ax_fit_y = z_fit.shape[1]/1.5
-        ax_fit_z = (z_fit.max() - z_min)/1.5
-        
-        ax_fit = gl.GLAxisItem()
-        ax_fit.setSize(ax_fit_x, ax_fit_y, ax_fit_z)
-        self.gl_fit.addItem(ax_fit)
+        self.images = {}
+        first = None
+        panels = [("data", "Data", raw_data, shared, "viridis"),
+                  ("model", "Model", fit_data, shared, "viridis"),
+                  ("residual", "Residual (data − model)", residual, (-spread, spread),
+                   "CET-D1")]
+        for key, title, values, levels, cmap_name in panels:
+            plot = pg.PlotWidget(title=title)
+            plot.setAspectLocked(True)
+            plot.setLabel('bottom', "X (pixel)")
+            plot.setLabel('left', "Y (pixel)")
+            item = pg.ImageItem(values, levels=levels)
+            item.setRect(x0, y0, values.shape[0], values.shape[1])
+            plot.addItem(item)
+            colormap = pg.colormap.get(cmap_name)
+            bar = pg.ColorBarItem(values=levels, colorMap=colormap, interactive=False)
+            bar.setImageItem(item, insert_in=plot.getPlotItem())
+            if first is None:
+                first = plot
+            else:
+                plot.setXLink(first)
+                plot.setYLink(first)
+            layout.addWidget(plot)
+            self.images[key] = item
+
 
 class GaussianFitDialog(BaseToolDialog):
     #: The labels a fit fills in, as opposed to the two that describe the box's pixels.
@@ -195,6 +171,7 @@ class GaussianFitDialog(BaseToolDialog):
         
         self.last_raw_data = None
         self.last_fit_data = None
+        self.last_fit_origin = (0, 0)
         
         self.update_fit()
 
@@ -282,7 +259,8 @@ class GaussianFitDialog(BaseToolDialog):
             data = np.nan_to_num(data, nan=np.nanmedian(data))
             
         self.last_raw_data = data
-            
+        self.last_fit_origin = (x_slice.start, y_slice.start)
+
         self.value_labels["Min Pixel Value"].setText(f"{data.min():.4f}")
         self.value_labels["Max Pixel Value"].setText(f"{data.max():.4f}")
             
@@ -351,5 +329,6 @@ class GaussianFitDialog(BaseToolDialog):
         if self.last_raw_data is None or self.last_fit_data is None:
             return
             
-        self.disp_dialog = DisplayPeakFitDialog(self, self.last_raw_data, self.last_fit_data)
+        x0, y0 = self.last_fit_origin
+        self.disp_dialog = DisplayPeakFitDialog(self, self.last_raw_data, self.last_fit_data, x0, y0)
         self.disp_dialog.show()

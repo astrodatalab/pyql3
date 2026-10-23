@@ -15,7 +15,6 @@ dependencies = [
     "numpy>=2.5.1",
     "photutils>=3.0.0",
     "pydantic>=2.13.4",
-    "pyopengl>=3.1.10",
     "pyqtgraph>=0.14.0",
     "pyside6>=6.6.0,<6.8.0",
     "pyyaml>=6.0.3",

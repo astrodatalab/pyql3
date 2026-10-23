@@ -18,6 +18,10 @@
   full `AxisItem` regeneration on every step. Fixing it means touching `base_tool.py`, which
   five other tool dialogs share.
 # DONE
+- Removed OpenGL: the Surface plot is gone, and Display Peak Fit shows the data, model and
+  residual as three 2D images (`fitting.DisplayPeakFitDialog`), linked for pan and zoom. The 3D
+  views failed wherever OpenGL 2.1 is missing, including CI's Linux runner, where they broke the
+  v3.1.0 release build. `pyopengl` is no longer a dependency.
 - `DepthPlotDialog.remove_bg_roi()` and `remove_annulus_rings()` retire the background box and
   the annulus rings through `BaseToolDialog.retire_roi()` instead of dropping them, so
   `_drop_retired_rois` deletes them before collecting (`BUGS.md` M31, R15; covered by

@@ -182,6 +182,13 @@ The **Peak Fit** tool fits analytical 2D spatial surface models to stars, emissi
 
 The fit uses the whole pixels whose centres lie inside the box; it does not interpolate between pixels, so the result does not depend on where the box sits relative to the pixel grid. The part of a box that hangs off the image is left out, not counted as zeros, and a box that misses the image reports that instead of a fit. Center X and Center Y are pixel indices counted from 0, the same as the Depth Plot's aperture centre. Region Statistics reads pixels the same way.
 
+**Display Peak Fit** opens three images side by side: the box's pixels, the fitted model and the
+residual (data minus model). Each is drawn at the box's own pixel coordinates, the ones the fitted
+Center X and Y are given in, without the view's flips or rotation, and the three pan and zoom
+together. Data and model share one colour scale; the residual uses a blue-white-red scale centred
+on zero, so structure the model misses shows as colour. The window shows the fit at the moment it
+was opened; click the button again after a new fit.
+
 ### Mathematical Models
 
 #### A. 2D Elliptical Gaussian

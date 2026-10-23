@@ -144,7 +144,6 @@ TOOL_OPENERS = [
     "open_horizontal_cut",
     "open_vertical_cut",
     "open_diagonal_cut",
-    "open_surface_plot",
     "open_contour_plot",
     "open_plot_catalog",
     "open_statistics",
@@ -157,7 +156,7 @@ TOOL_OPENERS = [
 ]
 
 DIALOG_ATTRS = ['_depth_plot_dialog', '_hcut_dialog', '_vcut_dialog', '_dcut_dialog',
-                '_surf_dialog', '_cont_dialog', '_plot_catalog_dialog', '_stats_dialog',
+                '_cont_dialog', '_plot_catalog_dialog', '_stats_dialog',
                 '_phot_dialog', '_gauss_dialog', '_strehl_dialog', '_rotate_dialog',
                 '_arith_dialog']
 
@@ -210,7 +209,7 @@ def _catalog_tool(viewer):
 
 def _tool_builders():
     """Every `BaseToolDialog` subclass, as `{test id: (class, build(viewer))}`."""
-    from pyql3.gui.tools.advanced_plots import ContourDialog, SurfacePlotDialog
+    from pyql3.gui.tools.advanced_plots import ContourDialog
     from pyql3.gui.tools.cuts import CutPlotDialog
     from pyql3.gui.tools.depth_plot import DepthPlotDialog
     from pyql3.gui.tools.fitting import GaussianFitDialog
@@ -226,7 +225,6 @@ def _tool_builders():
         "hcut": (CutPlotDialog, lambda v: CutPlotDialog('horizontal', None, v)),
         "vcut": (CutPlotDialog, lambda v: CutPlotDialog('vertical', None, v)),
         "dcut": (CutPlotDialog, lambda v: CutPlotDialog('diagonal', None, v)),
-        "surface": (SurfacePlotDialog, lambda v: SurfacePlotDialog(None, v)),
         "contour": (ContourDialog, lambda v: ContourDialog(None, v)),
         "plot_catalog": (PlotCatalogDialog, _catalog_tool),
         "statistics": (StatisticsDialog, lambda v: StatisticsDialog(None, v)),
@@ -239,8 +237,8 @@ def _tool_builders():
 
 
 TOOL_IDS = list(_tool_builders())
-#: Tools that draw nothing on the image: the Surface plot draws in its own window.
-DRAW_NOTHING = {"surface", "rotate", "region_list"}
+#: Tools that draw nothing on the image.
+DRAW_NOTHING = {"rotate", "region_list"}
 
 
 def _show_tool(name, viewer, qapp):

@@ -40,6 +40,13 @@
 - **Plot Catalog has a 0-based / 1-based pixel option.** SExtractor `X_IMAGE`/`Y_IMAGE` positions
   are no longer drawn one pixel off.
 
+### Removed: OpenGL
+
+- **The Surface plot (Plot ➔ Surface) has been removed.** QuickLook 3 no longer needs OpenGL,
+  which some machines lack and which made it fail there.
+- **Display Peak Fit now shows three images** side by side, data, model and residual (data minus
+  model), in place of 3D surfaces.
+
 ### Other
 
 - **Auto-load** no longer misses files when you change the polling interval. It no longer

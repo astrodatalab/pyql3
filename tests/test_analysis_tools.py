@@ -423,6 +423,52 @@ def test_peak_fit_surface_has_the_shape_of_the_data(qapp):
         dialog.close()
 
 
+def test_display_peak_fit_shows_data_model_and_residual(qapp):
+    """Display Peak Fit is three flat images, so it needs no OpenGL: the box's pixels, the
+    fitted model and data minus model, each placed at the box's own pixel coordinates."""
+    dialog = GaussianFitDialog(None, _viewer_showing(qapp, _round_star(40.0)))
+    try:
+        dialog.roi.setPos([30.0, 22.0])
+        dialog.roi.setSize([20, 16])
+        dialog.update_fit()
+        dialog.display_peak_fit()
+        display = dialog.disp_dialog
+        raw, fit = dialog.last_raw_data, dialog.last_fit_data
+
+        images = display.images
+        assert set(images) == {"data", "model", "residual"}
+        np.testing.assert_array_equal(images["data"].image, raw)
+        np.testing.assert_array_equal(images["model"].image, fit)
+        np.testing.assert_allclose(images["residual"].image, raw - fit)
+        for item in images.values():
+            rect = item.mapRectToParent(item.boundingRect())
+            assert (rect.x(), rect.y(), rect.width(), rect.height()) == (30, 22, 20, 16)
+
+        # Data and model on one scale, so they compare by eye; the residual centred on zero
+        assert images["data"].getLevels() == pytest.approx(images["model"].getLevels())
+        low, high = images["residual"].getLevels()
+        assert low == pytest.approx(-high) and high > 0
+    finally:
+        dialog.close()
+
+
+def test_no_module_imports_opengl():
+    """OpenGL is not available on every machine, CI's Linux runner included (Qt's offscreen
+    platform reports OpenGL 2.0, below pyqtgraph.opengl's 2.1), so nothing may need it."""
+    import os
+    import subprocess
+    import sys
+
+    script = ("import sys, pkgutil, importlib, pyql3\n"
+              "for m in pkgutil.walk_packages(pyql3.__path__, 'pyql3.'):\n"
+              "    importlib.import_module(m.name)\n"
+              "print('pyqtgraph.opengl' in sys.modules, 'OpenGL' in sys.modules)\n")
+    environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                         check=True, env=environment)
+    assert out.stdout.split()[-2:] == ["False", "False"], out.stdout + out.stderr
+
+
 def test_peak_fit_box_is_drawn_over_the_pixels_it_measures(qapp):
     """`set_center` takes a numpy index, so the box is centred on that pixel's centre in
     ImageItem coordinates, `index + 0.5`, and the measured pixels are the ones around it."""

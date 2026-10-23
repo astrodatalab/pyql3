@@ -399,12 +399,17 @@ def test_a_channel_range_does_not_hide_a_region_on_a_2d_image(qapp, aggregate):
         assert layer.item_for(region).isVisible()
 
 
-def settle(qapp):
-    """Let the label debounce run, as it would once the user stops."""
+def settle(qapp, layer):
+    """Let the label debounce run, as it would once the user stops.
+
+    Waits for the layer's redraw timer to fire rather than for a fixed time: on a loaded CI
+    runner 350 ms was not always enough, and the labels were reported missing (5 s at most).
+    """
     from pyql3.gui.label_policy import LABEL_REDRAW_DELAY_MS
 
     end = time.monotonic() + (LABEL_REDRAW_DELAY_MS + 150) / 1000.0
-    while time.monotonic() < end:
+    limit = time.monotonic() + 5.0
+    while time.monotonic() < end or (layer._label_timer.isActive() and time.monotonic() < limit):
         qapp.processEvents()
 
 
@@ -433,9 +438,9 @@ def test_labels_are_culled_in_view_coordinates_under_a_view_rotation(loaded_view
     # a label's offset then crosses the edge of the view in both directions.
     view.setAspectLocked(False)
     view.setRange(xRange=(22, 38), yRange=(2, 18), padding=0)
-    settle(qapp)
+    settle(qapp, layer)
     loaded_viewer.apply_view_rotation(90.0)
-    settle(qapp)
+    settle(qapp, layer)
 
     rect = view.viewRect()
     grown = grown_for_labels(rect)
@@ -1335,12 +1340,12 @@ def test_overlay_labels_appear_after_panning_from_an_empty_area(loaded_viewer, l
     layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.5, text=f"s{i}")
                        for i in range(12)])
     look_at(loaded_viewer, (300, 310), (300, 310))       # nothing here
-    settle(qapp)
+    settle(qapp, layer)
     assert layer.bulk is True
     assert layer._bulk_labels == []
 
     look_at(loaded_viewer, (-2, 12), (-2, 12))           # pan onto the sources
-    settle(qapp)
+    settle(qapp, layer)
 
     assert layer._bulk_labels, "the labels never came back after the pan"
 
@@ -1356,12 +1361,12 @@ def test_overlay_labels_return_after_zooming_in_below_the_ceiling(loaded_viewer,
     layer.set_regions([Circle(x=float(i % 8), y=float(i // 8), radius=0.5, text=f"s{i}")
                        for i in range(12)])
     look_at(loaded_viewer, (-2, 12), (-2, 12))
-    settle(qapp)
+    settle(qapp, layer)
     assert layer._bulk_labels == [], "the ceiling did not refuse 12 labels"
 
     # Labels are culled where they are drawn, one radius above their circle's centre.
     look_at(loaded_viewer, (-0.5, 1.5), (0.5, 1.5))
-    settle(qapp)
+    settle(qapp, layer)
 
     assert layer._bulk_labels, "labels did not come back once few enough were in view"
 
@@ -1413,7 +1418,7 @@ def test_text_regions_do_not_count_against_the_label_ceiling(loaded_viewer, laye
     texts = [Text(x=4.0 + 3 * i, y=6.0, text=f"knot {i}") for i in range(5)]
     circle = Circle(x=10.0, y=15.0, radius=2.0, text="src")
     layer.set_regions(texts + [circle])
-    settle(qapp)
+    settle(qapp, layer)
 
     assert all(layer.item_for(region).isVisible() for region in texts)
     assert layer.label_for(circle).isVisible(), "the text regions were counted against the ceiling"
@@ -1451,7 +1456,7 @@ def test_a_text_region_stays_visible_with_labels_off(loaded_viewer, layer, qapp,
     added = layer.add(Text(x=8.0, y=14.0, text="added later"))
     added.color = "red"
     layer.restyle(added)
-    settle(qapp)
+    settle(qapp, layer)
 
     if aggregate:
         assert layer.bulk is True
