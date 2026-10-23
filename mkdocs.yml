@@ -36,6 +36,7 @@ nav:
   - Home: index.md
   - User & Science Guide: tools.md
   - CLI & Directory Polling: cli.md
+  - Release Notes: changelog.md
   - Developer & Testing: developer.md
   - API Reference: api.md
 
@@ -60,6 +61,11 @@ markdown_extensions:
   - md_in_html
   - pymdownx.arithmatex:
       generic: true
+  # Pulls the root CHANGELOG.md into docs/changelog.md, so the release notes have one source.
+  # Paths resolve from where mkdocs runs (the repo root); check_paths fails the build if the
+  # file is missing rather than publishing an empty page.
+  - pymdownx.snippets:
+      check_paths: true
 
 extra_javascript:
   - javascripts/script.js
